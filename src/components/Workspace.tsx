@@ -1,377 +1,58 @@
-import React, { useState } from 'react';
-import { Opportunity, EvidenceItem } from '../types';
-import { 
-  ArrowLeft, 
-  Layers, 
-  Database, 
-  Shield, 
-  BarChart3, 
-  ShieldAlert, 
-  FileText, 
-  Award, 
-  Download, 
-  Printer, 
-  Plus,
-  CheckCircle2,
-  X
-} from 'lucide-react';
-import Layer01DealSnapshot from './views/Layer01DealSnapshot';
-import Layer02CompetitiveMatrix from './views/Layer02CompetitiveMatrix';
-import Layer03MarketBenchmarks from './views/Layer03MarketBenchmarks';
-import Layer04IncumbentVulnerability from './views/Layer04IncumbentVulnerability';
-import Layer05EvidenceLedger from './views/Layer05EvidenceLedger';
-import ExecutiveBriefView from './views/ExecutiveBriefView';
+import { useState } from 'react';
+import { AlertTriangle, ArrowLeft, BarChart3, Building2, CheckCircle2, Download, ExternalLink, FileSearch, Gauge, Printer, ShieldAlert, Target } from 'lucide-react';
+import type { CompanyContext, EvidenceItem, OpportunityAnalysis } from '../types';
+import { calculateCompanyPosition } from '../utils/companyPosition';
 
-interface WorkspaceProps {
-  opp: Opportunity;
-  onBack: () => void;
-  onUpdateOpportunity?: (updated: Opportunity) => void;
-  formatCurrency: (val: number) => string;
-  formatPercent: (val: number) => string;
-}
+interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
+type Tab = 'position' | 'deal' | 'competition' | 'evidence' | 'company' | 'guidance';
+const tabs: [Tab, string][] = [['position','Market position'],['deal','Deal facts'],['competition','Competition'],['evidence','Evidence'],['company','Company position'],['guidance','Final guidance']];
+const money = (value: number) => value ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value) : 'Insufficient evidence';
+const compactMoney = (value?: number) => value ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 }).format(value) : '—';
 
-export default function Workspace({
-  opp,
-  onBack,
-  onUpdateOpportunity,
-  formatCurrency,
-  formatPercent
-}: WorkspaceProps) {
-  const [activeLayer, setActiveLayer] = useState<'l1' | 'l2' | 'l3' | 'l4' | 'l5' | 'brief'>('l1');
-  const [isEvidenceModalOpen, setIsEvidenceModalOpen] = useState(false);
-  const [newSource, setNewSource] = useState('');
-  const [newFact, setNewFact] = useState('');
-  const [exportNotice, setExportNotice] = useState<string | null>(null);
-
-  const layers = [
-    { id: 'l1', shortName: 'L1: Snapshot', name: 'Layer 01: Deal Snapshot', icon: Database, ready: true },
-    { id: 'l2', shortName: 'L2: Competitors', name: 'Layer 02: Competitive Matrix', icon: Shield, ready: true },
-    { id: 'l3', shortName: 'L3: Benchmarks', name: 'Layer 03: Market Benchmarks', icon: BarChart3, ready: true },
-    { id: 'l4', shortName: 'L4: Incumbent', name: 'Layer 04: Incumbent Vulnerability', icon: ShieldAlert, ready: true },
-    { id: 'l5', shortName: 'L5: Evidence', name: 'Layer 05: Evidence Ledger', icon: FileText, ready: true },
-    { id: 'brief', shortName: 'PTW Brief', name: 'Executive PTW Brief', icon: Award, ready: true, highlight: true },
-  ];
-
-  const handleAddEvidence = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newSource.trim() || !newFact.trim()) return;
-
-    const newEvidenceItem: EvidenceItem = {
-      id: `EV-0${((opp.evidence?.length || 5) + 1)}`,
-      source: newSource.trim(),
-      extractedFact: newFact.trim(),
-      confidence: 99.0,
-      verified: true,
-      checksum: '0x' + Math.floor(Math.random() * 0xFFFFFFF).toString(16).toUpperCase().padStart(8, '0')
-    };
-
-    const updatedEvidence = [...(opp.evidence || []), newEvidenceItem];
-    if (onUpdateOpportunity) {
-      onUpdateOpportunity({
-        ...opp,
-        evidence: updatedEvidence
-      });
-    }
-
-    setNewSource('');
-    setNewFact('');
-    setIsEvidenceModalOpen(false);
-    setActiveLayer('l5');
+export default function Workspace({ analysis, onBack, onUpdate }: Props) {
+  const [tab, setTab] = useState<Tab>('position');
+  const [company, setCompany] = useState<CompanyContext>(analysis.companyContext || { companyName: '', riskPosture: 'BALANCED', differentiators: '', constraints: '' });
+  const [notice, setNotice] = useState('');
+  const exportExcel = async () => {
+    const response = await fetch('/api/export-brief', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
+    if (!response.ok) return setNotice('Export failed. Try again.');
+    const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = `${analysis.deal.solicitationNumber || 'Market_Position'}_Brief.xlsx`; anchor.click(); URL.revokeObjectURL(url); setNotice('Excel evidence package downloaded.');
   };
-
-  const handleExportXlsx = async () => {
-    try {
-      const res = await fetch(`/api/opportunities/${opp.id}/export`);
-      if (res.ok) {
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `${opp.solicitationNumber || 'PTW'}_Pricing_Model.xlsx`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        showNotice("Excel workbook downloaded successfully.");
-      } else {
-        showNotice("Financial workbook export generated.");
-      }
-    } catch {
-      showNotice("Financial workbook export generated.");
-    }
+  const applyCompany = () => {
+    const position = calculateCompanyPosition(analysis.marketPosition, company);
+    onUpdate({ ...analysis, companyContext: company, companyPosition: position, meta: { ...analysis.meta, mode: 'MARKET_AND_COMPANY' } });
+    setNotice('Company position updated.');
   };
-
-  const showNotice = (msg: string) => {
-    setExportNotice(msg);
-    setTimeout(() => setExportNotice(null), 3500);
-  };
-
-  return (
-    <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-6 sm:py-8">
-      {/* Toast Notification */}
-      {exportNotice && (
-        <div className="fixed bottom-5 right-5 z-50 bg-slate-900 text-white px-4 py-3 rounded-lg shadow-lg border border-slate-700 flex items-center gap-2 text-xs font-mono animate-in fade-in slide-in-from-bottom-2">
-          <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-          <span>{exportNotice}</span>
-        </div>
-      )}
-
-      {/* Top Breadcrumb & Metadata Header */}
-      <div className="pb-5 sm:pb-6 border-b border-slate-200">
-        <div className="flex flex-col md:flex-row md:items-start justify-between gap-4">
-          <div className="min-w-0">
-            {/* Micro Breadcrumb */}
-            <div className="flex items-center gap-1.5 sm:gap-2 text-[11px] sm:text-xs font-mono text-slate-500 uppercase tracking-wider mb-1.5 flex-wrap">
-              <button 
-                onClick={onBack}
-                className="hover:text-blue-600 flex items-center gap-1 transition-colors font-medium text-slate-700"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-                <span>RUNS</span>
-              </button>
-              <span>/</span>
-              <span className="truncate max-w-[120px]">{opp.id.toUpperCase()}</span>
-              <span>/</span>
-              <span className="text-slate-800 font-semibold truncate max-w-[140px]">{opp.agency.toUpperCase()}</span>
-            </div>
-
-            {/* Main Title */}
-            <h1 className="text-xl sm:text-2xl lg:text-3xl font-bold text-slate-950 tracking-tight break-words">
-              {opp.title}
-            </h1>
-
-            {/* Status explanation */}
-            <p className="text-xs text-slate-500 font-sans mt-1.5 max-w-3xl leading-relaxed">
-              Upload completed. 5 intelligence layers processed against FAR 15.404-1 realism baselines. Review evidence or adjust assumptions.
-            </p>
-          </div>
-
-          {/* Header Action Buttons */}
-          <div className="flex items-center flex-wrap gap-2 pt-1 md:pt-0">
-            <button
-              onClick={() => setIsEvidenceModalOpen(true)}
-              className="px-3 py-1.5 sm:py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded font-mono text-xs uppercase font-medium transition-colors shadow-2xs flex items-center gap-1.5"
-            >
-              <Plus className="w-3.5 h-3.5 text-slate-500" />
-              <span>ADD CITATION</span>
-            </button>
-
-            <button
-              onClick={handleExportXlsx}
-              className="px-3 py-1.5 sm:py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded font-mono text-xs uppercase font-medium transition-colors shadow-2xs flex items-center gap-1.5"
-            >
-              <Download className="w-3.5 h-3.5 text-slate-500" />
-              <span className="hidden sm:inline">EXPORT</span> MODEL (XLSX)
-            </button>
-
-            <button
-              onClick={() => {
-                setActiveLayer('brief');
-                setTimeout(() => window.print(), 150);
-              }}
-              className="px-3.5 sm:px-4 py-1.5 sm:py-2 bg-blue-600 hover:bg-blue-700 text-white rounded font-mono text-xs uppercase font-semibold transition-colors shadow-xs flex items-center gap-1.5"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>EXPORT BRIEF (PDF)</span>
-            </button>
-          </div>
-        </div>
-      </div>
-
-      {/* Mobile Horizontal Layer Tabs (< lg) */}
-      <div className="lg:hidden mt-4 pb-2 overflow-x-auto no-scrollbar -mx-3 px-3 flex items-center gap-1.5 border-b border-slate-200">
-        {layers.map((layer) => {
-          const Icon = layer.icon;
-          const isActive = activeLayer === layer.id;
-          return (
-            <button
-              key={layer.id}
-              onClick={() => setActiveLayer(layer.id as any)}
-              className={`flex items-center gap-2 px-3 py-2 rounded-md text-xs font-mono whitespace-nowrap transition-all shrink-0 ${
-                isActive
-                  ? 'bg-blue-600 text-white font-bold shadow-xs'
-                  : layer.highlight
-                    ? 'bg-blue-50 text-blue-900 border border-blue-200 font-semibold'
-                    : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-50'
-              }`}
-            >
-              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : layer.highlight ? 'text-blue-600' : 'text-slate-500'}`} />
-              <span>{layer.shortName}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Main Workspace Layout (Desktop Left Nav + Right Canvas) */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 mt-4 lg:mt-8">
-        {/* Desktop Left Layers Navigation (>= lg) */}
-        <div className="hidden lg:block lg:col-span-3 space-y-2">
-          <div className="text-[11px] font-mono text-slate-400 uppercase tracking-wider px-3 mb-2 font-semibold">
-            INTELLIGENCE PIPELINE
-          </div>
-
-          <div className="space-y-1">
-            {layers.map((layer) => {
-              const Icon = layer.icon;
-              const isActive = activeLayer === layer.id;
-              return (
-                <button
-                  key={layer.id}
-                  onClick={() => setActiveLayer(layer.id as any)}
-                  className={`w-full flex items-center justify-between px-3.5 py-3 rounded-lg text-xs font-mono transition-all text-left group ${
-                    isActive
-                      ? 'bg-blue-600 text-white font-bold shadow-xs'
-                      : layer.highlight 
-                        ? 'bg-blue-50/70 text-blue-900 hover:bg-blue-100/70 border border-blue-200' 
-                        : 'text-slate-700 hover:bg-slate-100 hover:text-slate-950 bg-white border border-slate-200'
-                  }`}
-                >
-                  <div className="flex items-center gap-3 truncate">
-                    <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-white' : layer.highlight ? 'text-blue-600' : 'text-slate-500'}`} />
-                    <span className="truncate">{layer.name}</span>
-                  </div>
-
-                  {layer.ready && (
-                    <span className={`text-[10px] ${isActive ? 'text-blue-100' : 'text-emerald-600'}`}>
-                      ✓
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-
-          {/* Quick Notice Card in Sidebar */}
-          <div className="mt-8 p-4 rounded-lg bg-slate-50 border border-slate-200 text-xs space-y-2">
-            <div className="font-mono font-bold text-slate-800 uppercase text-[11px]">
-              DATA INTEGRITY SEAL
-            </div>
-            <p className="text-slate-500 font-sans leading-relaxed text-[11px]">
-              All calculations adhere to FAR 15.404-1 realism standards. Direct labor rates grounded against GSA CALC API benchmarks.
-            </p>
-          </div>
-        </div>
-
-        {/* Dynamic Canvas */}
-        <div className="lg:col-span-9 min-w-0">
-          {activeLayer === 'l1' && (
-            <Layer01DealSnapshot
-              opp={opp}
-              onUpdateOpportunity={onUpdateOpportunity}
-              formatCurrency={formatCurrency}
-            />
-          )}
-
-          {activeLayer === 'l2' && (
-            <Layer02CompetitiveMatrix
-              opp={opp}
-              formatCurrency={formatCurrency}
-              formatPercent={formatPercent}
-            />
-          )}
-
-          {activeLayer === 'l3' && (
-            <Layer03MarketBenchmarks
-              opp={opp}
-              formatCurrency={formatCurrency}
-              formatPercent={formatPercent}
-            />
-          )}
-
-          {activeLayer === 'l4' && (
-            <Layer04IncumbentVulnerability
-              opp={opp}
-            />
-          )}
-
-          {activeLayer === 'l5' && (
-            <Layer05EvidenceLedger
-              opp={opp}
-            />
-          )}
-
-          {activeLayer === 'brief' && (
-            <ExecutiveBriefView
-              opp={opp}
-              formatCurrency={formatCurrency}
-              formatPercent={formatPercent}
-            />
-          )}
-        </div>
-      </div>
-
-      {/* Add Evidence Citation Modal */}
-      {isEvidenceModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs">
-          <div className="bg-white rounded-lg border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-blue-600" />
-                <h3 className="font-bold text-slate-900 text-sm font-mono uppercase">Add Verifiable Citation</h3>
-              </div>
-              <button
-                onClick={() => setIsEvidenceModalOpen(false)}
-                className="text-slate-400 hover:text-slate-600 p-1 rounded"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleAddEvidence} className="space-y-3.5">
-              <div>
-                <label className="block text-xs font-mono font-medium text-slate-700 mb-1">
-                  SOURCE CITATION (e.g. Section L.3, Attachment J-1, SAM.gov Q&A)
-                </label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Section L.5.1 - Travel Reimbursement Caps"
-                  value={newSource}
-                  onChange={(e) => setNewSource(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-mono font-medium text-slate-700 mb-1">
-                  EXTRACTED CONTRACT RULE / FACT
-                </label>
-                <textarea
-                  required
-                  rows={3}
-                  placeholder="e.g. Travel and ODCs will be reimbursed on a strictly cost-no-fee pass-through basis up to $150,000 per option period."
-                  value={newFact}
-                  onChange={(e) => setNewFact(e.target.value)}
-                  className="w-full px-3 py-2 bg-slate-50 border border-slate-200 rounded text-xs font-sans focus:outline-none focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded text-[11px] font-mono text-slate-500 space-y-1">
-                <div className="flex items-center gap-1.5 text-emerald-700 font-semibold">
-                  <CheckCircle2 className="w-3.5 h-3.5" />
-                  <span>FAR 15.404 Crosswalk Active</span>
-                </div>
-                <p>New entries receive automated cryptographic SHA checksum verification in Layer 05.</p>
-              </div>
-
-              <div className="flex items-center justify-end gap-2 pt-2">
-                <button
-                  type="button"
-                  onClick={() => setIsEvidenceModalOpen(false)}
-                  className="px-3.5 py-2 text-xs font-mono text-slate-600 hover:bg-slate-100 rounded"
-                >
-                  CANCEL
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-mono text-xs font-semibold rounded uppercase tracking-wider"
-                >
-                  SAVE & SEAL CITATION
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+  return <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8 print:max-w-none print:p-0">
+    {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
+    <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between"><div><button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button><div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">{analysis.meta.mode === 'MARKET_ONLY' ? 'MARKET POSITION' : 'MARKET + COMPANY'}</span><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">{analysis.meta.researchStatus.replaceAll('_',' ')}</span></div><h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1><p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p></div><div className="flex flex-wrap gap-2 print:hidden"><button onClick={exportExcel} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black"><Download className="h-4 w-4" /> XLSX</button><button onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white"><Printer className="h-4 w-4" /> PRINT / PDF</button></div></div>
+    {analysis.meta.warnings.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><strong className="mr-2">Research note:</strong>{analysis.meta.warnings.join(' ')}</div>}
+    <div className="mt-5 flex gap-1 overflow-x-auto border-b border-slate-200 print:hidden">{tabs.map(([id,label]) => <button key={id} onClick={() => setTab(id)} className={`shrink-0 border-b-2 px-3 py-3 text-xs font-black ${tab === id ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-700'}`}>{label.toUpperCase()}</button>)}</div>
+    <div className="mt-6">
+      {tab === 'position' && <MarketPositionView analysis={analysis} />}
+      {tab === 'deal' && <DealView analysis={analysis} />}
+      {tab === 'competition' && <CompetitionView analysis={analysis} />}
+      {tab === 'evidence' && <EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} />}
+      {tab === 'company' && <CompanyView analysis={analysis} company={company} setCompany={setCompany} applyCompany={applyCompany} />}
+      {tab === 'guidance' && <GuidanceView analysis={analysis} />}
     </div>
-  );
+    <div className="hidden print:block"><MarketPositionView analysis={analysis} /><div className="mt-8"><GuidanceView analysis={analysis} /></div></div>
+  </div>;
 }
+
+function MarketPositionView({ analysis }: { analysis: OpportunityAnalysis }) { const p=analysis.marketPosition; return <div className="space-y-6 print:block"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"><Metric icon={Target} label="Market target" value={money(p.target)} detail={p.rangeStatus} /><Metric icon={BarChart3} label="Recommended band" value={p.low && p.high ? `${compactMoney(p.low)} – ${compactMoney(p.high)}` : 'Not supportable'} detail={p.posture.replaceAll('_',' ')} /><Metric icon={Gauge} label="Confidence" value={`${p.confidenceScore}%`} detail={p.confidence} /><Metric icon={FileSearch} label="Opportunity score" value={`${p.attractivenessScore}/100`} detail="Weighted market signal" /></div><section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm"><div className="flex items-center justify-between gap-4"><div><p className="text-[10px] font-black uppercase tracking-[.16em] text-blue-600">Market conclusion</p><h2 className="mt-2 text-2xl font-black">{analysis.guidance.headline}</h2></div><span className={`rounded-full px-3 py-1.5 text-[10px] font-black ${p.rangeStatus === 'SUPPORTED' ? 'bg-emerald-100 text-emerald-700' : p.rangeStatus === 'DIRECTIONAL' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{p.rangeStatus}</span></div><p className="mt-4 max-w-4xl text-sm leading-7 text-slate-600">{p.summary}</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><Price label="LOW" value={p.low} /><Price label="TARGET" value={p.target} active /><Price label="HIGH" value={p.high} /></div></section><section className="grid gap-4 lg:grid-cols-2"><div className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className="text-sm font-black">Recommendation drivers</h3><div className="mt-5 space-y-4">{p.drivers.map((driver) => <div key={driver.name}><div className="flex justify-between text-xs"><span className="font-bold">{driver.name} <span className="text-slate-400">({driver.weight}%)</span></span><strong>{driver.score}</strong></div><div className="mt-1.5 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-blue-600" style={{width:`${Math.max(0,Math.min(100,driver.score))}%`}} /></div><p className="mt-1.5 text-xs leading-5 text-slate-500">{driver.assessment}</p></div>)}</div></div><div className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className="text-sm font-black">Position basis</h3><ul className="mt-4 space-y-3">{p.basis.map((item,index) => <li key={index} className="flex gap-3 text-sm leading-6 text-slate-600"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-500" />{item}</li>)}</ul></div></section></div>; }
+function DealView({ analysis }: { analysis: OpportunityAnalysis }) { const d=analysis.deal; return <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Core deal facts</h2><dl className="mt-5 space-y-4">{[['Agency',d.agency],['Solicitation',d.solicitationNumber],['Contract type',d.contractType],['Due date',d.dueDate],['Period',d.periodOfPerformance],['NAICS',d.naics],['Award structure',d.awardStructure],['Evaluation',d.evaluationMethod]].map(([label,value]) => <div key={label} className="border-b border-slate-100 pb-3"><dt className="text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold">{value || 'Not found'}</dd></div>)}</dl></section><div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Scope summary</h2><p className="mt-3 text-sm leading-7 text-slate-600">{d.scopeSummary}</p></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Requirements and evaluation signals</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{d.requirements.map((item,index) => <div key={index} className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black text-blue-600">{item.category}</span><h3 className="mt-1 text-sm font-black">{item.name}</h3><p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p><p className="mt-2 text-[10px] font-bold text-slate-400">{item.section || 'Section not resolved'} · {item.confidence}%</p></div>)}</div></section></div></div>; }
+function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) { return <div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Likely competitive field</h2><div className="mt-5 grid gap-4 md:grid-cols-2">{analysis.competitors.length ? analysis.competitors.map((c) => <article key={c.name} className="rounded-xl border border-slate-200 p-4"><div className="flex justify-between gap-3"><div><span className="text-[10px] font-black text-blue-600">{c.role.replaceAll('_',' ')}</span><h3 className="mt-1 font-black">{c.name}</h3></div><span className="text-xs font-black">{c.confidence}%</span></div><p className="mt-3 text-xs leading-5 text-slate-500">{c.rationale}</p><div className="mt-3 flex flex-wrap gap-2"><span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-bold">{c.pricingPosture.replaceAll('_',' ')}</span><span className={`rounded px-2 py-1 text-[10px] font-bold ${c.evidenceType === 'EXTERNAL_SOURCE' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{c.evidenceType.replaceAll('_',' ')}</span></div></article>) : <p className="text-sm text-slate-500">No competitor could be identified with sufficient confidence.</p>}</div></section><section className="rounded-2xl border border-slate-200 bg-[#10243e] p-5 text-white"><div className="flex items-center gap-2"><ShieldAlert className="h-5 w-5 text-amber-300" /><h2 className="font-black">Incumbent assessment: {analysis.incumbent.name || 'Unknown'}</h2></div><p className="mt-2 text-xs text-slate-300">{analysis.incumbent.status} · {analysis.incumbent.confidence}% confidence · {analysis.incumbent.transitionRisk} transition risk</p><div className="mt-5 grid gap-4 sm:grid-cols-2"><List title="Strengths" values={analysis.incumbent.strengths} /><List title="Potential vulnerabilities" values={analysis.incumbent.vulnerabilities} /></div></section></div>; }
+function EvidenceView({ evidence, gaps }: { evidence: EvidenceItem[]; gaps: OpportunityAnalysis['gaps'] }) { return <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-end justify-between"><div><h2 className="text-sm font-black">Evidence ledger</h2><p className="mt-1 text-xs text-slate-400">Facts, external sources, and inference stay separate.</p></div><strong className="text-xs">{evidence.length} items</strong></div><div className="mt-5 space-y-3">{evidence.map((item) => <article key={item.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-400">{item.id}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-black">{item.confidence}%</span></div><p className="mt-3 text-sm font-semibold leading-6">{item.claim}</p><p className="mt-2 text-xs text-slate-400">{item.sourceLabel}{item.section ? ` · ${item.section}` : ''}</p>{item.url && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>}</article>)}</div></section><section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-700" /><h2 className="text-sm font-black text-amber-950">Decision gaps</h2></div><div className="mt-4 space-y-3">{gaps.map((gap,index) => <div key={index} className="rounded-xl bg-white/80 p-4"><span className="text-[10px] font-black text-amber-700">{gap.priority}</span><h3 className="mt-1 text-sm font-black">{gap.question}</h3><p className="mt-2 text-xs leading-5 text-slate-600">{gap.impact}</p></div>)}</div></section></div>; }
+function CompanyView({ analysis, company, setCompany, applyCompany }: { analysis: OpportunityAnalysis; company: CompanyContext; setCompany: (value: CompanyContext) => void; applyCompany: () => void }) { const cp=analysis.companyPosition; const set=(key:keyof CompanyContext,value:any)=>setCompany({...company,[key]:value}); return <div className="grid gap-5 lg:grid-cols-[.85fr_1.15fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-center gap-2"><Building2 className="h-4 w-4 text-blue-600" /><h2 className="text-sm font-black">Optional internal inputs</h2></div><p className="mt-2 text-xs leading-5 text-slate-500">These values refine the company position. They are not required for the market result.</p><div className="mt-5 space-y-3"><Field label="Company name" value={company.companyName} set={(v)=>set('companyName',v)} /><div className="grid grid-cols-2 gap-3"><Field label="Estimated price" type="number" value={company.estimatedPrice ?? ''} set={(v)=>set('estimatedPrice',v ? Number(v) : undefined)} /><Field label="Cost baseline" type="number" value={company.costBaseline ?? ''} set={(v)=>set('costBaseline',v ? Number(v) : undefined)} /></div><Field label="Target margin %" type="number" value={company.targetMarginPct ?? ''} set={(v)=>set('targetMarginPct',v ? Number(v) : undefined)} /><Field label="Differentiators" value={company.differentiators} set={(v)=>set('differentiators',v)} /><Field label="Constraints" value={company.constraints} set={(v)=>set('constraints',v)} /><button onClick={applyCompany} className="w-full rounded-xl bg-[#1167e8] py-3 text-xs font-black text-white">CALCULATE COMPANY POSITION</button></div></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><p className="text-[10px] font-black uppercase tracking-[.16em] text-blue-600">Company result</p>{cp ? <><div className="mt-4 grid grid-cols-2 gap-3"><MetricSmall label="Effective price" value={money(cp.effectivePrice || 0)} /><MetricSmall label="Market fit" value={`${cp.fitScore}/100`} /><MetricSmall label="Delta to target" value={cp.deltaToMarketPct === undefined ? '—' : `${cp.deltaToMarketPct > 0 ? '+' : ''}${cp.deltaToMarketPct.toFixed(1)}%`} /><MetricSmall label="Implied margin" value={cp.impliedMarginPct === undefined ? '—' : `${cp.impliedMarginPct.toFixed(1)}%`} /></div><div className="mt-5 rounded-xl bg-slate-50 p-5"><span className="text-[10px] font-black text-blue-600">{cp.bandPosition.replaceAll('_',' ')}</span><p className="mt-2 text-sm leading-6 text-slate-600">{cp.assessment}</p><p className="mt-4 text-sm font-black">{cp.recommendedAction}</p></div></> : <div className="mt-10 rounded-xl border border-dashed border-slate-200 p-8 text-center"><Building2 className="mx-auto h-7 w-7 text-slate-300" /><p className="mt-3 text-sm font-black">Market position is already complete.</p><p className="mt-2 text-xs text-slate-500">Add company inputs only when you want to compare your economics with the market.</p></div>}</section></div>; }
+function GuidanceView({ analysis }: { analysis: OpportunityAnalysis }) { const g=analysis.guidance; return <div className="space-y-5"><section className="rounded-2xl bg-[#10243e] p-6 text-white sm:p-8"><p className="text-[10px] font-black uppercase tracking-[.18em] text-blue-300">Final positioning guidance</p><h2 className="mt-3 text-2xl font-black sm:text-3xl">{g.headline}</h2><p className="mt-4 max-w-4xl text-sm leading-7 text-slate-300">{g.rationale}</p><div className="mt-6 grid gap-3 sm:grid-cols-3"><DarkMetric label="Range low" value={money(g.rangeLow)} /><DarkMetric label="Target" value={money(g.targetPrice)} /><DarkMetric label="Range high" value={money(g.rangeHigh)} /></div></section><div className="grid gap-4 lg:grid-cols-3"><GuidanceList title="Win conditions" values={g.winConditions} tone="blue" /><GuidanceList title="Guardrails" values={g.guardrails} tone="amber" /><GuidanceList title="Next actions" values={g.nextActions} tone="emerald" /></div></div>; }
+
+function Metric({icon:Icon,label,value,detail}:{icon:any;label:string;value:string;detail:string}) { return <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><Icon className="h-5 w-5 text-blue-600" /><span className="mt-4 block text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong><span className="mt-1 block text-[10px] font-bold text-slate-400">{detail}</span></div>; }
+function Price({label,value,active=false}:{label:string;value:number;active?:boolean}) { return <div className={`rounded-xl p-4 ${active ? 'bg-blue-600 text-white shadow-lg' : 'bg-slate-50'}`}><span className={`text-[10px] font-black ${active ? 'text-blue-100' : 'text-slate-400'}`}>{label}</span><strong className="mt-1 block text-xl">{money(value)}</strong></div>; }
+function MetricSmall({label,value}:{label:string;value:string}) { return <div className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black uppercase text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong></div>; }
+function DarkMetric({label,value}:{label:string;value:string}) { return <div className="rounded-xl border border-white/10 bg-white/[.06] p-4"><span className="text-[10px] font-black text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong></div>; }
+function List({title,values}:{title:string;values:string[]}) { return <div><h3 className="text-xs font-black uppercase tracking-wide text-blue-300">{title}</h3><ul className="mt-3 space-y-2">{values.map((value,index)=><li key={index} className="text-xs leading-5 text-slate-300">• {value}</li>)}</ul></div>; }
+function EvidenceBadge({type}:{type:EvidenceItem['type']}) { const style=type==='SOLICITATION_FACT'?'bg-blue-100 text-blue-700':type==='EXTERNAL_SOURCE'?'bg-emerald-100 text-emerald-700':type==='ANALYST_INFERENCE'?'bg-amber-100 text-amber-800':'bg-slate-100 text-slate-600'; return <span className={`rounded px-2 py-1 text-[9px] font-black ${style}`}>{type.replaceAll('_',' ')}</span>; }
+function Field({label,value,set,type='text'}:{label:string;value:string|number;set:(value:string)=>void;type?:string}) { return <label className="block text-[10px] font-black uppercase tracking-wide text-slate-400">{label}<input type={type} min={type==='number'?0:undefined} value={value} onChange={(e)=>set(e.target.value)} className="mt-1.5 w-full rounded-lg border border-slate-200 px-3 py-2.5 text-sm normal-case text-slate-900" /></label>; }
+function GuidanceList({title,values,tone}:{title:string;values:string[];tone:string}) { const color=tone==='blue'?'text-blue-600':tone==='amber'?'text-amber-600':'text-emerald-600'; return <section className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className={`text-sm font-black ${color}`}>{title}</h3><ol className="mt-4 space-y-3">{values.map((value,index)=><li key={index} className="flex gap-3 text-sm leading-6 text-slate-600"><span className="font-mono text-xs font-black text-slate-300">{String(index+1).padStart(2,'0')}</span>{value}</li>)}</ol></section>; }
