@@ -1,0 +1,8 @@
+{
+  "name": "PTW Studio",
+  "description": "AI-powered federal Price-to-Win intelligence suite featuring automated CLIN extraction, GSA CALC market benchmarking, competitive matrix positioning, incumbent vulnerability analysis, and defensible executive briefing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

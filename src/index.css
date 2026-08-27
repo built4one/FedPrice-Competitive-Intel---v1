@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+/* Hide scrollbar for clean horizontal mobile tabs */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+@media print {
+  /* Hide navigation, header, action buttons, sidebar tabs */
+  header, nav, button, .lg\\:col-span-3, .no-scrollbar, .fixed {
+    display: none !important;
+  }
+  
+  /* Reset background and layout for clean print output */
+  body {
+    background-color: white !important;
+    color: black !important;
+  }
+
+  main {
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .max-w-7xl {
+    max-width: 100% !important;
+    padding: 0 !important;
+  }
+
+  .lg\\:col-span-9 {
+    width: 100% !important;
+  }
+
+  .shadow-xs, .shadow-sm, .shadow-md, .shadow-lg {
+    box-shadow: none !important;
+  }
+}
