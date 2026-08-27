@@ -7,7 +7,12 @@ import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import ExcelJS from 'exceljs';
 import { calculateCompanyPosition } from './src/utils/companyPosition.js';
-import type { CompanyContext, EvidenceItem, OpportunityAnalysis } from './src/types.js';
+import type { CompanyContext, EvidenceItem, OpportunityAnalysis, ConnectorStatus } from './src/types.js';
+import { querySamGov } from './src/adapters/sam.js';
+import { queryUSASpending } from './src/adapters/usaspending.js';
+import { queryGsaCalc } from './src/adapters/gsa.js';
+import { queryBls } from './src/adapters/bls.js';
+import type { AdapterResult } from './src/adapters/types.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -116,6 +121,44 @@ async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyCo
   const base = parseJson(response.text) as Omit<OpportunityAnalysis, 'id' | 'meta'>;
   const warnings: string[] = [];
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
+  let connectors: ConnectorStatus[] = [];
+
+  // Run Government API adapters concurrently
+  try {
+    const [sam, usa, gsa, bls] = await Promise.allSettled([
+      querySamGov(base.deal),
+      queryUSASpending(base.deal),
+      queryGsaCalc(base.deal.laborSignals || []),
+      queryBls()
+    ]);
+
+    const getResult = (p: PromiseSettledResult<AdapterResult>, name: ConnectorStatus['name']): AdapterResult =>
+      p.status === 'fulfilled' ? p.value : { name, success: false, recordsFound: 0, evidence: [], message: String(p.reason) };
+
+    const results = [
+      getResult(sam, 'SAM.gov'),
+      getResult(usa, 'USAspending'),
+      getResult(gsa, 'GSA CALC+'),
+      getResult(bls, 'BLS')
+    ];
+
+    for (const r of results) {
+      connectors.push({
+        name: r.name,
+        status: r.success ? 'SUCCESS' : (r.message === 'API key not configured' ? 'UNAVAILABLE' : 'ERROR'),
+        recordsFound: r.recordsFound,
+        message: r.message
+      });
+      base.evidence.push(...r.evidence);
+    }
+    
+    // If any government data was successfully pulled, upgrade status
+    if (results.some(r => r.success && r.recordsFound > 0)) {
+      researchStatus = 'PARTIAL';
+    }
+  } catch (err) {
+    warnings.push(`Government API adapters failed to run: ${err instanceof Error ? err.message : String(err)}`);
+  }
 
   if (process.env.ENABLE_GOOGLE_SEARCH !== 'false') {
     try {
@@ -145,7 +188,7 @@ async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyCo
   const analysis: OpportunityAnalysis = {
     ...base,
     id: `run-${crypto.randomUUID()}`,
-    meta: { mode: companyContext ? 'MARKET_AND_COMPANY' : 'MARKET_ONLY', model, analyzedAt: new Date().toISOString(), researchStatus, warnings },
+    meta: { mode: companyContext ? 'MARKET_AND_COMPANY' : 'MARKET_ONLY', model, analyzedAt: new Date().toISOString(), researchStatus, warnings, connectors },
   };
   if (companyContext) {
     analysis.companyContext = companyContext;

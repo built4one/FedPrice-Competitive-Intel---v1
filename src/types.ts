@@ -55,9 +55,17 @@ export interface CompanyPosition {
   bandPosition: 'BELOW_MARKET' | 'IN_MARKET_BAND' | 'ABOVE_MARKET' | 'UNPRICED' | 'MARKET_RANGE_UNAVAILABLE';
   fitScore: number; assessment: string; recommendedAction: string;
 }
+export interface ConnectorStatus {
+  name: 'SAM.gov' | 'USAspending' | 'GSA CALC+' | 'BLS';
+  status: 'SUCCESS' | 'ERROR' | 'UNAVAILABLE' | 'SKIPPED';
+  recordsFound: number;
+  message?: string;
+}
+
 export interface AnalysisMeta {
   mode: 'MARKET_ONLY' | 'MARKET_AND_COMPANY'; model: string; analyzedAt: string;
   researchStatus: 'GROUNDED' | 'SOLICITATION_ONLY' | 'PARTIAL'; warnings: string[];
+  connectors?: ConnectorStatus[];
 }
 export interface OpportunityAnalysis {
   id: string; deal: DealProfile; marketPosition: MarketPosition; competitors: CompetitorProfile[];
