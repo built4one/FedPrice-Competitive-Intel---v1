@@ -39,6 +39,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       const response = await fetch('/api/analyze-solicitation', { method: 'POST', body });
       const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.error || 'Analysis failed.');
+      if (!payload.data) throw new Error('Analysis completed but returned no data.');
       onSuccess(payload.data);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : 'The analysis could not be completed.');
