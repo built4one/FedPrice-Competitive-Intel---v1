@@ -152,9 +152,9 @@ function connectorStatus(result: AdapterResult): ConnectorStatus {
   };
 }
 
-function mergeEvidence(existing: EvidenceItem[], incoming: EvidenceItem[]) {
-  const merged = new Map(existing.map((item) => [item.id, item]));
-  for (const item of incoming) merged.set(item.id, item);
+function mergeEvidence(existing: EvidenceItem[] = [], incoming: EvidenceItem[] = []) {
+  const merged = new Map((existing || []).filter(Boolean).map((item) => [item.id, item]));
+  for (const item of (incoming || []).filter(Boolean)) merged.set(item.id, item);
   return [...merged.values()];
 }
 
