@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, BarChart3, Building2, CheckCircle2, Download, ExternalLink, FileSearch, Gauge, Printer, ShieldAlert, Target } from 'lucide-react';
-import type { CompanyContext, EvidenceItem, OpportunityAnalysis } from '../types';
+import { AlertTriangle, ArrowLeft, BarChart3, Building2, CheckCircle2, Download, ExternalLink, FileSearch, Gauge, Printer, RefreshCw, ShieldAlert, Target } from 'lucide-react';
+import type { CompanyContext, ConnectorStatus, EvidenceItem, OpportunityAnalysis } from '../types';
 import { calculateCompanyPosition } from '../utils/companyPosition';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
@@ -13,6 +13,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('position');
   const [company, setCompany] = useState<CompanyContext>(analysis.companyContext || { companyName: '', riskPosture: 'BALANCED', differentiators: '', constraints: '' });
   const [notice, setNotice] = useState('');
+  const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
   const exportExcel = async () => {
     const response = await fetch('/api/export-brief', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
     if (!response.ok) return setNotice('Export failed. Try again.');
@@ -24,6 +25,22 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     onUpdate({ ...analysis, companyContext: company, companyPosition: position, meta: { ...analysis.meta, mode: 'MARKET_AND_COMPANY' } });
     setNotice('Company position updated.');
   };
+  const retryConnector = async (source: ConnectorStatus['name']) => {
+    setRetrying(source); setNotice('');
+    try {
+      const response = await fetch('/api/retry-connector', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ analysis, source }),
+      });
+      const payload = await response.json();
+      if (!response.ok || !payload.data) throw new Error(payload.error || 'Retry failed.');
+      onUpdate(payload.data);
+      setNotice(`${source} refreshed.`);
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : `${source} retry failed.`);
+    } finally {
+      setRetrying(null);
+    }
+  };
   return <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8 print:max-w-none print:p-0">
     {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
     <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between"><div><button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button><div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">{analysis.meta.mode === 'MARKET_ONLY' ? 'MARKET POSITION' : 'MARKET + COMPANY'}</span><span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">{analysis.meta.researchStatus.replaceAll('_',' ')}</span></div><h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1><p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p></div><div className="flex flex-wrap gap-2 print:hidden"><button onClick={exportExcel} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black"><Download className="h-4 w-4" /> XLSX</button><button onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white"><Printer className="h-4 w-4" /> PRINT / PDF</button></div></div>
@@ -31,15 +48,15 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     
     {analysis.meta.connectors && analysis.meta.connectors.length > 0 && (
       <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 print:hidden">
-        <h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Source Intelligence</h2>
-        <div className="mt-3 flex flex-wrap gap-4">
+        <div className="flex items-center justify-between"><div><h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Source Intelligence</h2><p className="mt-1 text-xs text-slate-400">Official-source health, query scope, and retrieval evidence.</p></div></div>
+        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {analysis.meta.connectors.map((connector) => (
-            <div key={connector.name} className="flex items-center gap-2">
-              <span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} />
-              <span className="text-xs font-bold text-slate-700">{connector.name}</span>
-              <span className="text-[10px] text-slate-400">
-                {connector.status === 'SUCCESS' ? `${connector.recordsFound} records` : connector.status === 'UNAVAILABLE' ? 'Unavailable' : 'Failed'}
-              </span>
+            <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
+              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status.replaceAll('_',' ')}</span></div>
+              <p className="mt-2 text-[10px] font-bold text-slate-500">{connector.recordsFound} records · {connector.durationMs ?? 0}ms · {connector.attempts ?? 0} attempt{connector.attempts === 1 ? '' : 's'}</p>
+              {connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{connector.querySummary}</p>}
+              {connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{connector.message}</p>}
+              <button onClick={() => retryConnector(connector.name)} disabled={retrying !== null} className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-black text-blue-600 disabled:opacity-40"><RefreshCw className={`h-3 w-3 ${retrying === connector.name ? 'animate-spin' : ''}`} />{retrying === connector.name ? 'RETRYING' : 'RETRY SOURCE'}</button>
             </div>
           ))}
         </div>

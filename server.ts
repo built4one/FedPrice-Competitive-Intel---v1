@@ -108,6 +108,72 @@ PRODUCT LOGIC
 
 Use USD. Keep language concise, specific, and suitable for a federal pricing lead.`;
 
+const sourceNames: ConnectorStatus['name'][] = ['SAM.gov', 'USAspending', 'GSA CALC+', 'BLS'];
+const connectorCache = new Map<string, { expiresAt: number; result: AdapterResult }>();
+const connectorCacheTtlMs = 15 * 60 * 1000;
+
+function connectorCacheKey(name: ConnectorStatus['name'], deal: OpportunityAnalysis['deal']) {
+  const labor = deal.laborSignals?.map((item) => item.title).filter(Boolean).slice(0, 5) || [];
+  return JSON.stringify([name, deal.agency, deal.naics, deal.solicitationNumber, deal.title, labor]);
+}
+
+async function runConnectorSet(deal: OpportunityAnalysis['deal'], only?: ConnectorStatus['name'], force = false) {
+  const tasks: Record<ConnectorStatus['name'], () => Promise<AdapterResult>> = {
+    'SAM.gov': () => querySamGov(deal),
+    USAspending: () => queryUSASpending(deal),
+    'GSA CALC+': () => queryGsaCalc(deal.laborSignals || []),
+    BLS: () => queryBls(),
+  };
+  const selected = only ? [only] : sourceNames;
+  const settled = await Promise.allSettled(selected.map(async (name) => {
+    const key = connectorCacheKey(name, deal);
+    const cached = connectorCache.get(key);
+    if (!force && cached && cached.expiresAt > Date.now()) {
+      return { ...cached.result, message: cached.result.message ? `${cached.result.message} Cached result.` : 'Cached result.' };
+    }
+    const result = await tasks[name]();
+    if (result.success) connectorCache.set(key, { expiresAt: Date.now() + connectorCacheTtlMs, result });
+    return result;
+  }));
+  return settled.map((result, index): AdapterResult => {
+    if (result.status === 'fulfilled') return result.value;
+    return {
+      name: selected[index], success: false, status: 'ERROR', recordsFound: 0, evidence: [],
+      message: result.reason instanceof Error ? result.reason.message : String(result.reason), durationMs: 0, attempts: 1,
+      retrievedAt: new Date().toISOString(), querySummary: 'Connector failed before the request completed.',
+    };
+  });
+}
+
+function connectorStatus(result: AdapterResult): ConnectorStatus {
+  return {
+    name: result.name, status: result.status, recordsFound: result.recordsFound, message: result.message,
+    durationMs: result.durationMs, attempts: result.attempts, retrievedAt: result.retrievedAt, querySummary: result.querySummary,
+  };
+}
+
+function mergeEvidence(existing: EvidenceItem[], incoming: EvidenceItem[]) {
+  const merged = new Map(existing.map((item) => [item.id, item]));
+  for (const item of incoming) merged.set(item.id, item);
+  return [...merged.values()];
+}
+
+async function synthesizeOfficialEvidence(base: Omit<OpportunityAnalysis, 'id' | 'meta'>) {
+  const official = base.evidence.filter((item) => item.type === 'EXTERNAL_SOURCE' && /API/.test(item.sourceLabel));
+  if (official.length === 0) return;
+  const client = aiClient();
+  const response = await client.models.generateContent({
+    model,
+    contents: `Update the market interpretation using ONLY the validated official-source evidence below. Return ONLY JSON with keys marketPosition, competitors, incumbent, guidance and preserve their existing shapes. Preserve solicitation facts and evidence IDs. Never treat an award amount as a comparable target without scope similarity. Treat GSA values as ceiling rates, not paid rates. Use BLS only as escalation context. Do not create a numeric range if the evidence does not support one; preserve INSUFFICIENT and zero values when appropriate. Clearly separate verified facts from modeled estimates.\n\nCURRENT ANALYSIS:\n${JSON.stringify({ marketPosition: base.marketPosition, competitors: base.competitors, incumbent: base.incumbent, guidance: base.guidance })}\n\nOFFICIAL EVIDENCE:\n${JSON.stringify(official)}`,
+    config: { responseMimeType: 'application/json', temperature: 0.1 },
+  });
+  const synthesis = parseJson(response.text);
+  base.marketPosition = synthesis.marketPosition || base.marketPosition;
+  base.competitors = synthesis.competitors || base.competitors;
+  base.incumbent = synthesis.incumbent || base.incumbent;
+  base.guidance = synthesis.guidance || base.guidance;
+}
+
 async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyContext): Promise<OpportunityAnalysis> {
   const client = aiClient();
   const response = await client.models.generateContent({
@@ -121,40 +187,21 @@ async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyCo
   const base = parseJson(response.text) as Omit<OpportunityAnalysis, 'id' | 'meta'>;
   const warnings: string[] = [];
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
-  let connectors: ConnectorStatus[] = [];
+  const connectors: ConnectorStatus[] = [];
 
-  // Run Government API adapters concurrently
   try {
-    const [sam, usa, gsa, bls] = await Promise.allSettled([
-      querySamGov(base.deal),
-      queryUSASpending(base.deal),
-      queryGsaCalc(base.deal.laborSignals || []),
-      queryBls()
-    ]);
-
-    const getResult = (p: PromiseSettledResult<AdapterResult>, name: ConnectorStatus['name']): AdapterResult =>
-      p.status === 'fulfilled' ? p.value : { name, success: false, recordsFound: 0, evidence: [], message: String(p.reason) };
-
-    const results = [
-      getResult(sam, 'SAM.gov'),
-      getResult(usa, 'USAspending'),
-      getResult(gsa, 'GSA CALC+'),
-      getResult(bls, 'BLS')
-    ];
-
+    const results = await runConnectorSet(base.deal);
     for (const r of results) {
-      connectors.push({
-        name: r.name,
-        status: r.success ? 'SUCCESS' : (r.message === 'API key not configured' ? 'UNAVAILABLE' : 'ERROR'),
-        recordsFound: r.recordsFound,
-        message: r.message
-      });
-      base.evidence.push(...r.evidence);
+      connectors.push(connectorStatus(r));
+      base.evidence = mergeEvidence(base.evidence, r.evidence);
     }
-    
-    // If any government data was successfully pulled, upgrade status
     if (results.some(r => r.success && r.recordsFound > 0)) {
       researchStatus = 'PARTIAL';
+      try {
+        await synthesizeOfficialEvidence(base);
+      } catch (error) {
+        warnings.push(`Official evidence was retrieved but synthesis could not be refreshed. ${error instanceof Error ? error.message : ''}`.trim());
+      }
     }
   } catch (err) {
     warnings.push(`Government API adapters failed to run: ${err instanceof Error ? err.message : String(err)}`);
@@ -164,7 +211,7 @@ async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyCo
     try {
       const researchResponse = await client.models.generateContent({
         model,
-        contents: `Research the public federal market for this opportunity using Google Search. Return ONLY JSON with keys marketPosition, competitors, incumbent, guidance. Preserve the same shapes shown in this base analysis. Improve only claims supported by current public sources. Put source URLs in each competitor/incumbent sourceRefs. Do not fabricate a dollar range when evidence is insufficient.\n\nBASE ANALYSIS:\n${JSON.stringify(base)}`,
+        contents: `Research the public federal market for this opportunity using Google Search. Return ONLY JSON with keys marketPosition, competitors, incumbent, guidance. Preserve the same shapes shown in this base analysis. Treat the included official API evidence as higher authority than general web results. Improve only claims supported by current public sources. Put source URLs in each competitor/incumbent sourceRefs. Never treat an award amount as a comparable target without scope similarity. Treat GSA values as ceiling rates and BLS only as escalation context. Do not fabricate a dollar range when evidence is insufficient.\n\nBASE ANALYSIS:\n${JSON.stringify(base)}`,
         config: { tools: [{ googleSearch: {} }], temperature: 0.1 },
       });
       const research = parseJson(researchResponse.text);
@@ -209,6 +256,40 @@ app.post('/api/analyze-solicitation', upload.single('file'), async (req, res) =>
   } catch (error) {
     console.error('Analysis failed', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });
+  }
+});
+
+app.post('/api/retry-connector', async (req, res) => {
+  try {
+    const analysis = req.body?.analysis as OpportunityAnalysis | undefined;
+    const source = req.body?.source as ConnectorStatus['name'] | undefined;
+    if (!analysis?.deal || !sourceNames.includes(source as ConnectorStatus['name'])) {
+      return res.status(400).json({ error: 'A valid analysis and connector name are required.' });
+    }
+    const [result] = await runConnectorSet(analysis.deal, source, true);
+    const sourceLabels: Record<ConnectorStatus['name'], string[]> = {
+      'SAM.gov': ['SAM.gov Opportunities API'], USAspending: ['USAspending.gov API'],
+      'GSA CALC+': ['GSA CALC+ API'], BLS: ['BLS Public Data API'],
+    };
+    analysis.evidence = mergeEvidence(
+      analysis.evidence.filter((item) => !sourceLabels[source!].includes(item.sourceLabel)),
+      result.evidence,
+    );
+    analysis.meta.connectors = [
+      ...(analysis.meta.connectors || []).filter((connector) => connector.name !== source),
+      connectorStatus(result),
+    ].sort((a, b) => sourceNames.indexOf(a.name) - sourceNames.indexOf(b.name));
+    analysis.meta.analyzedAt = new Date().toISOString();
+    if (result.recordsFound > 0) {
+      try {
+        await synthesizeOfficialEvidence(analysis);
+      } catch (error) {
+        analysis.meta.warnings.push(`The ${source} evidence refreshed, but the recommendation synthesis did not. ${error instanceof Error ? error.message : ''}`.trim());
+      }
+    }
+    res.json({ data: analysis });
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'The connector could not be retried.' });
   }
 });
 

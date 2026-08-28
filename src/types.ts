@@ -11,7 +11,8 @@ export interface LaborSignal { title: string; quantity?: number; annualHours?: n
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
 export interface EvidenceItem {
   id: string; type: EvidenceType; sourceLabel: string; section?: string; claim: string;
-  excerpt?: string; url?: string; confidence: number;
+  excerpt?: string; url?: string; confidence: number; sourceRecordId?: string;
+  retrievedAt?: string; value?: number; units?: string;
 }
 export interface DataGap { question: string; impact: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; }
 
@@ -57,9 +58,14 @@ export interface CompanyPosition {
 }
 export interface ConnectorStatus {
   name: 'SAM.gov' | 'USAspending' | 'GSA CALC+' | 'BLS';
-  status: 'SUCCESS' | 'ERROR' | 'UNAVAILABLE' | 'SKIPPED';
+  status: 'SUCCESS' | 'ZERO_RESULTS' | 'INVALID_QUERY' | 'RATE_LIMITED' | 'TIMEOUT' |
+    'SOURCE_UNAVAILABLE' | 'AUTH_REQUIRED' | 'ERROR' | 'UNAVAILABLE' | 'SKIPPED';
   recordsFound: number;
   message?: string;
+  durationMs?: number;
+  attempts?: number;
+  retrievedAt?: string;
+  querySummary?: string;
 }
 
 export interface AnalysisMeta {
@@ -74,4 +80,3 @@ export interface OpportunityAnalysis {
   meta: AnalysisMeta;
 }
 export type Opportunity = OpportunityAnalysis;
-
