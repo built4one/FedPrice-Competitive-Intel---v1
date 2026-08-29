@@ -36,7 +36,7 @@ export interface MarketPosition {
 export interface CompetitorProfile {
   name: string; role: 'INCUMBENT' | 'LIKELY_PRIME' | 'CHALLENGER' | 'POSSIBLE_BIDDER';
   likelihood: number; pricingPosture: 'AGGRESSIVE' | 'MARKET_ALIGNED' | 'PREMIUM' | 'UNKNOWN';
-  rationale: string; differentiators: string[]; risks: string[]; sourceRefs: string[];
+  rationale: string; differentiators: string[]; risks: string[]; sourceRefs: string[]; demonstratedCapabilities?: string[]; deliveryModel?: string; techPlatform?: string; laborShape?: string; partnerEcosystem?: string[]; vehicleAccess?: string[]; incumbentAdvantage?: string; automationClaims?: string[]; costDrivers?: string[]; unknowns?: string[];
   confidence: number; evidenceType: 'EXTERNAL_SOURCE' | 'ANALYST_INFERENCE';
 }
 export interface IncumbentAssessment {
@@ -46,15 +46,6 @@ export interface IncumbentAssessment {
 export interface PositioningGuidance {
   headline: string; targetPrice: number; rangeLow: number; rangeHigh: number; position: string;
   rationale: string; winConditions: string[]; guardrails: string[]; nextActions: string[];
-}
-export interface CompanyContext {
-  companyName: string; estimatedPrice?: number; costBaseline?: number; targetMarginPct?: number;
-  riskPosture: 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE'; differentiators: string; constraints: string;
-}
-export interface CompanyPosition {
-  effectivePrice?: number; impliedMarginPct?: number; deltaToMarketPct?: number;
-  bandPosition: 'BELOW_MARKET' | 'IN_MARKET_BAND' | 'ABOVE_MARKET' | 'UNPRICED' | 'MARKET_RANGE_UNAVAILABLE';
-  fitScore: number; assessment: string; recommendedAction: string;
 }
 export interface ConnectorStatus {
   name: 'SAM.gov' | 'USAspending' | 'GSA CALC+' | 'BLS';
@@ -69,14 +60,56 @@ export interface ConnectorStatus {
 }
 
 export interface AnalysisMeta {
-  mode: 'MARKET_ONLY' | 'MARKET_AND_COMPANY'; model: string; analyzedAt: string;
+  mode: 'MARKET_ONLY' | 'MARKET_AND_COMPANY_DEPRECATED'; model: string; analyzedAt: string;
   researchStatus: 'GROUNDED' | 'SOLICITATION_ONLY' | 'PARTIAL'; warnings: string[];
   connectors?: ConnectorStatus[];
 }
 export interface OpportunityAnalysis {
   id: string; deal: DealProfile; marketPosition: MarketPosition; competitors: CompetitorProfile[];
   incumbent: IncumbentAssessment; evidence: EvidenceItem[]; gaps: DataGap[];
-  guidance: PositioningGuidance; companyContext?: CompanyContext; companyPosition?: CompanyPosition;
-  meta: AnalysisMeta;
+  guidance: PositioningGuidance;  
+  affordability?: AffordabilityAssessment; gaoFindings?: GaoFinding[]; preRfpSignals?: PreRfpSignal[]; validation?: ValidationRecord; meta: AnalysisMeta;
 }
 export type Opportunity = OpportunityAnalysis;
+
+// Phase 4: Customer & Acquisition Intelligence
+export interface AffordabilityAssessment {
+  estimatedCeiling?: number;
+  budgetSignals: string[];
+  obligationsHistory?: string;
+  fundingAvailability: 'SECURE' | 'AT_RISK' | 'UNKNOWN';
+  confidence: ConfidenceLevel;
+}
+
+export interface GaoFinding {
+  topic: string;
+  implication: string;
+  sourceUrl?: string;
+  relevanceScore: number;
+}
+
+export interface PreRfpSignal {
+  type: 'FORECAST' | 'RFI' | 'AMENDMENT' | 'INDUSTRY_DAY';
+  date: string;
+  summary: string;
+  impact: string;
+}
+
+export interface ValidationScore {
+  range: number; // 40%
+  posture: number; // 20%
+  structure: number; // 15%
+  reasoning: number; // 15%
+  evidence: number; // 10%
+  total: number;
+}
+
+export interface ValidationRecord {
+  predictedTarget: number;
+  actualAwardValue: number;
+  predictedPosture: string;
+  actualAwardee: string;
+  score: ValidationScore;
+  retrospectiveNotes: string;
+}
+

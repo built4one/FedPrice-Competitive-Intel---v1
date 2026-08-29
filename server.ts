@@ -1,3 +1,4 @@
+import { calculateDeterministicScenarios } from './src/domain/marketPosition/scenarioEngine.js';
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -6,8 +7,7 @@ import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import ExcelJS from 'exceljs';
-import { calculateCompanyPosition } from './src/utils/companyPosition.js';
-import type { CompanyContext, EvidenceItem, OpportunityAnalysis, ConnectorStatus } from './src/types.js';
+import type { EvidenceItem, OpportunityAnalysis, ConnectorStatus } from './src/types.js';
 import { querySamGov } from './src/adapters/sam.js';
 import { queryUSASpending } from './src/adapters/usaspending.js';
 import { queryGsaCalc } from './src/adapters/gsa.js';
@@ -60,18 +60,17 @@ const baseSchema = {
     marketPosition: {
       type: 'OBJECT',
       properties: {
-        currency: { type: 'STRING' }, low: { type: 'NUMBER' }, target: { type: 'NUMBER' }, high: { type: 'NUMBER' },
+        currency: { type: 'STRING' }, 
         rangeStatus: { type: 'STRING' }, posture: { type: 'STRING' }, summary: { type: 'STRING' }, confidence: { type: 'STRING' },
         confidenceScore: { type: 'NUMBER' }, attractivenessScore: { type: 'NUMBER' }, basis: stringArray,
         drivers: { type: 'ARRAY', items: { type: 'OBJECT', properties: { name: { type: 'STRING' }, score: { type: 'NUMBER' }, weight: { type: 'NUMBER' }, assessment: { type: 'STRING' }, evidenceIds: stringArray }, required: ['name', 'score', 'weight', 'assessment', 'evidenceIds'] } },
       },
-      required: ['currency', 'low', 'target', 'high', 'rangeStatus', 'posture', 'summary', 'confidence', 'confidenceScore', 'attractivenessScore', 'basis', 'drivers'],
+      required: ['currency', 'rangeStatus', 'posture', 'summary', 'confidence', 'confidenceScore', 'attractivenessScore', 'basis', 'drivers'],
     },
     competitors: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
       name: { type: 'STRING' }, role: { type: 'STRING' }, likelihood: { type: 'NUMBER' }, pricingPosture: { type: 'STRING' },
       rationale: { type: 'STRING' }, differentiators: stringArray, risks: stringArray, sourceRefs: stringArray,
-      confidence: { type: 'NUMBER' }, evidenceType: { type: 'STRING' },
-    }, required: ['name', 'role', 'likelihood', 'pricingPosture', 'rationale', 'differentiators', 'risks', 'sourceRefs', 'confidence', 'evidenceType'] } },
+      confidence: { type: 'NUMBER' }, evidenceType: { type: 'STRING' }, demonstratedCapabilities: stringArray, deliveryModel: { type: 'STRING' }, techPlatform: { type: 'STRING' }, laborShape: { type: 'STRING' }, partnerEcosystem: stringArray, vehicleAccess: stringArray, incumbentAdvantage: { type: 'STRING' }, automationClaims: stringArray, costDrivers: stringArray, unknowns: stringArray }, required: ['name', 'role', 'likelihood', 'pricingPosture', 'rationale', 'differentiators', 'risks', 'sourceRefs', 'confidence', 'evidenceType'] } },
     incumbent: { type: 'OBJECT', properties: {
       name: { type: 'STRING' }, status: { type: 'STRING' }, strengths: stringArray, vulnerabilities: stringArray,
       transitionRisk: { type: 'STRING' }, confidence: { type: 'NUMBER' }, sourceRefs: stringArray,
@@ -81,7 +80,7 @@ const baseSchema = {
       claim: { type: 'STRING' }, excerpt: { type: 'STRING' }, confidence: { type: 'NUMBER' },
     }, required: ['id', 'type', 'sourceLabel', 'claim', 'confidence'] } },
     gaps: { type: 'ARRAY', items: { type: 'OBJECT', properties: { question: { type: 'STRING' }, impact: { type: 'STRING' }, priority: { type: 'STRING' } }, required: ['question', 'impact', 'priority'] } },
-    guidance: { type: 'OBJECT', properties: {
+    affordability: { type: 'OBJECT', properties: { estimatedCeiling: { type: 'NUMBER' }, budgetSignals: stringArray, obligationsHistory: { type: 'STRING' }, fundingAvailability: { type: 'STRING' }, confidence: { type: 'STRING' } }, required: ['budgetSignals', 'fundingAvailability', 'confidence'] }, gaoFindings: { type: 'ARRAY', items: { type: 'OBJECT', properties: { topic: { type: 'STRING' }, implication: { type: 'STRING' }, sourceUrl: { type: 'STRING' }, relevanceScore: { type: 'NUMBER' } }, required: ['topic', 'implication', 'relevanceScore'] } }, preRfpSignals: { type: 'ARRAY', items: { type: 'OBJECT', properties: { type: { type: 'STRING' }, date: { type: 'STRING' }, summary: { type: 'STRING' }, impact: { type: 'STRING' } }, required: ['type', 'date', 'summary', 'impact'] } }, guidance: { type: 'OBJECT', properties: {
       headline: { type: 'STRING' }, targetPrice: { type: 'NUMBER' }, rangeLow: { type: 'NUMBER' }, rangeHigh: { type: 'NUMBER' },
       position: { type: 'STRING' }, rationale: { type: 'STRING' }, winConditions: stringArray, guardrails: stringArray, nextActions: stringArray,
     }, required: ['headline', 'targetPrice', 'rangeLow', 'rangeHigh', 'position', 'rationale', 'winConditions', 'guardrails', 'nextActions'] },
@@ -102,8 +101,8 @@ NON-NEGOTIABLE EVIDENCE RULES
 - Do not claim GSA CALC, BLS, SAM.gov, USAspending, or other research was performed in this first pass.
 
 PRODUCT LOGIC
-1) Extract the deal and evaluation facts. 2) Identify pricing and staffing signals. 3) assemble an evidence ledger.
-4) assess likely competition and incumbent posture with explicit fact/inference labels. 5) create the market position.
+1) Extract the deal and evaluation facts. 2) Identify pricing, staffing, affordability, pre-RFP signals, and GAO/protest history if present. 3) assemble an evidence ledger.
+4) Assess likely competition with structured reconstruction (tech, labor shape, capabilities, etc) and incumbent posture. 5) create the market position.
 6-7) Company inputs are optional and are intentionally not required here. 8-10) deliver market-based positioning guidance, guardrails, and next actions.
 
 Use USD. Keep language concise, specific, and suitable for a federal pricing lead.`;
@@ -174,7 +173,7 @@ async function synthesizeOfficialEvidence(base: Omit<OpportunityAnalysis, 'id' |
   base.guidance = synthesis.guidance || base.guidance;
 }
 
-async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyContext): Promise<OpportunityAnalysis> {
+async function analyzeFile(file: Express.Multer.File, ): Promise<OpportunityAnalysis> {
   const client = aiClient();
   const response = await client.models.generateContent({
     model,
@@ -232,27 +231,41 @@ async function analyzeFile(file: Express.Multer.File, companyContext?: CompanyCo
     }
   }
 
+  const scenarios = calculateDeterministicScenarios(base); base.marketPosition = { ...base.marketPosition, ...scenarios };
   const analysis: OpportunityAnalysis = {
     ...base,
     id: `run-${crypto.randomUUID()}`,
-    meta: { mode: companyContext ? 'MARKET_AND_COMPANY' : 'MARKET_ONLY', model, analyzedAt: new Date().toISOString(), researchStatus, warnings, connectors },
+    meta: { mode: 'MARKET_ONLY', model, analyzedAt: new Date().toISOString(), researchStatus, warnings, connectors },
   };
-  if (companyContext) {
-    analysis.companyContext = companyContext;
-    analysis.companyPosition = calculateCompanyPosition(analysis.marketPosition, companyContext);
-  }
   return analysis;
 }
 
 app.get('/api/health', (_req, res) => res.json({ status: 'ok', aiConfigured: Boolean(apiKey), model }));
+
+let localRuns: OpportunityAnalysis[] = [];
+
+app.get("/api/runs", (req, res) => {
+  res.json({ data: localRuns });
+});
+
+app.post("/api/runs", express.json(), (req, res) => {
+  const run = req.body;
+  localRuns = [run, ...localRuns.filter(r => r.id !== run.id)];
+  res.json({ success: true });
+});
+
+app.delete("/api/runs/:id", (req, res) => {
+  localRuns = localRuns.filter(r => r.id !== req.params.id);
+  res.json({ success: true });
+});
 
 app.post('/api/analyze-solicitation', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Choose a solicitation file before starting the analysis.' });
     const allowed = ['application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'];
     if (!allowed.includes(req.file.mimetype)) return res.status(415).json({ error: 'Use a PDF, DOCX, DOC, or TXT solicitation file.' });
-    const context = req.body.companyContext ? JSON.parse(req.body.companyContext) as CompanyContext : undefined;
-    res.json({ data: await analyzeFile(req.file, context) });
+    
+    res.json({ data: await analyzeFile(req.file) });
   } catch (error) {
     console.error('Analysis failed', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });
@@ -283,6 +296,7 @@ app.post('/api/retry-connector', async (req, res) => {
     if (result.recordsFound > 0) {
       try {
         await synthesizeOfficialEvidence(analysis);
+        const scenarios = calculateDeterministicScenarios(analysis); analysis.marketPosition = { ...analysis.marketPosition, ...scenarios };
       } catch (error) {
         analysis.meta.warnings.push(`The ${source} evidence refreshed, but the recommendation synthesis did not. ${error instanceof Error ? error.message : ''}`.trim());
       }
@@ -299,16 +313,40 @@ app.post('/api/export-brief', async (req, res) => {
     if (!analysis?.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'FedPrice Competitive Intel';
+    
     const summary = workbook.addWorksheet('Market Position');
     summary.columns = [{ header: 'Field', key: 'field', width: 30 }, { header: 'Value', key: 'value', width: 90 }];
+    
     summary.addRows([
-      { field: 'Opportunity', value: analysis.deal.title }, { field: 'Agency', value: analysis.deal.agency },
-      { field: 'Solicitation', value: analysis.deal.solicitationNumber }, { field: 'Market Low', value: analysis.marketPosition.low || 'Insufficient evidence' },
-      { field: 'Market Target', value: analysis.marketPosition.target || 'Insufficient evidence' }, { field: 'Market High', value: analysis.marketPosition.high || 'Insufficient evidence' },
-      { field: 'Range Status', value: analysis.marketPosition.rangeStatus }, { field: 'Confidence', value: `${analysis.marketPosition.confidenceScore}%` },
-      { field: 'Positioning Guidance', value: analysis.guidance.headline }, { field: 'Rationale', value: analysis.guidance.rationale },
+      { field: 'Opportunity', value: analysis.deal.title },
+      { field: 'Agency', value: analysis.deal.agency },
+      { field: 'Solicitation', value: analysis.deal.solicitationNumber },
+      { field: 'Market Low', value: analysis.marketPosition.low || 'Insufficient evidence' },
+      { field: 'Market Target', value: analysis.marketPosition.target || 'Insufficient evidence' },
+      { field: 'Market High', value: analysis.marketPosition.high || 'Insufficient evidence' },
+      { field: 'Range Status', value: analysis.marketPosition.rangeStatus },
+      { field: 'Confidence', value: analysis.marketPosition.confidenceScore + '%' }
     ]);
+    
+    // Add Intelligence
+    const intel = workbook.addWorksheet('Intelligence');
+    intel.columns = [{ header: 'Category', key: 'cat', width: 20 }, { header: 'Finding', key: 'find', width: 100 }];
+    if (analysis.affordability) {
+      intel.addRow({ cat: 'Affordability', find: 'Est. Ceiling: ' + analysis.affordability.estimatedCeiling });
+      intel.addRow({ cat: 'Budget Signals', find: analysis.affordability.budgetSignals?.join('; ') });
+    }
+    analysis.gaoFindings?.forEach(g => intel.addRow({ cat: 'GAO Protest', find: g.topic + ' - ' + g.implication }));
+    analysis.preRfpSignals?.forEach(p => intel.addRow({ cat: 'Pre-RFP Signal', find: p.type + ': ' + p.summary }));
+
+    // Add Competitors
+    const comps = workbook.addWorksheet('Competitors');
+    comps.columns = [{ header: 'Name', key: 'name', width: 25 }, { header: 'Role', key: 'role', width: 20 }, { header: 'Capabilities', key: 'cap', width: 50 }, { header: 'Tech', key: 'tech', width: 30 }];
+    analysis.competitors.forEach(c => {
+      comps.addRow({ name: c.name, role: c.role, cap: c.demonstratedCapabilities?.join(', '), tech: c.techPlatform });
+    });
+
     const evidence = workbook.addWorksheet('Evidence Ledger');
+
     evidence.columns = [
       { header: 'ID', key: 'id', width: 14 }, { header: 'Type', key: 'type', width: 22 }, { header: 'Source', key: 'sourceLabel', width: 35 },
       { header: 'Section', key: 'section', width: 20 }, { header: 'Claim', key: 'claim', width: 80 }, { header: 'Confidence', key: 'confidence', width: 14 },
