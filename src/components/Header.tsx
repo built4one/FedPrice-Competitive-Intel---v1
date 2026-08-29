@@ -6,7 +6,7 @@ export default function Header({ view, activeTitle, onNavigate }: Props) {
     <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-3 px-4 sm:px-6 lg:px-8">
       <button onClick={() => onNavigate('home')} className="flex min-w-0 items-center gap-3 text-left">
         <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-[#10243e] text-white shadow-sm"><BarChart3 className="h-4 w-4" /></span>
-        <span className="min-w-0"><span className="block truncate text-sm font-black tracking-tight">FedPrice Competitive Intel</span><span className="hidden text-[10px] font-bold uppercase tracking-[.18em] text-slate-400 sm:block">Evidence-led market positioning</span></span>
+        <span className="min-w-0"><span className="block truncate text-sm font-black tracking-tight">Federal Market Position</span><span className="hidden text-[10px] font-bold uppercase tracking-[.18em] text-slate-400 sm:block">Evidence-led market positioning</span></span>
       </button>
       {activeTitle && view === 'workspace' && <span className="hidden max-w-xs truncate border-l border-slate-200 pl-4 text-xs font-semibold text-slate-500 lg:block">{activeTitle}</span>}
       <nav className="ml-auto flex items-center gap-1.5">

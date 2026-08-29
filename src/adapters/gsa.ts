@@ -55,7 +55,21 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
         id: `GSA-${rate.id}`,
         type: 'EXTERNAL_SOURCE', sourceLabel: 'GSA CALC+ API', sourceRecordId: String(rate.id),
         claim: `${rate.labor_category} has a current GSA ceiling rate of ${price.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/hour${rate.vendor_name ? ` from ${rate.vendor_name}` : ''}${rate.schedule ? ` on ${rate.schedule}` : ''}.`,
-        confidence: 96, value: price, units: 'USD/hour ceiling rate', retrievedAt,
+        confidence: 96,
+        numeric: Number.isFinite(price) && price > 0 ? {
+          originalValue: price,
+          valueType: 'HOURLY_CEILING_RATE' as const,
+          currency: 'USD' as const,
+          units: 'USD_PER_HOUR' as const,
+          scopeText: rate.labor_category,
+          contractType: rate.schedule || undefined,
+          technologySecurityLocation: [
+            rate.worksite,
+            rate.security_clearance ? 'security clearance required' : undefined,
+            rate.education_level,
+          ].filter(Boolean).join(' '),
+        } : undefined,
+        retrievedAt,
         url: 'https://buy.gsa.gov/pricing/qr/mas?page=1&page_size=20',
       };
     });

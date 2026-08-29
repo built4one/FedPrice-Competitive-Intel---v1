@@ -10,7 +10,11 @@ const awardSchema = z.object({
   'Start Date': z.string().nullish(),
   'End Date': z.string().nullish(),
   'Awarding Agency': z.string().nullish(),
+  'Awarding Sub Agency': z.string().nullish(),
   'Award Type': z.string().nullish(),
+  'Description': z.string().nullish(),
+  'NAICS Code': z.union([z.string(), z.number()]).nullish(),
+  'Product or Service Code': z.string().nullish(),
   generated_internal_id: z.string().nullish(),
 }).passthrough();
 
@@ -41,7 +45,10 @@ function filtersFor(deal: DealProfile, broadened = false) {
 async function search(deal: DealProfile, broadened: boolean) {
   const payload = {
     filters: filtersFor(deal, broadened),
-    fields: ['Award ID', 'Recipient Name', 'Award Amount', 'Start Date', 'End Date', 'Awarding Agency', 'Award Type'],
+    fields: [
+      'Award ID', 'Recipient Name', 'Award Amount', 'Start Date', 'End Date', 'Awarding Agency',
+      'Awarding Sub Agency', 'Award Type', 'Description', 'NAICS Code', 'Product or Service Code',
+    ],
     page: 1,
     limit: 10,
     subawards: false,
@@ -88,6 +95,11 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
       const amount = Number(award['Award Amount'] ?? 0);
       const awardId = award['Award ID'] || `record-${index + 1}`;
       const recipient = award['Recipient Name'] || 'recipient not reported';
+      const startDate = award['Start Date'] ? new Date(award['Start Date']) : undefined;
+      const endDate = award['End Date'] ? new Date(award['End Date']) : undefined;
+      const periodMonths = startDate && endDate && !Number.isNaN(startDate.valueOf()) && !Number.isNaN(endDate.valueOf())
+        ? Math.max(1, Math.round((endDate.valueOf() - startDate.valueOf()) / (30.4375 * 24 * 60 * 60 * 1000)))
+        : undefined;
       return {
         id: `USA-${award.generated_internal_id || awardId}`,
         type: 'EXTERNAL_SOURCE',
@@ -95,8 +107,23 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
         sourceRecordId: award.generated_internal_id || awardId,
         claim: `Historical contract award ${awardId} to ${recipient}${Number.isFinite(amount) && amount > 0 ? ` for ${amount.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}` : ''}.`,
         confidence: 98,
-        value: Number.isFinite(amount) ? amount : undefined,
-        units: Number.isFinite(amount) ? 'USD award amount' : undefined,
+        numeric: Number.isFinite(amount) && amount > 0 ? {
+          originalValue: amount,
+          valueType: 'CURRENT_AWARD_AMOUNT' as const,
+          currency: 'USD' as const,
+          units: 'TOTAL_USD' as const,
+          periodMonths,
+          baseYear: startDate && !Number.isNaN(startDate.valueOf()) ? startDate.getUTCFullYear() : undefined,
+          sourceDate: award['Start Date'] || undefined,
+          endDate: award['End Date'] || undefined,
+          agency: award['Awarding Sub Agency'] || award['Awarding Agency'] || undefined,
+          naics: award['NAICS Code'] ? String(award['NAICS Code']) : undefined,
+          psc: award['Product or Service Code'] || undefined,
+          contractType: award['Award Type'] || undefined,
+          scopeText: award['Description'] || undefined,
+          acquisitionStructure: award['Award Type'] || undefined,
+          laborIntensity: 'UNKNOWN' as const,
+        } : undefined,
         retrievedAt,
         url: award.generated_internal_id ? `https://www.usaspending.gov/award/${award.generated_internal_id}` : 'https://www.usaspending.gov/search',
       };

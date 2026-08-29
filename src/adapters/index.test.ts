@@ -59,7 +59,9 @@ test('USAspending sends required fields and normalizes a successful award', asyn
     assert.equal(result.status, 'SUCCESS');
     assert.equal(result.recordsFound, 1);
     assert.equal(result.evidence[0].sourceRecordId, 'CONT_AWD_TEST');
-    assert.equal(result.evidence[0].value, 1250000);
+    assert.equal(result.evidence[0].numeric?.originalValue, 1250000);
+    assert.equal(result.evidence[0].numeric?.valueType, 'CURRENT_AWARD_AMOUNT');
+    assert.equal(result.evidence[0].numeric?.units, 'TOTAL_USD');
     assert.match(result.evidence[0].claim, /TEST CONTRACTOR/);
   });
 });
@@ -102,8 +104,9 @@ test('BLS validates and normalizes the latest ECI observation', async () => {
   }), { status: 200 }), async () => {
     const result = await queryBls();
     assert.equal(result.status, 'SUCCESS');
-    assert.equal(result.evidence[0].value, 3.4);
-    assert.equal(result.evidence[0].units, 'percent change');
+    assert.equal(result.evidence[0].numeric?.originalValue, 3.4);
+    assert.equal(result.evidence[0].numeric?.valueType, 'ESCALATION_RATE');
+    assert.equal(result.evidence[0].numeric?.units, 'PERCENT');
   });
 });
 
@@ -119,7 +122,9 @@ test('GSA CALC+ reads the official Elasticsearch response shape and filters rele
     const result = await queryGsaCalc(mockDeal.laborSignals);
     assert.equal(result.status, 'SUCCESS');
     assert.equal(result.recordsFound, 1);
-    assert.equal(result.evidence[0].value, 188.5);
+    assert.equal(result.evidence[0].numeric?.originalValue, 188.5);
+    assert.equal(result.evidence[0].numeric?.valueType, 'HOURLY_CEILING_RATE');
+    assert.equal(result.evidence[0].numeric?.units, 'USD_PER_HOUR');
     assert.match(result.evidence[0].claim, /ceiling rate/);
   });
 });

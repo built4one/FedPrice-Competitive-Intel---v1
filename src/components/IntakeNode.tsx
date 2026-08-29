@@ -1,24 +1,15 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, CheckCircle2, Loader2, ShieldCheck, UploadCloud } from 'lucide-react';
 import type { OpportunityAnalysis } from '../types';
 
 interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => void; }
 
-const steps = ['Read solicitation and extract deal facts', 'Build evidence ledger and pricing signals', 'Research market, competitors, and incumbent', 'Score recommendation drivers and confidence', 'Generate positioning guidance'];
-
 export default function IntakeNode({ onBack, onSuccess }: Props) {
   const [file, setFile] = useState<File | null>(null);
   const [dragging, setDragging] = useState(false);
   const [processing, setProcessing] = useState(false);
-  const [activeStep, setActiveStep] = useState(0);
   const [error, setError] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => {
-    if (!processing) return;
-    const interval = window.setInterval(() => setActiveStep((current) => Math.min(current + 1, steps.length - 1)), 3500);
-    return () => window.clearInterval(interval);
-  }, [processing]);
 
   const chooseFile = (next?: File) => {
     if (!next) return;
@@ -28,7 +19,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
 
   const runAnalysis = async () => {
     if (!file) return setError('Choose a solicitation file first.');
-    setProcessing(true); setError(''); setActiveStep(0);
+    setProcessing(true); setError('');
     try {
       const body = new FormData(); body.append('file', file);
       const response = await fetch('/api/analyze-solicitation', { method: 'POST', body });
@@ -56,6 +47,6 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       </div>
       {error && <div className="mt-5 max-w-2xl flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
       <div className="mt-6 max-w-2xl flex justify-end"><button onClick={runAnalysis} className="rounded-xl bg-[#10243e] px-6 py-3 text-sm font-black text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50" disabled={!file}>GENERATE MARKET POSITION</button></div>
-    </> : <div className="mx-auto mt-16 max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><div className="flex items-center gap-3 border-b border-slate-100 pb-5"><Loader2 className="h-5 w-5 animate-spin text-blue-600" /><div><p className="text-sm font-black">Building decision-grade intelligence</p><p className="mt-1 text-xs text-slate-400">Keep this window open. Grounded research may take a few minutes.</p></div></div><div className="mt-6 space-y-4">{steps.map((step, index) => <div key={step} className="flex items-center gap-3"><span className={`grid h-6 w-6 place-items-center rounded-full text-[10px] font-black ${index < activeStep ? 'bg-emerald-500 text-white' : index === activeStep ? 'bg-blue-600 text-white' : 'bg-slate-100 text-slate-400'}`}>{index < activeStep ? '✓' : index + 1}</span><span className={`text-sm ${index <= activeStep ? 'font-bold text-slate-900' : 'text-slate-400'}`}>{step}</span></div>)}</div></div>}
+    </> : <div className="mx-auto mt-16 max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8"><div className="flex items-center gap-3"><Loader2 className="h-5 w-5 animate-spin text-blue-600" /><div><p className="text-sm font-black">Building decision-grade intelligence</p><p className="mt-1 text-xs leading-5 text-slate-400">The server is extracting solicitation facts, retrieving available official evidence, running the deterministic calculation, and assembling the Decision Center. Keep this window open.</p></div></div></div>}
   </div>;
 }

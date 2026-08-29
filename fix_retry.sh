@@ -1,1 +1,0 @@
-sed -i '/await synthesizeOfficialEvidence(analysis);/a \        const scenarios = calculateDeterministicScenarios(analysis); analysis.marketPosition = { ...analysis.marketPosition, ...scenarios };' server.ts

@@ -1,6 +1,6 @@
 import type { ConnectorStatus } from '../types';
 
-export type FailureStatus = Exclude<ConnectorStatus['status'], 'SUCCESS' | 'ZERO_RESULTS' | 'SKIPPED'>;
+export type FailureStatus = Exclude<ConnectorStatus['status'], 'SUCCESS' | 'CACHED' | 'ZERO_RESULTS' | 'SKIPPED'>;
 
 export class ConnectorError extends Error {
   constructor(

@@ -1,6 +1,7 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, BarChart3, Building2, CheckCircle2, Download, ExternalLink, FileSearch, Gauge, Printer, RefreshCw, ShieldAlert, Target } from 'lucide-react';
-import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis } from '../types';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, Printer, RefreshCw, ShieldAlert } from 'lucide-react';
+import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
+import DecisionCenter from './decision/DecisionCenter';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
 type Tab = 'decision-center' | 'deal' | 'intelligence' | 'competition' | 'evidence' | 'validation';
@@ -15,8 +16,7 @@ const tabs: [Tab, string][] = [
 ];
 
 
-const money = (value: number) => value ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value) : 'Insufficient evidence';
-const compactMoney = (value?: number) => value ? new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', notation: 'compact', maximumFractionDigits: 1 }).format(value) : '—';
+const money = (value: number | null | undefined) => value == null ? 'Insufficient evidence' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
 
 export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('decision-center');
@@ -74,7 +74,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {analysis.meta.connectors.map((connector) => (
             <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
-              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status?.replaceAll('_',' ')}</span></div>
+              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'CACHED' ? 'bg-blue-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status?.replaceAll('_',' ')}</span></div>
               <p className="mt-2 text-[10px] font-bold text-slate-500">{connector.recordsFound} records · {connector.durationMs ?? 0}ms · {connector.attempts ?? 0} attempt{connector.attempts === 1 ? '' : 's'}</p>
               {connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{connector.querySummary}</p>}
               {connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{connector.message}</p>}
@@ -90,7 +90,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     </div>
 
     <div className="mt-8">
-      {tab === 'decision-center' && <DecisionCenterView analysis={analysis} />}
+      {tab === 'decision-center' && <DecisionCenter analysis={analysis} />}
       {tab === 'deal' && <DealView analysis={analysis} />}
       {tab === 'competition' && <CompetitionView analysis={analysis} />}
       {tab === 'evidence' && <EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} />}
@@ -98,46 +98,6 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
     </div>
   </div>;
-}
-
-function DecisionCenterView({ analysis }: { analysis: OpportunityAnalysis }) { 
-  const p = analysis.marketPosition; 
-  const g = analysis.guidance; 
-  return <div className="space-y-6 print:block">
-    <section className="rounded-2xl bg-[#10243e] p-6 text-white sm:p-8">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <p className="text-[10px] font-black uppercase tracking-[.18em] text-blue-300">Expected Market Position</p>
-          <h2 className="mt-3 text-2xl font-black sm:text-3xl">{g.headline}</h2>
-        </div>
-        <span className={`rounded-full px-3 py-1.5 text-[10px] font-black ${p.rangeStatus === 'SUPPORTED' ? 'bg-emerald-100 text-emerald-700' : p.rangeStatus === 'DIRECTIONAL' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-600'}`}>{p.rangeStatus}</span>
-      </div>
-      <p className="mt-4 max-w-4xl text-sm leading-7 text-slate-300">{g.rationale}</p>
-      <div className="mt-6 grid gap-3 sm:grid-cols-3">
-        <DarkMetric label="Aggressive" value={money(g.rangeLow)} />
-        <DarkMetric label="Expected" value={money(g.targetPrice)} />
-        <DarkMetric label="Conservative" value={money(g.rangeHigh)} />
-      </div>
-    </section>
-
-    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <Metric icon={Target} label="Market target" value={money(p.target)} detail={p.rangeStatus} />
-      <Metric icon={BarChart3} label="Recommended band" value={p.low && p.high ? `${compactMoney(p.low)} – ${compactMoney(p.high)}` : 'Not supportable'} detail={p.posture?.replaceAll('_',' ')} />
-      <Metric icon={Gauge} label="Confidence" value={`${p.confidenceScore}%`} detail={p.confidence} />
-      <Metric icon={FileSearch} label="Opportunity score" value={`${p.attractivenessScore}/100`} detail="Weighted market signal" />
-    </div>
-    
-    <section className="grid gap-4 lg:grid-cols-3">
-      <GuidanceList title="Win conditions" values={g.winConditions} tone="blue" />
-      <GuidanceList title="Guardrails" values={g.guardrails} tone="amber" />
-      <GuidanceList title="Next actions" values={g.nextActions} tone="emerald" />
-    </section>
-
-    <section className="grid gap-4 lg:grid-cols-2">
-      <div className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className="text-sm font-black">Recommendation drivers</h3><div className="mt-5 space-y-4">{p.drivers.map((driver) => <div key={driver.name}><div className="flex justify-between text-xs"><span className="font-bold">{driver.name} <span className="text-slate-400">({driver.weight}%)</span></span><strong>{driver.score}</strong></div><div className="mt-1.5 h-2 rounded-full bg-slate-100"><div className="h-2 rounded-full bg-blue-600" style={{width:`${Math.max(0,Math.min(100,driver.score))}%`}} /></div><p className="mt-1.5 text-xs leading-5 text-slate-500">{driver.assessment}</p></div>)}</div></div>
-      <div className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className="text-sm font-black">Position basis</h3><ul className="mt-4 space-y-3">{p.basis.map((item,index) => <li key={index} className="flex gap-3 text-sm leading-6 text-slate-600"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-500" />{item}</li>)}</ul></div>
-    </section>
-  </div>; 
 }
 
 function DealView({ analysis }: { analysis: OpportunityAnalysis }) { const d=analysis.deal; return <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Core deal facts</h2><dl className="mt-5 space-y-4">{[['Agency',d.agency],['Solicitation',d.solicitationNumber],['Contract type',d.contractType],['Due date',d.dueDate],['Period',d.periodOfPerformance],['NAICS',d.naics],['Award structure',d.awardStructure],['Evaluation',d.evaluationMethod]].map(([label,value]) => <div key={label} className="border-b border-slate-100 pb-3"><dt className="text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold">{value || 'Not found'}</dd></div>)}</dl></section><div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Scope summary</h2><p className="mt-3 text-sm leading-7 text-slate-600">{d.scopeSummary}</p></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Requirements and evaluation signals</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{d.requirements.map((item,index) => <div key={index} className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black text-blue-600">{item.category}</span><h3 className="mt-1 text-sm font-black">{item.name}</h3><p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p><p className="mt-2 text-[10px] font-bold text-slate-400">{item.section || 'Section not resolved'} · {item.confidence}%</p></div>)}</div></section></div></div>; }
@@ -215,11 +175,8 @@ function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) {
 
 function EvidenceView({ evidence, gaps }: { evidence: EvidenceItem[]; gaps: OpportunityAnalysis['gaps'] }) { return <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-end justify-between"><div><h2 className="text-sm font-black">Evidence ledger</h2><p className="mt-1 text-xs text-slate-400">Facts, external sources, and inference stay separate.</p></div><strong className="text-xs">{(evidence || []).length} items</strong></div><div className="mt-5 space-y-3">{(evidence || []).filter(Boolean).map((item) => <article key={item.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-400">{item.id}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-black">{item.confidence}%</span></div><p className="mt-3 text-sm font-semibold leading-6">{item.claim}</p><p className="mt-2 text-xs text-slate-400">{item.sourceLabel}{item.section ? ` · ${item.section}` : ''}</p>{item.url && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>}</article>)}</div></section><section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-700" /><h2 className="text-sm font-black text-amber-950">Decision gaps</h2></div><div className="mt-4 space-y-3">{(gaps || []).filter(Boolean).map((gap,index) => <div key={index} className="rounded-xl bg-white/80 p-4"><span className="text-[10px] font-black text-amber-700">{gap.priority}</span><h3 className="mt-1 text-sm font-black">{gap.question}</h3><p className="mt-2 text-xs leading-5 text-slate-600">{gap.impact}</p></div>)}</div></section></div>; }
 
-function Metric({icon:Icon,label,value,detail}:{icon:any;label:string;value:string;detail:string}) { return <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><Icon className="h-5 w-5 text-blue-600" /><span className="mt-4 block text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong><span className="mt-1 block text-[10px] font-bold text-slate-400">{detail}</span></div>; }
-function DarkMetric({label,value}:{label:string;value:string}) { return <div className="rounded-xl border border-white/10 bg-white/[.06] p-4"><span className="text-[10px] font-black text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong></div>; }
 function List({title,values}:{title:string;values:string[]}) { return <div><h3 className="text-xs font-black uppercase tracking-wide text-blue-300">{title}</h3><ul className="mt-3 space-y-2">{values.map((value,index)=><li key={index} className="text-xs leading-5 text-slate-300">• {value}</li>)}</ul></div>; }
 function EvidenceBadge({type}:{type:EvidenceItem['type']}) { const style=type==='SOLICITATION_FACT'?'bg-blue-100 text-blue-700':type==='EXTERNAL_SOURCE'?'bg-emerald-100 text-emerald-700':type==='ANALYST_INFERENCE'?'bg-amber-100 text-amber-800':'bg-slate-100 text-slate-600'; return <span className={`rounded px-2 py-1 text-[9px] font-black ${style}`}>{type?.replaceAll('_',' ')}</span>; }
-function GuidanceList({title,values,tone}:{title:string;values:string[];tone:string}) { const color=tone==='blue'?'text-blue-600':tone==='amber'?'text-amber-600':'text-emerald-600'; return <section className="rounded-2xl border border-slate-200 bg-white p-5"><h3 className={`text-sm font-black ${color}`}>{title}</h3><ol className="mt-4 space-y-3">{values.map((value,index)=><li key={index} className="flex gap-3 text-sm leading-6 text-slate-600"><span className="font-mono text-xs font-black text-slate-300">{String(index+1).padStart(2,'0')}</span>{value}</li>)}</ol></section>; }
 
 function IntelligenceView({ analysis }: { analysis: OpportunityAnalysis }) {
   return (
@@ -291,38 +248,50 @@ function IntelligenceView({ analysis }: { analysis: OpportunityAnalysis }) {
 
 
 function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis; onUpdate?: (a: OpportunityAnalysis) => void }) {
-  const [actualAward, setActualAward] = useState(analysis.validation?.actualAwardValue?.toString() || '');
+  const [actualAward, setActualAward] = useState(analysis.validation?.actualValue?.toString() || '');
+  const [actualValueType, setActualValueType] = useState<ValidationValueType>(analysis.validation?.actualValueType || 'TOTAL_AWARD_VALUE');
   const [actualAwardee, setActualAwardee] = useState(analysis.validation?.actualAwardee || '');
   const [notes, setNotes] = useState(analysis.validation?.retrospectiveNotes || '');
+  const [comparable, setComparable] = useState(analysis.validation?.comparableToPrediction ?? false);
 
-  const runValidation = () => {
+  const runValidation = async () => {
     if (!onUpdate) return;
     const val = Number(actualAward);
     if (!val || val <= 0) return;
-    
-    // Very naive scoring for demonstration
-    const target = analysis.marketPosition.target || 0;
-    const diffPct = target > 0 ? Math.abs(val - target) / target : 1;
-    let rangeScore = 0;
-    if (diffPct < 0.05) rangeScore = 40;
-    else if (diffPct < 0.10) rangeScore = 30;
-    else if (diffPct < 0.20) rangeScore = 20;
-    else rangeScore = 5;
+    const position = analysis.marketPosition;
+    const comparableToPrediction = comparable &&
+      position.expected !== null &&
+      position.aggressive !== null &&
+      position.conservative !== null;
+    const snapshot = JSON.stringify({
+      runId: analysis.id,
+      analyzedAt: analysis.meta.analyzedAt,
+      formulaVersion: position.formulaVersion,
+      aggressive: position.aggressive,
+      expected: position.expected,
+      conservative: position.conservative,
+      evidenceIds: position.anchors.flatMap((anchor) => anchor.evidenceIds).sort(),
+    });
+    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(snapshot));
+    const predictionHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 
     const validation: OpportunityAnalysis['validation'] = {
-      predictedTarget: target,
-      actualAwardValue: val,
-      predictedPosture: analysis.marketPosition.posture,
+      frozenAt: new Date().toISOString(),
+      predictionHash,
+      predictedExpected: position.expected,
+      predictedAggressive: position.aggressive,
+      predictedConservative: position.conservative,
+      actualValue: val,
+      actualValueType,
+      comparableToPrediction,
       actualAwardee,
+      inRange: comparableToPrediction
+        ? val >= (position.aggressive as number) && val <= (position.conservative as number)
+        : null,
+      expectedErrorPct: comparableToPrediction
+        ? Math.round((Math.abs(val - (position.expected as number)) / (position.expected as number)) * 1000) / 10
+        : null,
       retrospectiveNotes: notes,
-      score: {
-        range: rangeScore,
-        posture: 20, // default placeholder
-        structure: 15,
-        reasoning: 15,
-        evidence: 10,
-        total: rangeScore + 60
-      }
     };
 
     onUpdate({ ...analysis, validation });
@@ -334,9 +303,9 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-sm font-black">Retrospective Validation Harness</h2>
-            <p className="mt-1 text-xs text-slate-500">Record post-award actuals to calibrate the prediction model.</p>
+            <p className="mt-1 text-xs text-slate-500">Freeze the prediction and compare only like-for-like award measurements.</p>
           </div>
-          {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">FROZEN & SCORED</span>}
+          {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">FROZEN & RECORDED</span>}
         </div>
         
         <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_.75fr]">
@@ -347,6 +316,21 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
                <input type="number" value={actualAward} onChange={e => setActualAward(e.target.value)} disabled={!!analysis.validation} className="mt-1.5 w-full rounded border-slate-200 px-3 py-2 text-sm disabled:bg-slate-100" />
              </div>
              <div>
+               <label className="block text-[10px] font-black uppercase text-slate-400">Actual Value Type</label>
+               <select value={actualValueType} onChange={e => setActualValueType(e.target.value as ValidationValueType)} disabled={!!analysis.validation} className="mt-1.5 w-full rounded border-slate-200 px-3 py-2 text-sm disabled:bg-slate-100">
+                 <option value="EVALUATED_PRICE">Evaluated price</option>
+                 <option value="TOTAL_AWARD_VALUE">Total award value</option>
+                 <option value="CONTRACT_CEILING">Contract ceiling</option>
+                 <option value="INITIAL_OBLIGATION">Initial obligation</option>
+                 <option value="CURRENT_OBLIGATIONS">Current obligations</option>
+                 <option value="EVENTUAL_SPEND">Eventual spend</option>
+               </select>
+             </div>
+             <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
+               <input type="checkbox" checked={comparable} onChange={e => setComparable(e.target.checked)} disabled={!!analysis.validation} className="mt-1" />
+               I verified that this actual value covers the same scope, period, and measurement basis as the predicted Market Position.
+             </label>
+             <div>
                <label className="block text-[10px] font-black uppercase text-slate-400">Winning Vendor (Optional)</label>
                <input type="text" value={actualAwardee} onChange={e => setActualAwardee(e.target.value)} disabled={!!analysis.validation} className="mt-1.5 w-full rounded border-slate-200 px-3 py-2 text-sm disabled:bg-slate-100" />
              </div>
@@ -356,7 +340,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
              </div>
              {!analysis.validation && (
                <button onClick={runValidation} className="mt-2 w-full rounded bg-[#10243e] py-2.5 text-xs font-black text-white hover:bg-slate-800">
-                 LOCK & CALCULATE SCORE
+                 FREEZE & RECORD COMPARISON
                </button>
              )}
           </div>
@@ -365,20 +349,26 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
             <h3 className="text-xs font-black uppercase text-slate-500">Prediction Results</h3>
             {analysis.validation ? (
               <div className="mt-4 space-y-3">
-                 <MetricSmall label="Predicted Target" value={money(analysis.validation.predictedTarget)} />
-                 <MetricSmall label="Actual Award" value={money(analysis.validation.actualAwardValue)} />
-                 <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                    <span className="text-[10px] font-black text-emerald-600">VALIDATION SCORE</span>
-                    <strong className="mt-1 block text-3xl font-black text-emerald-900">{analysis.validation.score.total}<span className="text-lg text-emerald-700">/100</span></strong>
-                    <div className="mt-3 flex gap-2 text-[10px] font-bold text-emerald-800">
-                      <span>Range: {analysis.validation.score.range}/40</span>
-                      <span>Posture: {analysis.validation.score.posture}/20</span>
-                    </div>
+                 <MetricSmall label="Predicted Expected" value={money(analysis.validation.predictedExpected)} />
+                 <MetricSmall label={analysis.validation.actualValueType.replaceAll('_', ' ')} value={money(analysis.validation.actualValue)} />
+                 <div className={`rounded-xl border p-4 ${analysis.validation.comparableToPrediction ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
+                    <span className={`text-[10px] font-black ${analysis.validation.comparableToPrediction ? 'text-emerald-600' : 'text-amber-700'}`}>VALIDATION RESULT</span>
+                    <strong className={`mt-1 block text-xl font-black ${analysis.validation.comparableToPrediction ? 'text-emerald-900' : 'text-amber-950'}`}>
+                      {analysis.validation.comparableToPrediction
+                        ? analysis.validation.inRange ? 'ACTUAL WITHIN RANGE' : 'ACTUAL OUTSIDE RANGE'
+                        : 'NOT SCOREABLE'}
+                    </strong>
+                    <p className="mt-2 text-xs leading-5 text-slate-600">
+                      {analysis.validation.expectedErrorPct !== null
+                        ? `Expected error: ${analysis.validation.expectedErrorPct}%`
+                        : 'The actual value was preserved but not compared because its measurement basis was not verified.'}
+                    </p>
+                    <p className="mt-3 break-all font-mono text-[9px] text-slate-400">SHA-256 {analysis.validation.predictionHash}</p>
                  </div>
               </div>
             ) : (
               <div className="mt-4 flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">
-                Submit actuals to reveal scoring comparison.
+                Submit actuals to record a like-for-like comparison.
               </div>
             )}
           </div>

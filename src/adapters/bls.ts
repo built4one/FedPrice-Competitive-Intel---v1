@@ -37,7 +37,18 @@ export async function queryBls(): Promise<AdapterResult> {
       id: `BLS-${seriesId}-${latest.year}-${latest.period}`,
       type: 'EXTERNAL_SOURCE', sourceLabel: 'BLS Public Data API', sourceRecordId: seriesId,
       claim: `Employment Cost Index 12-month change for civilian workers was ${latest.value}% in ${latest.periodName} ${latest.year}.`,
-      confidence: 99, value: Number(latest.value), units: 'percent change', retrievedAt, url: 'https://www.bls.gov/eci/',
+      confidence: 99,
+      numeric: {
+        originalValue: Number(latest.value),
+        valueType: 'ESCALATION_RATE',
+        currency: 'UNKNOWN',
+        units: 'PERCENT',
+        baseYear: Number(latest.year),
+        sourceDate: `${latest.year}-12-31`,
+        scopeText: 'Employment Cost Index for civilian workers',
+      },
+      retrievedAt,
+      url: 'https://www.bls.gov/eci/',
     }] : [];
     return {
       name: 'BLS', success: true, status: evidence.length ? 'SUCCESS' : 'ZERO_RESULTS', recordsFound: points.length, evidence,

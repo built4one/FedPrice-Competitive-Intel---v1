@@ -1,6 +1,6 @@
 {
-  "name": "FedPrice Competitive Intel",
-  "description": "Evidence-led federal capture intelligence that turns a solicitation into a market position, optional company position, and defensible positioning guidance.",
+  "name": "Federal Market Position",
+  "description": "Evidence-led federal intelligence that turns a solicitation and comparable public evidence into one traceable Market Position.",
   "requestFramePermissions": [],
   "majorCapabilities": [
     "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"

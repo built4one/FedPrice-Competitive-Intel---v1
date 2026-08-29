@@ -1,4 +1,3 @@
-import { calculateDeterministicScenarios } from './src/domain/marketPosition/scenarioEngine.js';
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -7,12 +6,27 @@ import multer from 'multer';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import ExcelJS from 'exceljs';
-import type { EvidenceItem, OpportunityAnalysis, ConnectorStatus } from './src/types.js';
+import type {
+  AiAnalysisDraft,
+  ConnectorStatus,
+  DecisionNarrative,
+  EvidenceItem,
+  OpportunityAnalysis,
+} from './src/types.js';
 import { querySamGov } from './src/adapters/sam.js';
 import { queryUSASpending } from './src/adapters/usaspending.js';
 import { queryGsaCalc } from './src/adapters/gsa.js';
 import { queryBls } from './src/adapters/bls.js';
 import type { AdapterResult } from './src/adapters/types.js';
+import { calculateDeterministicScenarios } from './src/domain/marketPosition/scenarioEngine.js';
+import {
+  createLegacyPosition,
+  enforceAuthoritativeAnalysis,
+  isCurrentEngine,
+  marketAssessmentFromPosition,
+  sanitizeMarketAssessment,
+  sanitizeNarrative,
+} from './src/domain/marketPosition/authoritative.js';
 
 const app = express();
 const port = Number(process.env.PORT || 3000);
@@ -32,7 +46,7 @@ function aiClient() {
 
 function parseJson(text?: string) {
   if (!text) throw new Error('The AI returned an empty response.');
-  const cleaned = text.replace(/^```(?:json)?/i, '').replace(/```$/i, '').trim();
+  const cleaned = text.replace(/^\`\`\`(?:json)?/i, '').replace(/\`\`\`$/i, '').trim();
   const start = cleaned.indexOf('{');
   const end = cleaned.lastIndexOf('}');
   if (start < 0 || end < start) throw new Error('The AI response was not valid JSON.');
@@ -40,72 +54,241 @@ function parseJson(text?: string) {
 }
 
 const stringArray = { type: 'ARRAY', items: { type: 'STRING' } };
+const numericEvidenceSchema = {
+  type: 'OBJECT',
+  properties: {
+    originalValue: { type: 'NUMBER' },
+    valueType: { type: 'STRING' },
+    currency: { type: 'STRING' },
+    units: { type: 'STRING' },
+    periodMonths: { type: 'NUMBER' },
+    baseYear: { type: 'NUMBER' },
+    quantity: { type: 'NUMBER' },
+    targetQuantity: { type: 'NUMBER' },
+    sourceDate: { type: 'STRING' },
+    endDate: { type: 'STRING' },
+    agency: { type: 'STRING' },
+    naics: { type: 'STRING' },
+    psc: { type: 'STRING' },
+    contractType: { type: 'STRING' },
+    acquisitionStructure: { type: 'STRING' },
+    scopeText: { type: 'STRING' },
+    laborIntensity: { type: 'STRING' },
+    technologySecurityLocation: { type: 'STRING' },
+    opportunitySpecific: { type: 'BOOLEAN' },
+    recurringService: { type: 'BOOLEAN' },
+    scalableByQuantity: { type: 'BOOLEAN' },
+    sharedAcrossAwards: { type: 'BOOLEAN' },
+  },
+  required: ['originalValue', 'valueType', 'currency', 'units'],
+};
+
+const driverSchema = {
+  type: 'ARRAY',
+  items: {
+    type: 'OBJECT',
+    properties: {
+      name: { type: 'STRING' },
+      assessment: { type: 'STRING' },
+      evidenceIds: stringArray,
+      inference: { type: 'BOOLEAN' },
+    },
+    required: ['name', 'assessment', 'evidenceIds', 'inference'],
+  },
+};
+
+const narrativeSchema = {
+  type: 'OBJECT',
+  properties: {
+    headline: { type: 'STRING' },
+    rationale: { type: 'STRING' },
+    decisionFactors: stringArray,
+    guardrails: stringArray,
+    nextActions: stringArray,
+  },
+  required: ['headline', 'rationale', 'decisionFactors', 'guardrails', 'nextActions'],
+};
+
 const baseSchema = {
   type: 'OBJECT',
   properties: {
     deal: {
       type: 'OBJECT',
       properties: {
-        title: { type: 'STRING' }, agency: { type: 'STRING' }, solicitationNumber: { type: 'STRING' },
-        contractType: { type: 'STRING' }, dueDate: { type: 'STRING' }, periodOfPerformance: { type: 'STRING' },
-        naics: { type: 'STRING' }, awardStructure: { type: 'STRING' }, evaluationMethod: { type: 'STRING' },
+        title: { type: 'STRING' },
+        agency: { type: 'STRING' },
+        solicitationNumber: { type: 'STRING' },
+        contractType: { type: 'STRING' },
+        dueDate: { type: 'STRING' },
+        periodOfPerformance: { type: 'STRING' },
+        naics: { type: 'STRING' },
+        psc: { type: 'STRING' },
+        awardStructure: { type: 'STRING' },
+        evaluationMethod: { type: 'STRING' },
         scopeSummary: { type: 'STRING' },
-        facts: { type: 'ARRAY', items: { type: 'OBJECT', properties: { label: { type: 'STRING' }, value: { type: 'STRING' }, section: { type: 'STRING' }, confidence: { type: 'NUMBER' } }, required: ['label', 'value', 'confidence'] } },
-        requirements: { type: 'ARRAY', items: { type: 'OBJECT', properties: { name: { type: 'STRING' }, detail: { type: 'STRING' }, category: { type: 'STRING' }, section: { type: 'STRING' }, confidence: { type: 'NUMBER' } }, required: ['name', 'detail', 'category', 'confidence'] } },
-        laborSignals: { type: 'ARRAY', items: { type: 'OBJECT', properties: { title: { type: 'STRING' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' }, location: { type: 'STRING' }, clearance: { type: 'STRING' }, section: { type: 'STRING' } }, required: ['title'] } },
-        pricingSignals: { type: 'ARRAY', items: { type: 'OBJECT', properties: { signal: { type: 'STRING' }, implication: { type: 'STRING' }, section: { type: 'STRING' }, confidence: { type: 'NUMBER' } }, required: ['signal', 'implication', 'confidence'] } },
+        facts: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              label: { type: 'STRING' }, value: { type: 'STRING' }, section: { type: 'STRING' }, confidence: { type: 'NUMBER' },
+            },
+            required: ['label', 'value', 'confidence'],
+          },
+        },
+        requirements: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              name: { type: 'STRING' }, detail: { type: 'STRING' }, category: { type: 'STRING' },
+              section: { type: 'STRING' }, confidence: { type: 'NUMBER' },
+            },
+            required: ['name', 'detail', 'category', 'confidence'],
+          },
+        },
+        laborSignals: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              title: { type: 'STRING' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' },
+              location: { type: 'STRING' }, clearance: { type: 'STRING' }, section: { type: 'STRING' },
+            },
+            required: ['title'],
+          },
+        },
+        pricingSignals: {
+          type: 'ARRAY',
+          items: {
+            type: 'OBJECT',
+            properties: {
+              signal: { type: 'STRING' }, implication: { type: 'STRING' }, section: { type: 'STRING' }, confidence: { type: 'NUMBER' },
+            },
+            required: ['signal', 'implication', 'confidence'],
+          },
+        },
       },
-      required: ['title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance', 'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements', 'laborSignals', 'pricingSignals'],
+      required: [
+        'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
+        'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements',
+        'laborSignals', 'pricingSignals',
+      ],
     },
-    marketPosition: {
+    marketAssessment: {
       type: 'OBJECT',
       properties: {
-        currency: { type: 'STRING' }, 
-        rangeStatus: { type: 'STRING' }, posture: { type: 'STRING' }, summary: { type: 'STRING' }, confidence: { type: 'STRING' },
-        confidenceScore: { type: 'NUMBER' }, attractivenessScore: { type: 'NUMBER' }, basis: stringArray,
-        drivers: { type: 'ARRAY', items: { type: 'OBJECT', properties: { name: { type: 'STRING' }, score: { type: 'NUMBER' }, weight: { type: 'NUMBER' }, assessment: { type: 'STRING' }, evidenceIds: stringArray }, required: ['name', 'score', 'weight', 'assessment', 'evidenceIds'] } },
+        posture: { type: 'STRING' },
+        summary: { type: 'STRING' },
+        basis: stringArray,
+        drivers: driverSchema,
       },
-      required: ['currency', 'rangeStatus', 'posture', 'summary', 'confidence', 'confidenceScore', 'attractivenessScore', 'basis', 'drivers'],
+      required: ['posture', 'summary', 'basis', 'drivers'],
     },
-    competitors: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
-      name: { type: 'STRING' }, role: { type: 'STRING' }, likelihood: { type: 'NUMBER' }, pricingPosture: { type: 'STRING' },
-      rationale: { type: 'STRING' }, differentiators: stringArray, risks: stringArray, sourceRefs: stringArray,
-      confidence: { type: 'NUMBER' }, evidenceType: { type: 'STRING' }, demonstratedCapabilities: stringArray, deliveryModel: { type: 'STRING' }, techPlatform: { type: 'STRING' }, laborShape: { type: 'STRING' }, partnerEcosystem: stringArray, vehicleAccess: stringArray, incumbentAdvantage: { type: 'STRING' }, automationClaims: stringArray, costDrivers: stringArray, unknowns: stringArray }, required: ['name', 'role', 'likelihood', 'pricingPosture', 'rationale', 'differentiators', 'risks', 'sourceRefs', 'confidence', 'evidenceType'] } },
-    incumbent: { type: 'OBJECT', properties: {
-      name: { type: 'STRING' }, status: { type: 'STRING' }, strengths: stringArray, vulnerabilities: stringArray,
-      transitionRisk: { type: 'STRING' }, confidence: { type: 'NUMBER' }, sourceRefs: stringArray,
-    }, required: ['name', 'status', 'strengths', 'vulnerabilities', 'transitionRisk', 'confidence', 'sourceRefs'] },
-    evidence: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
-      id: { type: 'STRING' }, type: { type: 'STRING' }, sourceLabel: { type: 'STRING' }, section: { type: 'STRING' },
-      claim: { type: 'STRING' }, excerpt: { type: 'STRING' }, confidence: { type: 'NUMBER' },
-    }, required: ['id', 'type', 'sourceLabel', 'claim', 'confidence'] } },
-    gaps: { type: 'ARRAY', items: { type: 'OBJECT', properties: { question: { type: 'STRING' }, impact: { type: 'STRING' }, priority: { type: 'STRING' } }, required: ['question', 'impact', 'priority'] } },
-    affordability: { type: 'OBJECT', properties: { estimatedCeiling: { type: 'NUMBER' }, budgetSignals: stringArray, obligationsHistory: { type: 'STRING' }, fundingAvailability: { type: 'STRING' }, confidence: { type: 'STRING' } }, required: ['budgetSignals', 'fundingAvailability', 'confidence'] }, gaoFindings: { type: 'ARRAY', items: { type: 'OBJECT', properties: { topic: { type: 'STRING' }, implication: { type: 'STRING' }, sourceUrl: { type: 'STRING' }, relevanceScore: { type: 'NUMBER' } }, required: ['topic', 'implication', 'relevanceScore'] } }, preRfpSignals: { type: 'ARRAY', items: { type: 'OBJECT', properties: { type: { type: 'STRING' }, date: { type: 'STRING' }, summary: { type: 'STRING' }, impact: { type: 'STRING' } }, required: ['type', 'date', 'summary', 'impact'] } }, guidance: { type: 'OBJECT', properties: {
-      headline: { type: 'STRING' }, targetPrice: { type: 'NUMBER' }, rangeLow: { type: 'NUMBER' }, rangeHigh: { type: 'NUMBER' },
-      position: { type: 'STRING' }, rationale: { type: 'STRING' }, winConditions: stringArray, guardrails: stringArray, nextActions: stringArray,
-    }, required: ['headline', 'targetPrice', 'rangeLow', 'rangeHigh', 'position', 'rationale', 'winConditions', 'guardrails', 'nextActions'] },
+    competitors: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          name: { type: 'STRING' }, role: { type: 'STRING' }, pricingPosture: { type: 'STRING' },
+          rationale: { type: 'STRING' }, differentiators: stringArray, risks: stringArray, sourceRefs: stringArray,
+          confidence: { type: 'NUMBER' }, evidenceType: { type: 'STRING' }, demonstratedCapabilities: stringArray,
+          deliveryModel: { type: 'STRING' }, techPlatform: { type: 'STRING' }, laborShape: { type: 'STRING' },
+          partnerEcosystem: stringArray, vehicleAccess: stringArray, incumbentAdvantage: { type: 'STRING' },
+          automationClaims: stringArray, costDrivers: stringArray, unknowns: stringArray,
+        },
+        required: ['name', 'role', 'pricingPosture', 'rationale', 'differentiators', 'risks', 'sourceRefs', 'confidence', 'evidenceType'],
+      },
+    },
+    incumbent: {
+      type: 'OBJECT',
+      properties: {
+        name: { type: 'STRING' }, status: { type: 'STRING' }, strengths: stringArray, vulnerabilities: stringArray,
+        transitionRisk: { type: 'STRING' }, confidence: { type: 'NUMBER' }, sourceRefs: stringArray,
+      },
+      required: ['name', 'status', 'strengths', 'vulnerabilities', 'transitionRisk', 'confidence', 'sourceRefs'],
+    },
+    evidence: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          id: { type: 'STRING' }, type: { type: 'STRING' }, sourceLabel: { type: 'STRING' }, section: { type: 'STRING' },
+          claim: { type: 'STRING' }, excerpt: { type: 'STRING' }, confidence: { type: 'NUMBER' },
+          numeric: numericEvidenceSchema,
+        },
+        required: ['id', 'type', 'sourceLabel', 'claim', 'confidence'],
+      },
+    },
+    gaps: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          question: { type: 'STRING' }, impact: { type: 'STRING' }, priority: { type: 'STRING' },
+        },
+        required: ['question', 'impact', 'priority'],
+      },
+    },
+    affordability: {
+      type: 'OBJECT',
+      properties: {
+        estimatedCeiling: { type: 'NUMBER' }, budgetSignals: stringArray, obligationsHistory: { type: 'STRING' },
+        fundingAvailability: { type: 'STRING' }, confidence: { type: 'STRING' }, evidenceIds: stringArray,
+      },
+      required: ['budgetSignals', 'fundingAvailability', 'confidence'],
+    },
+    gaoFindings: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          topic: { type: 'STRING' }, implication: { type: 'STRING' }, sourceUrl: { type: 'STRING' },
+          relevanceScore: { type: 'NUMBER' }, evidenceIds: stringArray,
+        },
+        required: ['topic', 'implication', 'relevanceScore'],
+      },
+    },
+    preRfpSignals: {
+      type: 'ARRAY',
+      items: {
+        type: 'OBJECT',
+        properties: {
+          type: { type: 'STRING' }, date: { type: 'STRING' }, summary: { type: 'STRING' },
+          impact: { type: 'STRING' }, evidenceIds: stringArray,
+        },
+        required: ['type', 'date', 'summary', 'impact'],
+      },
+    },
+    narrative: narrativeSchema,
   },
-  required: ['deal', 'marketPosition', 'competitors', 'incumbent', 'evidence', 'gaps', 'guidance'],
+  required: ['deal', 'marketAssessment', 'competitors', 'incumbent', 'evidence', 'gaps', 'narrative'],
 };
 
-const analysisPrompt = `You are a federal capture and competitive-pricing analyst. Analyze the attached solicitation and produce a decision-grade market-position brief.
+const analysisPrompt = `You are a federal capture and competitive-pricing analyst. Analyze the attached solicitation and return a concise evidence-led market assessment.
 
-NON-NEGOTIABLE EVIDENCE RULES
-- Solicitation facts must cite the actual section or attachment when discoverable.
-- Never invent an incumbent, competitor, dollar value, agency history, benchmark, FAR clause, staffing level, or source.
-- Label competitor hypotheses and other deductions ANALYST_INFERENCE.
-- Use SOLICITATION_FACT only for claims supported by the uploaded document.
-- If the document does not support a numeric market range, return 0 for low/target/high, use rangeStatus INSUFFICIENT, and explain the missing inputs.
-- If a range is derived from explicit ceiling, staffing, hours, rates, or historical values, identify that basis and mark it DIRECTIONAL unless multiple reliable signals support it.
-- Confidence values are 0-100. Scores are 0-100. Driver weights must total 100.
-- Do not claim GSA CALC, BLS, SAM.gov, USAspending, or other research was performed in this first pass.
+NON-NEGOTIABLE AUTHORITY RULES
+- Do not calculate or recommend Aggressive, Expected, Conservative, low, target, high, or any other Market Position dollar value.
+- Do not put dollar values in the narrative. The deterministic engine owns every authoritative Market Position number.
+- Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
+- Keep evaluated price, estimated value, ceiling, initial obligation, current obligations, eventual spend, total award value, hourly ceiling rate, escalation rate, and budget context distinct.
+- Use valueType values exactly from: EVALUATED_PRICE, ESTIMATED_VALUE, TOTAL_AWARD_VALUE, CURRENT_AWARD_AMOUNT, CONTRACT_CEILING, INITIAL_OBLIGATION, CURRENT_OBLIGATIONS, EVENTUAL_SPEND, HOURLY_CEILING_RATE, ESCALATION_RATE, BUDGET_CONTEXT, UNKNOWN.
+- Use units TOTAL_USD, USD_PER_HOUR, PERCENT, or OTHER. Do not convert unlike units.
+- Set opportunitySpecific true only for a value that describes this solicitation.
+- Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
+- Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
+- SOLICITATION_FACT requires a document citation. Label deductions ANALYST_INFERENCE.
+- Confidence values are 0-100, but do not create an opportunity score or probability of win.
+- Do not claim public-source research was performed during this extraction pass.
 
-PRODUCT LOGIC
-1) Extract the deal and evaluation facts. 2) Identify pricing, staffing, affordability, pre-RFP signals, and GAO/protest history if present. 3) assemble an evidence ledger.
-4) Assess likely competition with structured reconstruction (tech, labor shape, capabilities, etc) and incumbent posture. 5) create the market position.
-6-7) Company inputs are optional and are intentionally not required here. 8-10) deliver market-based positioning guidance, guardrails, and next actions.
+PRODUCT TASK
+1. Extract deal, evaluation, staffing, pricing, and acquisition facts.
+2. Build an evidence ledger, including explicit numeric evidence with correct value types.
+3. Identify gaps that affect comparability or normalization.
+4. Produce qualitative competitor and incumbent reconstruction with fact/inference separation.
+5. Produce marketAssessment and narrative fields that explain conditions, guardrails, and next actions without authoritative dollar values.
 
-Use USD. Keep language concise, specific, and suitable for a federal pricing lead.`;
+Use concise language suitable for a federal pricing lead.`;
 
 const sourceNames: ConnectorStatus['name'][] = ['SAM.gov', 'USAspending', 'GSA CALC+', 'BLS'];
 const connectorCache = new Map<string, { expiresAt: number; result: AdapterResult }>();
@@ -128,7 +311,7 @@ async function runConnectorSet(deal: OpportunityAnalysis['deal'], only?: Connect
     const key = connectorCacheKey(name, deal);
     const cached = connectorCache.get(key);
     if (!force && cached && cached.expiresAt > Date.now()) {
-      return { ...cached.result, message: cached.result.message ? `${cached.result.message} Cached result.` : 'Cached result.' };
+      return { ...cached.result, status: 'CACHED' as const, message: cached.result.message || 'Preserved cached result used.' };
     }
     const result = await tasks[name]();
     if (result.success) connectorCache.set(key, { expiresAt: Date.now() + connectorCacheTtlMs, result });
@@ -146,8 +329,14 @@ async function runConnectorSet(deal: OpportunityAnalysis['deal'], only?: Connect
 
 function connectorStatus(result: AdapterResult): ConnectorStatus {
   return {
-    name: result.name, status: result.status, recordsFound: result.recordsFound, message: result.message,
-    durationMs: result.durationMs, attempts: result.attempts, retrievedAt: result.retrievedAt, querySummary: result.querySummary,
+    name: result.name,
+    status: result.status,
+    recordsFound: result.recordsFound,
+    message: result.message,
+    durationMs: result.durationMs,
+    attempts: result.attempts,
+    retrievedAt: result.retrievedAt,
+    querySummary: result.querySummary,
   };
 }
 
@@ -157,114 +346,195 @@ function mergeEvidence(existing: EvidenceItem[] = [], incoming: EvidenceItem[] =
   return [...merged.values()];
 }
 
-async function synthesizeOfficialEvidence(base: Omit<OpportunityAnalysis, 'id' | 'meta'>) {
-  const official = base.evidence.filter((item) => item.type === 'EXTERNAL_SOURCE' && /API/.test(item.sourceLabel));
+async function synthesizeOfficialEvidence(draft: AiAnalysisDraft) {
+  const official = draft.evidence.filter((item) => item.type === 'EXTERNAL_SOURCE' && /API/.test(item.sourceLabel));
   if (official.length === 0) return;
-  const client = aiClient();
-  const response = await client.models.generateContent({
+  const response = await aiClient().models.generateContent({
     model,
-    contents: `Update the market interpretation using ONLY the validated official-source evidence below. Return ONLY JSON with keys marketPosition, competitors, incumbent, guidance and preserve their existing shapes. Preserve solicitation facts and evidence IDs. Never treat an award amount as a comparable target without scope similarity. Treat GSA values as ceiling rates, not paid rates. Use BLS only as escalation context. Do not create a numeric range if the evidence does not support one; preserve INSUFFICIENT and zero values when appropriate. Clearly separate verified facts from modeled estimates.\n\nCURRENT ANALYSIS:\n${JSON.stringify({ marketPosition: base.marketPosition, competitors: base.competitors, incumbent: base.incumbent, guidance: base.guidance })}\n\nOFFICIAL EVIDENCE:\n${JSON.stringify(official)}`,
+    contents: `Update only the qualitative interpretation using the validated official evidence below.
+Return JSON with keys marketAssessment, competitors, incumbent, and narrative. Preserve their existing shapes and evidence IDs.
+Never return a Market Position dollar value, numeric range, opportunity score, or probability of win.
+Treat award amounts, ceilings, obligations, hourly ceiling rates, and escalation percentages as different measurements.
+Do not put dollar values in narrative strings.
+
+CURRENT QUALITATIVE ANALYSIS:
+${JSON.stringify({
+  marketAssessment: draft.marketAssessment,
+  competitors: draft.competitors,
+  incumbent: draft.incumbent,
+  narrative: draft.narrative,
+})}
+
+OFFICIAL EVIDENCE:
+${JSON.stringify(official)}`,
     config: { responseMimeType: 'application/json', temperature: 0.1 },
   });
   const synthesis = parseJson(response.text);
-  base.marketPosition = synthesis.marketPosition || base.marketPosition;
-  base.competitors = synthesis.competitors || base.competitors;
-  base.incumbent = synthesis.incumbent || base.incumbent;
-  base.guidance = synthesis.guidance || base.guidance;
+  draft.marketAssessment = sanitizeMarketAssessment(synthesis.marketAssessment || draft.marketAssessment);
+  draft.competitors = synthesis.competitors || draft.competitors;
+  draft.incumbent = synthesis.incumbent || draft.incumbent;
+  draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 
-async function analyzeFile(file: Express.Multer.File, ): Promise<OpportunityAnalysis> {
+async function analyzeFile(file: Express.Multer.File): Promise<OpportunityAnalysis> {
   const client = aiClient();
   const response = await client.models.generateContent({
     model,
-    contents: [{ role: 'user', parts: [
-      { text: analysisPrompt },
-      { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype || 'application/octet-stream' } },
-    ] }],
+    contents: [{
+      role: 'user',
+      parts: [
+        { text: analysisPrompt },
+        { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype || 'application/octet-stream' } },
+      ],
+    }],
     config: { responseMimeType: 'application/json', responseSchema: baseSchema as never, temperature: 0.15 },
   });
-  const base = parseJson(response.text) as Omit<OpportunityAnalysis, 'id' | 'meta'>;
+  const draft = parseJson(response.text) as AiAnalysisDraft;
+  draft.evidence = draft.evidence || [];
+  draft.gaps = draft.gaps || [];
+  draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
+  draft.narrative = sanitizeNarrative(draft.narrative);
   const warnings: string[] = [];
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
   const connectors: ConnectorStatus[] = [];
 
   try {
-    const results = await runConnectorSet(base.deal);
-    for (const r of results) {
-      connectors.push(connectorStatus(r));
-      base.evidence = mergeEvidence(base.evidence, r.evidence);
+    const results = await runConnectorSet(draft.deal);
+    for (const result of results) {
+      connectors.push(connectorStatus(result));
+      draft.evidence = mergeEvidence(draft.evidence, result.evidence);
     }
-    if (results.some(r => r.success && r.recordsFound > 0)) {
+    if (results.some((result) => result.success && result.recordsFound > 0)) {
       researchStatus = 'PARTIAL';
       try {
-        await synthesizeOfficialEvidence(base);
+        await synthesizeOfficialEvidence(draft);
       } catch (error) {
-        warnings.push(`Official evidence was retrieved but synthesis could not be refreshed. ${error instanceof Error ? error.message : ''}`.trim());
+        warnings.push(`Official evidence was retrieved but qualitative synthesis could not be refreshed. ${error instanceof Error ? error.message : ''}`.trim());
       }
     }
-  } catch (err) {
-    warnings.push(`Government API adapters failed to run: ${err instanceof Error ? err.message : String(err)}`);
+  } catch (error) {
+    warnings.push(`Government API adapters failed to run: ${error instanceof Error ? error.message : String(error)}`);
   }
 
   if (process.env.ENABLE_GOOGLE_SEARCH !== 'false') {
     try {
       const researchResponse = await client.models.generateContent({
         model,
-        contents: `Research the public federal market for this opportunity using Google Search. Return ONLY JSON with keys marketPosition, competitors, incumbent, guidance. Preserve the same shapes shown in this base analysis. Treat the included official API evidence as higher authority than general web results. Improve only claims supported by current public sources. Put source URLs in each competitor/incumbent sourceRefs. Never treat an award amount as a comparable target without scope similarity. Treat GSA values as ceiling rates and BLS only as escalation context. Do not fabricate a dollar range when evidence is insufficient.\n\nBASE ANALYSIS:\n${JSON.stringify(base)}`,
+        contents: `Research the public federal market for this opportunity using Google Search.
+Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
+Improve only qualitative claims supported by current public sources and preserve the existing shapes.
+Never return or revise an authoritative Market Position dollar value, numeric range, opportunity score, or probability of win.
+Do not put dollar values in narrative strings. Put source URLs in competitor and incumbent sourceRefs.
+
+BASE ANALYSIS:
+${JSON.stringify(draft)}`,
         config: { tools: [{ googleSearch: {} }], temperature: 0.1 },
       });
       const research = parseJson(researchResponse.text);
-      base.marketPosition = research.marketPosition || base.marketPosition;
-      base.competitors = research.competitors || base.competitors;
-      base.incumbent = research.incumbent || base.incumbent;
-      base.guidance = research.guidance || base.guidance;
+      draft.marketAssessment = sanitizeMarketAssessment(research.marketAssessment || draft.marketAssessment);
+      draft.competitors = research.competitors || draft.competitors;
+      draft.incumbent = research.incumbent || draft.incumbent;
+      draft.narrative = sanitizeNarrative(research.narrative || draft.narrative);
       const chunks = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
       const sources: EvidenceItem[] = chunks.flatMap((chunk: any, index: number) => chunk.web?.uri ? [{
-        id: `EXT-${index + 1}`, type: 'EXTERNAL_SOURCE' as const, sourceLabel: chunk.web.title || `External source ${index + 1}`,
-        claim: 'Public market source used during grounded enrichment.', url: chunk.web.uri, confidence: 80,
+        id: `EXT-${index + 1}`,
+        type: 'EXTERNAL_SOURCE' as const,
+        sourceLabel: chunk.web.title || `External source ${index + 1}`,
+        claim: 'Public market source used during grounded qualitative enrichment.',
+        url: chunk.web.uri,
+        confidence: 80,
+        retrievedAt: new Date().toISOString(),
       }] : []);
-      base.evidence = [...base.evidence, ...sources];
+      draft.evidence = mergeEvidence(draft.evidence, sources);
       researchStatus = 'GROUNDED';
     } catch (error) {
-      warnings.push(`Public-market enrichment was unavailable; the brief is solicitation-grounded only. ${error instanceof Error ? error.message : ''}`.trim());
+      warnings.push(`Public-market enrichment was unavailable; the brief remains solicitation and official-adapter grounded. ${error instanceof Error ? error.message : ''}`.trim());
       researchStatus = 'PARTIAL';
     }
   }
 
-  const scenarios = calculateDeterministicScenarios(base); base.marketPosition = { ...base.marketPosition, ...scenarios };
-  const analysis: OpportunityAnalysis = {
-    ...base,
+  const analyzedAt = new Date().toISOString();
+  const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
+  const { marketAssessment: _marketAssessment, ...analysisFields } = draft;
+  return {
+    ...analysisFields,
+    marketPosition,
+    narrative: sanitizeNarrative(draft.narrative),
     id: `run-${crypto.randomUUID()}`,
-    meta: { mode: 'MARKET_ONLY', model, analyzedAt: new Date().toISOString(), researchStatus, warnings, connectors },
+    meta: { mode: 'MARKET_ONLY', model, analyzedAt, researchStatus, warnings, connectors },
   };
-  return analysis;
 }
 
-app.get('/api/health', (_req, res) => res.json({ status: 'ok', aiConfigured: Boolean(apiKey), model }));
+app.get('/api/health', (_req, res) => res.json({
+  status: 'ok',
+  aiConfigured: Boolean(apiKey),
+  model,
+  calculationEngine: 'market-position-v2.0.0',
+}));
 
 let localRuns: OpportunityAnalysis[] = [];
 
-app.get("/api/runs", (req, res) => {
+function legacyNarrative(raw: any): DecisionNarrative {
+  const narrative = raw?.narrative || raw?.guidance || {};
+  return sanitizeNarrative({
+    headline: narrative.headline || 'Legacy analysis',
+    rationale: narrative.rationale || 'Recalculate this run under the current methodology.',
+    decisionFactors: narrative.decisionFactors || narrative.winConditions || [],
+    guardrails: narrative.guardrails || [],
+    nextActions: narrative.nextActions || [],
+  });
+}
+
+function normalizeIncomingRun(raw: any): OpportunityAnalysis {
+  if (!raw?.id || !raw?.deal || !raw?.meta) throw new Error('A valid Opportunity Run is required.');
+  if (!isCurrentEngine(raw.marketPosition)) {
+    return {
+      ...raw,
+      marketPosition: createLegacyPosition(raw.marketPosition),
+      narrative: legacyNarrative(raw),
+      meta: {
+        ...raw.meta,
+        warnings: [...new Set([
+          ...(raw.meta.warnings || []),
+          'This legacy run must be recalculated before its numeric Market Position can be used.',
+        ])],
+      },
+    } as OpportunityAnalysis;
+  }
+  return enforceAuthoritativeAnalysis(raw as OpportunityAnalysis);
+}
+
+app.get('/api/runs', (_req, res) => {
   res.json({ data: localRuns });
 });
 
-app.post("/api/runs", express.json(), (req, res) => {
-  const run = req.body;
-  localRuns = [run, ...localRuns.filter(r => r.id !== run.id)];
-  res.json({ success: true });
+app.post('/api/runs', (req, res) => {
+  try {
+    const run = normalizeIncomingRun(req.body);
+    localRuns = [run, ...localRuns.filter((item) => item.id !== run.id)];
+    res.json({ success: true, data: run });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Run could not be saved.' });
+  }
 });
 
-app.delete("/api/runs/:id", (req, res) => {
-  localRuns = localRuns.filter(r => r.id !== req.params.id);
+app.delete('/api/runs/:id', (req, res) => {
+  localRuns = localRuns.filter((run) => run.id !== req.params.id);
   res.json({ success: true });
 });
 
 app.post('/api/analyze-solicitation', upload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'Choose a solicitation file before starting the analysis.' });
-    const allowed = ['application/pdf', 'text/plain', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/msword'];
-    if (!allowed.includes(req.file.mimetype)) return res.status(415).json({ error: 'Use a PDF, DOCX, DOC, or TXT solicitation file.' });
-    
+    const allowed = [
+      'application/pdf',
+      'text/plain',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/msword',
+    ];
+    if (!allowed.includes(req.file.mimetype)) {
+      return res.status(415).json({ error: 'Use a PDF, DOCX, DOC, or TXT solicitation file.' });
+    }
     res.json({ data: await analyzeFile(req.file) });
   } catch (error) {
     console.error('Analysis failed', error);
@@ -274,15 +544,17 @@ app.post('/api/analyze-solicitation', upload.single('file'), async (req, res) =>
 
 app.post('/api/retry-connector', async (req, res) => {
   try {
-    const analysis = req.body?.analysis as OpportunityAnalysis | undefined;
+    let analysis = req.body?.analysis as OpportunityAnalysis | undefined;
     const source = req.body?.source as ConnectorStatus['name'] | undefined;
     if (!analysis?.deal || !sourceNames.includes(source as ConnectorStatus['name'])) {
       return res.status(400).json({ error: 'A valid analysis and connector name are required.' });
     }
     const [result] = await runConnectorSet(analysis.deal, source, true);
     const sourceLabels: Record<ConnectorStatus['name'], string[]> = {
-      'SAM.gov': ['SAM.gov Opportunities API'], USAspending: ['USAspending.gov API'],
-      'GSA CALC+': ['GSA CALC+ API'], BLS: ['BLS Public Data API'],
+      'SAM.gov': ['SAM.gov Opportunities API'],
+      USAspending: ['USAspending.gov API'],
+      'GSA CALC+': ['GSA CALC+ API'],
+      BLS: ['BLS Public Data API'],
     };
     analysis.evidence = mergeEvidence(
       analysis.evidence.filter((item) => !sourceLabels[source!].includes(item.sourceLabel)),
@@ -293,72 +565,136 @@ app.post('/api/retry-connector', async (req, res) => {
       connectorStatus(result),
     ].sort((a, b) => sourceNames.indexOf(a.name) - sourceNames.indexOf(b.name));
     analysis.meta.analyzedAt = new Date().toISOString();
+
+    const draft: AiAnalysisDraft = {
+      deal: analysis.deal,
+      marketAssessment: marketAssessmentFromPosition(analysis.marketPosition),
+      competitors: analysis.competitors,
+      incumbent: analysis.incumbent,
+      evidence: analysis.evidence,
+      gaps: analysis.gaps,
+      narrative: analysis.narrative,
+      affordability: analysis.affordability,
+      gaoFindings: analysis.gaoFindings,
+      preRfpSignals: analysis.preRfpSignals,
+    };
     if (result.recordsFound > 0) {
       try {
-        await synthesizeOfficialEvidence(analysis);
-        const scenarios = calculateDeterministicScenarios(analysis); analysis.marketPosition = { ...analysis.marketPosition, ...scenarios };
+        await synthesizeOfficialEvidence(draft);
       } catch (error) {
-        analysis.meta.warnings.push(`The ${source} evidence refreshed, but the recommendation synthesis did not. ${error instanceof Error ? error.message : ''}`.trim());
+        analysis.meta.warnings.push(`The ${source} evidence refreshed, but qualitative synthesis did not. ${error instanceof Error ? error.message : ''}`.trim());
       }
     }
+    analysis = {
+      ...analysis,
+      competitors: draft.competitors,
+      incumbent: draft.incumbent,
+      narrative: sanitizeNarrative(draft.narrative),
+      marketPosition: calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt }),
+    };
     res.json({ data: analysis });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'The connector could not be retried.' });
   }
 });
 
+const displayValue = (value: number | null) => value === null ? 'Insufficient evidence' : value;
+
 app.post('/api/export-brief', async (req, res) => {
   try {
-    const analysis = req.body as OpportunityAnalysis;
-    if (!analysis?.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
+    const analysis = normalizeIncomingRun(req.body);
+    if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
     const workbook = new ExcelJS.Workbook();
-    workbook.creator = 'FedPrice Competitive Intel';
-    
-    const summary = workbook.addWorksheet('Market Position');
-    summary.columns = [{ header: 'Field', key: 'field', width: 30 }, { header: 'Value', key: 'value', width: 90 }];
-    
+    workbook.creator = 'Federal Market Position';
+
+    const summary = workbook.addWorksheet('Executive Decision');
+    summary.columns = [{ header: 'Field', key: 'field', width: 34 }, { header: 'Value', key: 'value', width: 92 }];
     summary.addRows([
       { field: 'Opportunity', value: analysis.deal.title },
       { field: 'Agency', value: analysis.deal.agency },
       { field: 'Solicitation', value: analysis.deal.solicitationNumber },
-      { field: 'Market Low', value: analysis.marketPosition.low || 'Insufficient evidence' },
-      { field: 'Market Target', value: analysis.marketPosition.target || 'Insufficient evidence' },
-      { field: 'Market High', value: analysis.marketPosition.high || 'Insufficient evidence' },
+      { field: 'Aggressive Market Position', value: displayValue(analysis.marketPosition.aggressive) },
+      { field: 'Expected Market Position', value: displayValue(analysis.marketPosition.expected) },
+      { field: 'Conservative Market Position', value: displayValue(analysis.marketPosition.conservative) },
       { field: 'Range Status', value: analysis.marketPosition.rangeStatus },
-      { field: 'Confidence', value: analysis.marketPosition.confidenceScore + '%' }
+      { field: 'Evidence Readiness', value: `${analysis.marketPosition.evidenceReadiness.score}/100` },
+      { field: 'Formula Version', value: analysis.marketPosition.formulaVersion },
+      { field: 'Calculation Basis', value: 'Weighted comparable total-value evidence only' },
     ]);
-    
-    // Add Intelligence
-    const intel = workbook.addWorksheet('Intelligence');
-    intel.columns = [{ header: 'Category', key: 'cat', width: 20 }, { header: 'Finding', key: 'find', width: 100 }];
-    if (analysis.affordability) {
-      intel.addRow({ cat: 'Affordability', find: 'Est. Ceiling: ' + analysis.affordability.estimatedCeiling });
-      intel.addRow({ cat: 'Budget Signals', find: analysis.affordability.budgetSignals?.join('; ') });
-    }
-    analysis.gaoFindings?.forEach(g => intel.addRow({ cat: 'GAO Protest', find: g.topic + ' - ' + g.implication }));
-    analysis.preRfpSignals?.forEach(p => intel.addRow({ cat: 'Pre-RFP Signal', find: p.type + ': ' + p.summary }));
 
-    // Add Competitors
-    const comps = workbook.addWorksheet('Competitors');
-    comps.columns = [{ header: 'Name', key: 'name', width: 25 }, { header: 'Role', key: 'role', width: 20 }, { header: 'Capabilities', key: 'cap', width: 50 }, { header: 'Tech', key: 'tech', width: 30 }];
-    analysis.competitors.forEach(c => {
-      comps.addRow({ name: c.name, role: c.role, cap: c.demonstratedCapabilities?.join(', '), tech: c.techPlatform });
-    });
+    const methodology = workbook.addWorksheet('Calculation Methodology');
+    methodology.columns = [
+      { header: 'Evidence ID', key: 'evidenceId', width: 18 },
+      { header: 'Source', key: 'source', width: 28 },
+      { header: 'Value Type', key: 'valueType', width: 24 },
+      { header: 'Role', key: 'role', width: 20 },
+      { header: 'Original Value', key: 'originalValue', width: 18 },
+      { header: 'Normalized Value', key: 'normalizedValue', width: 20 },
+      { header: 'Comparability', key: 'comparability', width: 16 },
+      { header: 'Evidence Quality', key: 'quality', width: 18 },
+      { header: 'Normalization Confidence', key: 'normalization', width: 24 },
+      { header: 'Weight', key: 'weight', width: 12 },
+      { header: 'Used', key: 'used', width: 10 },
+      { header: 'Rationale', key: 'rationale', width: 80 },
+    ];
+    methodology.addRows(analysis.marketPosition.anchors.map((anchor) => ({
+      evidenceId: anchor.evidenceId,
+      source: anchor.sourceLabel,
+      valueType: anchor.valueType,
+      role: anchor.role,
+      originalValue: anchor.originalValue,
+      normalizedValue: anchor.normalizedValue,
+      comparability: Math.round(anchor.comparabilityScore * 100),
+      quality: Math.round(anchor.evidenceQuality * 100),
+      normalization: Math.round(anchor.normalizationConfidence * 100),
+      weight: anchor.weight,
+      used: anchor.included ? 'Yes' : 'No',
+      rationale: anchor.included ? anchor.inclusionRationale : anchor.exclusionReasons.join(' '),
+    })));
+
+    const intelligence = workbook.addWorksheet('Intelligence');
+    intelligence.columns = [{ header: 'Category', key: 'category', width: 24 }, { header: 'Finding', key: 'finding', width: 100 }];
+    if (analysis.affordability) {
+      intelligence.addRow({ category: 'Affordability', finding: analysis.affordability.estimatedCeiling ? `Reported ceiling: ${analysis.affordability.estimatedCeiling}` : 'No reported ceiling.' });
+      intelligence.addRow({ category: 'Budget Signals', finding: analysis.affordability.budgetSignals?.join('; ') });
+    }
+    analysis.gaoFindings?.forEach((finding) => intelligence.addRow({ category: 'GAO / Source Selection', finding: `${finding.topic} — ${finding.implication}` }));
+    analysis.preRfpSignals?.forEach((signal) => intelligence.addRow({ category: 'Pre-RFP Signal', finding: `${signal.type}: ${signal.summary}` }));
+
+    const competitors = workbook.addWorksheet('Competition');
+    competitors.columns = [
+      { header: 'Name', key: 'name', width: 25 }, { header: 'Role', key: 'role', width: 20 },
+      { header: 'Capabilities', key: 'capabilities', width: 50 }, { header: 'Technology', key: 'technology', width: 30 },
+      { header: 'Evidence Type', key: 'evidenceType', width: 22 },
+    ];
+    analysis.competitors.forEach((competitor) => competitors.addRow({
+      name: competitor.name,
+      role: competitor.role,
+      capabilities: competitor.demonstratedCapabilities?.join(', '),
+      technology: competitor.techPlatform,
+      evidenceType: competitor.evidenceType,
+    }));
 
     const evidence = workbook.addWorksheet('Evidence Ledger');
-
     evidence.columns = [
-      { header: 'ID', key: 'id', width: 14 }, { header: 'Type', key: 'type', width: 22 }, { header: 'Source', key: 'sourceLabel', width: 35 },
-      { header: 'Section', key: 'section', width: 20 }, { header: 'Claim', key: 'claim', width: 80 }, { header: 'Confidence', key: 'confidence', width: 14 },
+      { header: 'ID', key: 'id', width: 16 }, { header: 'Type', key: 'type', width: 22 },
+      { header: 'Source', key: 'sourceLabel', width: 35 }, { header: 'Section', key: 'section', width: 20 },
+      { header: 'Claim', key: 'claim', width: 80 }, { header: 'Confidence', key: 'confidence', width: 14 },
+      { header: 'Value Type', key: 'valueType', width: 24 }, { header: 'Original Value', key: 'originalValue', width: 18 },
     ];
-    evidence.addRows(analysis.evidence);
+    evidence.addRows(analysis.evidence.map((item) => ({
+      ...item,
+      valueType: item.numeric?.valueType,
+      originalValue: item.numeric?.originalValue,
+    })));
+
     for (const sheet of workbook.worksheets) {
       sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10243E' } };
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
     }
     const buffer = await workbook.xlsx.writeBuffer();
-    const safeName = analysis.deal.solicitationNumber.replace(/[^a-z0-9-]/gi, '_') || 'market-position';
+    const safeName = analysis.deal.solicitationNumber?.replace(/[^a-z0-9-]/gi, '_') || 'market-position';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}_Market_Position.xlsx"`);
     res.send(Buffer.from(buffer));
@@ -376,7 +712,7 @@ async function start() {
     app.use(express.static(distPath));
     app.get('*', (_req, res) => res.sendFile(path.join(distPath, 'index.html')));
   }
-  app.listen(port, '0.0.0.0', () => console.log(`FedPrice Competitive Intel running on http://localhost:${port}`));
+  app.listen(port, '0.0.0.0', () => console.log(`Federal Market Position running on http://localhost:${port}`));
 }
 
 start();
