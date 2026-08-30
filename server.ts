@@ -272,6 +272,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Do not put dollar values in the narrative. The deterministic engine owns every authoritative Market Position number.
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
 - Keep evaluated price, estimated value, ceiling, initial obligation, current obligations, eventual spend, total award value, hourly ceiling rate, escalation rate, and budget context distinct.
+- CRITICAL: If a value represents the total deal or contract size, you MUST use valueType 'ESTIMATED_VALUE', 'TOTAL_AWARD_VALUE', or 'EVALUATED_PRICE', and YOU MUST set units exactly to 'TOTAL_USD'.
 - Use valueType values exactly from: EVALUATED_PRICE, ESTIMATED_VALUE, TOTAL_AWARD_VALUE, CURRENT_AWARD_AMOUNT, CONTRACT_CEILING, INITIAL_OBLIGATION, CURRENT_OBLIGATIONS, EVENTUAL_SPEND, HOURLY_CEILING_RATE, ESCALATION_RATE, BUDGET_CONTEXT, UNKNOWN.
 - Use units TOTAL_USD, USD_PER_HOUR, PERCENT, or OTHER. Do not convert unlike units.
 - Set opportunitySpecific true only for a value that describes this solicitation.

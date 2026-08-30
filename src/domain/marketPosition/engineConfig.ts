@@ -13,9 +13,9 @@ export const COMPARABILITY_WEIGHTS = {
 } as const;
 
 export const ENGINE_THRESHOLDS = {
-  minimumComparability: 0.55,
-  minimumEvidenceQuality: 0.65,
-  minimumNormalizationConfidence: 0.65,
+  minimumComparability: 0.45,
+  minimumEvidenceQuality: 0.55,
+  minimumNormalizationConfidence: 0.55,
   supportedReadiness: 60,
   directionalReadiness: 45,
   minimumRangeWidth: 0.05,

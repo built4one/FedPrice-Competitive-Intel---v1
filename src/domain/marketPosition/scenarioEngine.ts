@@ -8,7 +8,7 @@ import type {
 import { scoreComparability, scoreEvidenceQuality } from './comparability';
 import { ENGINE_THRESHOLDS, MARKET_POSITION_ENGINE_VERSION } from './engineConfig';
 import { calculateEvidenceReadiness, effectiveSampleSize } from './readiness';
-import { determineCalculationRole, normalizeNumericEvidence } from './valueNormalization';
+import { determineCalculationRole, normalizeNumericEvidence, extractPeriodMonths } from './valueNormalization';
 
 interface EngineOptions {
   asOfDate: string;
@@ -127,7 +127,32 @@ export function calculateDeterministicScenarios(
   if (!options.asOfDate || Number.isNaN(Date.parse(options.asOfDate))) {
     throw new Error('A valid as-of date is required for deterministic Market Position calculations.');
   }
-  const anchors = draft.evidence
+  
+  // Component Synthesizer: Convert HOURLY_CEILING_RATE to an ESTIMATED_VALUE central anchor if labor hours exist
+  const totalAnnualHours = draft.deal.laborSignals?.reduce((sum, ls) => sum + (ls.annualHours || 0) * (ls.quantity || 1), 0) || 0;
+  const targetMonths = extractPeriodMonths(draft.deal.periodOfPerformance) || 12;
+  const totalHours = totalAnnualHours * (targetMonths / 12);
+  
+  const syntheticEvidence = [...draft.evidence];
+  if (totalHours > 0) {
+    const hourlyRates = draft.evidence.filter(e => e.numeric?.valueType === 'HOURLY_CEILING_RATE' && e.numeric.units === 'USD_PER_HOUR');
+    for (const rate of hourlyRates) {
+      if (!rate.numeric) continue;
+      syntheticEvidence.push({
+        ...rate,
+        id: `SYNTH-${rate.id}`,
+        claim: `Synthesized total value from ${rate.sourceLabel} hourly rate using ${totalHours} total deal hours.`,
+        numeric: {
+          ...rate.numeric,
+          valueType: 'ESTIMATED_VALUE',
+          units: 'TOTAL_USD',
+          originalValue: rate.numeric.originalValue * totalHours,
+        }
+      });
+    }
+  }
+
+  const anchors = syntheticEvidence
     .map((evidence) => evaluateAnchor(evidence, draft, options))
     .filter((anchor): anchor is EvaluatedNumericAnchor => Boolean(anchor));
   const included = anchors.filter((anchor) => anchor.included && anchor.normalizedValue !== null);
@@ -164,9 +189,9 @@ export function calculateDeterministicScenarios(
 
   if (included.length === 1) {
     const single = included[0];
-    const exceptionallyStrong = single.comparabilityScore >= 0.8 &&
-      single.evidenceQuality >= 0.8 &&
-      single.normalizationConfidence >= 0.8;
+    const exceptionallyStrong = single.comparabilityScore >= 0.65 &&
+      single.evidenceQuality >= 0.65 &&
+      single.normalizationConfidence >= 0.65;
     status = exceptionallyStrong ? 'DIRECTIONAL' : 'INSUFFICIENT_EVIDENCE';
   }
 
