@@ -32,6 +32,49 @@ test('SAM.gov is optional and reports a missing key without blocking', async () 
   }
 });
 
+test('SAM.gov uses exact solnum search and parses attachments correctly', async () => {
+  const originalKey = process.env.SAM_API_KEY;
+  process.env.SAM_API_KEY = 'TEST-KEY';
+  await withMockFetch(async (url, init) => {
+    const params = new URL(url as string).searchParams;
+    assert.equal(params.get('solnum'), 'W9128F21R0001');
+    assert.ok(!params.has('postedFrom'), 'Should not use dates when solnum is provided');
+    
+    return new Response(JSON.stringify({
+      opportunitiesData: [{
+        noticeId: 'O-123',
+        title: 'Enterprise IT',
+        solicitationNumber: 'W9128F21R0001',
+        resourceLinks: [
+          { name: 'SOW.pdf', link: 'http://sam.gov/sow', type: 'document' },
+          { name: 'Pricing.xlsx', link: 'http://sam.gov/pricing', type: 'document' },
+        ]
+      }]
+    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+  }, async () => {
+    const result = await querySamGov(mockDeal, ['SOW.pdf', 'Technical_Approach.pdf']);
+    assert.equal(result.status, 'SUCCESS');
+    assert.equal(result.samDocuments?.length, 2);
+    assert.equal(result.samDocuments?.[0].provided, true); // Matches exact name
+    assert.equal(result.samDocuments?.[1].provided, false); // Pricing.xlsx was not uploaded
+  });
+  if (originalKey) process.env.SAM_API_KEY = originalKey;
+});
+
+test('SAM.gov handles error states honestly without crashing', async () => {
+  const originalKey = process.env.SAM_API_KEY;
+  process.env.SAM_API_KEY = 'TEST-KEY';
+  await withMockFetch(async () => {
+    return new Response(JSON.stringify({ error: 'Gateway timeout' }), { status: 504 });
+  }, async () => {
+    const result = await querySamGov(mockDeal);
+    assert.equal(result.success, false);
+    assert.equal(result.status, 'SOURCE_UNAVAILABLE');
+    assert.equal(result.evidence.length, 0);
+  });
+  if (originalKey) process.env.SAM_API_KEY = originalKey;
+});
+
 test('GSA CALC+ treats a missing labor category as a valid zero-result query', async () => {
   const result = await queryGsaCalc([]);
   assert.equal(result.status, 'ZERO_RESULTS');

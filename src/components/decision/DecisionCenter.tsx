@@ -1,4 +1,4 @@
-import { AlertTriangle, CheckCircle2, FileSearch, Gauge, Scale, Target } from 'lucide-react';
+import { AlertTriangle, CheckCircle2, FileSearch, Gauge, Scale, Target, FileText, ExternalLink } from 'lucide-react';
 import type { EvaluatedNumericAnchor, OpportunityAnalysis } from '../../types';
 import { authoritativeScenarioValues } from '../../domain/marketPosition/authoritative';
 
@@ -37,8 +37,56 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
   const supported = position.rangeStatus === 'SUPPORTED';
   const directional = position.rangeStatus === 'DIRECTIONAL';
 
+  const samConnector = analysis.meta.connectors?.find(c => c.name === 'SAM.gov');
+  const samDocs = samConnector?.samDocuments || [];
+  const missingDocs = samDocs.filter(d => !d.provided);
+  const providedDocs = samDocs.filter(d => d.provided);
+  const samFailed = samConnector?.status === 'ERROR' || samConnector?.status === 'UNAVAILABLE' || samConnector?.status === 'TIMEOUT';
+  
   return (
-    <div className="space-y-6 print:block">
+    <div className="space-y-6">
+      {(missingDocs.length > 0 || samFailed) && (
+        <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 text-amber-600 shrink-0" />
+            <div>
+              <h3 className="text-sm font-black text-amber-900">
+                {samFailed ? 'SAM.gov verification unavailable' : 'Incomplete Opportunity Package'}
+              </h3>
+              <p className="mt-1 text-xs text-amber-800">
+                {samFailed 
+                  ? `SAM.gov could not be reached (${samConnector?.status}). The Market Position may be limited due to unverified metadata and attachments.`
+                  : `You uploaded a partial solicitation. Missing official documents may contain pricing constraints or key scope changes.`
+                }
+              </p>
+              {missingDocs.length > 0 && (
+                <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  {missingDocs.map((doc, idx) => (
+                    <a key={idx} href={doc.url} target="_blank" rel="noreferrer" className="flex items-center gap-2 rounded-lg bg-white p-2.5 text-xs text-slate-700 shadow-sm border border-slate-200 hover:border-blue-400">
+                      <FileText className="h-4 w-4 shrink-0 text-slate-400" />
+                      <span className="truncate flex-1">{doc.name}</span>
+                      <ExternalLink className="h-3 w-3 text-slate-400" />
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {providedDocs.length > 0 && !samFailed && (
+        <section className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4 flex flex-wrap items-center gap-4">
+          <div className="flex items-center gap-2">
+            <CheckCircle2 className="h-5 w-5 text-emerald-600" />
+            <div>
+              <h3 className="text-xs font-black text-emerald-900">Verified against SAM.gov</h3>
+              <p className="text-[10px] text-emerald-700">{providedDocs.length} of {samDocs.length} official documents provided</p>
+            </div>
+          </div>
+        </section>
+      )}
+
       <section className="rounded-2xl bg-[#10243e] p-6 text-white sm:p-8">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

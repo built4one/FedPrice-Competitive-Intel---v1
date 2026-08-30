@@ -1,7 +1,10 @@
-import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, Printer, RefreshCw, ShieldAlert } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { createRoot } from 'react-dom/client';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, Printer, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
+import { ExecutiveBrief } from './decision/ExecutiveBrief';
+import html2pdf from 'html2pdf.js';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
 type Tab = 'decision-center' | 'deal' | 'intelligence' | 'competition' | 'evidence' | 'validation';
@@ -22,12 +25,55 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('decision-center');
   const [notice, setNotice] = useState('');
   const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
+  const [isExportingPdf, setIsExportingPdf] = useState(false);
 
   const exportExcel = async () => {
     const response = await fetch('/api/export-brief', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
     if (!response.ok) return setNotice('Export failed. Try again.');
     const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
     anchor.href = url; anchor.download = `${analysis.deal.solicitationNumber || 'Market_Position'}_Brief.xlsx`; anchor.click(); URL.revokeObjectURL(url); setNotice('Excel evidence package downloaded.');
+  };
+
+  const printPdf = async () => {
+    if (isExportingPdf) return;
+    setIsExportingPdf(true);
+    setNotice('Generating Brief...');
+
+    const tempDiv = document.createElement('div');
+    tempDiv.style.position = 'absolute';
+    tempDiv.style.left = '-9999px';
+    tempDiv.style.top = '-9999px';
+    tempDiv.style.width = '800px'; 
+    document.body.appendChild(tempDiv);
+    
+    const root = createRoot(tempDiv);
+    root.render(<ExecutiveBrief analysis={analysis} />);
+    
+    await new Promise(r => setTimeout(r, 1000)); // wait for render
+    
+    const safeAgency = (analysis.deal.agency || 'Agency').replace(/[^a-zA-Z0-9-]/g, '_');
+    const safeSol = (analysis.deal.solicitationNumber || 'Solicitation').replace(/[^a-zA-Z0-9-]/g, '_');
+    const filename = `Federal-Market-Position_${safeAgency}_${safeSol}.pdf`;
+    
+    const opt = {
+      margin: 10,
+      filename: filename,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, logging: false },
+      jsPDF: { unit: 'mm', format: 'letter', orientation: 'portrait' as const }
+    };
+    
+    try {
+      await html2pdf().set(opt).from(tempDiv).save();
+      setNotice('PDF brief generated.');
+    } catch (err) {
+      console.error(err);
+      setNotice('Failed to generate PDF.');
+    } finally {
+      root.unmount();
+      document.body.removeChild(tempDiv);
+      setIsExportingPdf(false);
+    }
   };
 
   const retryConnector = async (source: ConnectorStatus['name']) => {
@@ -48,9 +94,9 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   };
 
   return <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8 print:max-w-none print:p-0">
-    {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
+    {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl print:hidden"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
     
-    <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between">
+    <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between print:hidden">
       <div>
         <button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button>
         <div className="mt-4 flex flex-wrap items-center gap-2">
@@ -62,14 +108,18 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       </div>
       <div className="flex flex-wrap gap-2 print:hidden">
         <button onClick={exportExcel} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black"><Download className="h-4 w-4" /> XLSX</button>
-        <button onClick={() => window.print()} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white"><Printer className="h-4 w-4" /> PRINT / PDF</button>
+        <button onClick={printPdf} disabled={isExportingPdf} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
+          {isExportingPdf ? <Loader2 className="h-4 w-4 animate-spin" /> : <Printer className="h-4 w-4" />}
+          {isExportingPdf ? 'GENERATING...' : 'EXPORT PDF'}
+        </button>
       </div>
     </div>
     
-    {analysis.meta.warnings.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><strong className="mr-2">Research note:</strong>{analysis.meta.warnings.join(' ')}</div>}
-    
-    {analysis.meta.connectors && analysis.meta.connectors.length > 0 && (
-      <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4 print:hidden">
+    <div className="print:hidden">
+      {analysis.meta.warnings.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><strong className="mr-2">Research note:</strong>{analysis.meta.warnings.join(' ')}</div>}
+      
+      {analysis.meta.connectors && analysis.meta.connectors.length > 0 && (
+        <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
         <div className="flex items-center justify-between"><div><h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Source Intelligence</h2><p className="mt-1 text-xs text-slate-400">Official-source health, query scope, and retrieval evidence.</p></div></div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {analysis.meta.connectors.map((connector) => (
@@ -96,6 +146,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       {tab === 'evidence' && <EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} />}
       {tab === 'intelligence' && <IntelligenceView analysis={analysis} />}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
+    </div>
     </div>
   </div>;
 }

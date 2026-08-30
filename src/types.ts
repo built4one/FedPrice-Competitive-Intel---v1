@@ -222,6 +222,7 @@ export interface ConnectorStatus {
   attempts?: number;
   retrievedAt?: string;
   querySummary?: string;
+  samDocuments?: { name: string; url: string; provided: boolean; type: string }[];
 }
 
 export interface AnalysisMeta {

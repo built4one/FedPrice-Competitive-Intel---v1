@@ -299,9 +299,9 @@ function connectorCacheKey(name: ConnectorStatus['name'], deal: OpportunityAnaly
   return JSON.stringify([name, deal.agency, deal.naics, deal.solicitationNumber, deal.title, labor]);
 }
 
-async function runConnectorSet(deal: OpportunityAnalysis['deal'], only?: ConnectorStatus['name'], force = false) {
+async function runConnectorSet(deal: OpportunityAnalysis['deal'], only?: ConnectorStatus['name'], force = false, fileNames: string[] = []) {
   const tasks: Record<ConnectorStatus['name'], () => Promise<AdapterResult>> = {
-    'SAM.gov': () => querySamGov(deal),
+    'SAM.gov': () => querySamGov(deal, fileNames),
     USAspending: () => queryUSASpending(deal),
     'GSA CALC+': () => queryGsaCalc(deal.laborSignals || []),
     BLS: () => queryBls(),
@@ -337,6 +337,7 @@ function connectorStatus(result: AdapterResult): ConnectorStatus {
     attempts: result.attempts,
     retrievedAt: result.retrievedAt,
     querySummary: result.querySummary,
+    samDocuments: result.samDocuments,
   };
 }
 
@@ -376,15 +377,18 @@ ${JSON.stringify(official)}`,
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 
-async function analyzeFile(file: Express.Multer.File): Promise<OpportunityAnalysis> {
+async function analyzeFiles(files: Express.Multer.File[]): Promise<OpportunityAnalysis> {
   const client = aiClient();
+  const inlineDataParts = files.map(file => ({
+    inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype || 'application/octet-stream' }
+  }));
   const response = await client.models.generateContent({
     model,
     contents: [{
       role: 'user',
       parts: [
         { text: analysisPrompt },
-        { inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype || 'application/octet-stream' } },
+        ...inlineDataParts,
       ],
     }],
     config: { responseMimeType: 'application/json', responseSchema: baseSchema as never, temperature: 0.15 },
@@ -399,7 +403,8 @@ async function analyzeFile(file: Express.Multer.File): Promise<OpportunityAnalys
   const connectors: ConnectorStatus[] = [];
 
   try {
-    const results = await runConnectorSet(draft.deal);
+    const fileNames = files.map(f => f.originalname);
+    const results = await runConnectorSet(draft.deal, undefined, false, fileNames);
     for (const result of results) {
       connectors.push(connectorStatus(result));
       draft.evidence = mergeEvidence(draft.evidence, result.evidence);
@@ -523,19 +528,22 @@ app.delete('/api/runs/:id', (req, res) => {
   res.json({ success: true });
 });
 
-app.post('/api/analyze-solicitation', upload.single('file'), async (req, res) => {
+app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) => {
   try {
-    if (!req.file) return res.status(400).json({ error: 'Choose a solicitation file before starting the analysis.' });
+    const files = req.files as Express.Multer.File[];
+    if (!files || files.length === 0) return res.status(400).json({ error: 'Choose solicitation files before starting the analysis.' });
     const allowed = [
       'application/pdf',
       'text/plain',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/msword',
     ];
-    if (!allowed.includes(req.file.mimetype)) {
-      return res.status(415).json({ error: 'Use a PDF, DOCX, DOC, or TXT solicitation file.' });
+    for (const file of files) {
+      if (!allowed.includes(file.mimetype)) {
+        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, DOC, or TXT file.` });
+      }
     }
-    res.json({ data: await analyzeFile(req.file) });
+    res.json({ data: await analyzeFiles(files) });
   } catch (error) {
     console.error('Analysis failed', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });

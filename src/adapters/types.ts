@@ -12,4 +12,5 @@ export interface AdapterResult {
   attempts: number;
   retrievedAt: string;
   querySummary: string;
+  samDocuments?: { name: string; url: string; provided: boolean; type: string }[];
 }
