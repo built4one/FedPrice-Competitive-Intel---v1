@@ -3,7 +3,6 @@ import crypto from 'node:crypto';
 import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import ExcelJS from 'exceljs';
 import type {
@@ -772,6 +771,7 @@ app.use((error: unknown, _req: express.Request, res: express.Response, next: exp
 
 async function start() {
   if (process.env.NODE_ENV !== 'production') {
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({ server: { middlewareMode: true }, appType: 'spa' });
     app.use(vite.middlewares);
   } else {
