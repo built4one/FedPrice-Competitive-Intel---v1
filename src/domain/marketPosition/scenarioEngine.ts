@@ -8,7 +8,7 @@ import type {
 import { scoreComparability, scoreEvidenceQuality } from './comparability';
 import { ENGINE_THRESHOLDS, MARKET_POSITION_ENGINE_VERSION } from './engineConfig';
 import { calculateEvidenceReadiness, effectiveSampleSize } from './readiness';
-import { determineCalculationRole, normalizeNumericEvidence, extractPeriodMonths } from './valueNormalization';
+import { determineCalculationRole, normalizeNumericEvidence } from './valueNormalization';
 
 interface EngineOptions {
   asOfDate: string;
@@ -89,6 +89,9 @@ function evaluateAnchor(
     exclusionReasons: [...new Set(exclusionReasons)],
     normalizationSteps: normalization.steps,
     evidenceIds: [...new Set([evidence.id, ...normalization.steps.flatMap((step) => step.evidenceIds)])],
+    valueBasis: numeric.valueBasis,
+    rangeBound: numeric.rangeBound,
+    rangeId: numeric.rangeId,
   };
 }
 
@@ -127,32 +130,7 @@ export function calculateDeterministicScenarios(
   if (!options.asOfDate || Number.isNaN(Date.parse(options.asOfDate))) {
     throw new Error('A valid as-of date is required for deterministic Market Position calculations.');
   }
-  
-  // Component Synthesizer: Convert HOURLY_CEILING_RATE to an ESTIMATED_VALUE central anchor if labor hours exist
-  const totalAnnualHours = draft.deal.laborSignals?.reduce((sum, ls) => sum + (ls.annualHours || 0) * (ls.quantity || 1), 0) || 0;
-  const targetMonths = extractPeriodMonths(draft.deal.periodOfPerformance) || 12;
-  const totalHours = totalAnnualHours * (targetMonths / 12);
-  
-  const syntheticEvidence = [...draft.evidence];
-  if (totalHours > 0) {
-    const hourlyRates = draft.evidence.filter(e => e.numeric?.valueType === 'HOURLY_CEILING_RATE' && e.numeric.units === 'USD_PER_HOUR');
-    for (const rate of hourlyRates) {
-      if (!rate.numeric) continue;
-      syntheticEvidence.push({
-        ...rate,
-        id: `SYNTH-${rate.id}`,
-        claim: `Synthesized total value from ${rate.sourceLabel} hourly rate using ${totalHours} total deal hours.`,
-        numeric: {
-          ...rate.numeric,
-          valueType: 'ESTIMATED_VALUE',
-          units: 'TOTAL_USD',
-          originalValue: rate.numeric.originalValue * totalHours,
-        }
-      });
-    }
-  }
-
-  const anchors = syntheticEvidence
+  const anchors = draft.evidence
     .map((evidence) => evaluateAnchor(evidence, draft, options))
     .filter((anchor): anchor is EvaluatedNumericAnchor => Boolean(anchor));
   const included = anchors.filter((anchor) => anchor.included && anchor.normalizedValue !== null);
@@ -222,6 +200,25 @@ export function calculateDeterministicScenarios(
     `Evidence Readiness was ${readiness.score}/100.`,
   ];
 
+  const officialRanges = new Map<string, EvaluatedNumericAnchor[]>();
+  for (const anchor of included) {
+    if (!anchor.rangeId || !anchor.rangeBound || anchor.valueBasis !== 'INDIVIDUAL_AWARD') continue;
+    officialRanges.set(anchor.rangeId, [...(officialRanges.get(anchor.rangeId) || []), anchor]);
+  }
+  const supportedOfficialRange = [...officialRanges.values()].find((items) =>
+    items.some((item) => item.rangeBound === 'LOW') && items.some((item) => item.rangeBound === 'HIGH'),
+  );
+  if (supportedOfficialRange) {
+    const low = supportedOfficialRange.find((item) => item.rangeBound === 'LOW')?.normalizedValue;
+    const high = supportedOfficialRange.find((item) => item.rangeBound === 'HIGH')?.normalizedValue;
+    if (low !== null && low !== undefined && high !== null && high !== undefined && low <= high) {
+      aggressive = low;
+      conservative = high;
+      expected = clamp(low, high, expected);
+      rangeFactors.push('A solicitation-stated individual-award range directly bounded Aggressive and Conservative.');
+    }
+  }
+
   const applicableCeilings = anchors.filter((anchor) =>
     anchor.role === 'CONSTRAINT' &&
     anchor.normalizedValue !== null &&
@@ -239,9 +236,15 @@ export function calculateDeterministicScenarios(
         [...rangeFactors, 'Comparable evidence materially conflicts with the verified opportunity ceiling.'],
       );
     }
-    expected = Math.min(expected, ceiling);
+    if (expected > ceiling) {
+      return insufficientPosition(
+        draft,
+        anchors,
+        { ...readiness, score: Math.min(readiness.score, 44) },
+        [...rangeFactors, 'The weighted evidence exceeds a verified compatible ceiling, indicating unlike value bases or unresolved conflict.'],
+      );
+    }
     conservative = Math.min(conservative, ceiling);
-    aggressive = Math.min(aggressive, expected);
   }
 
   aggressive = Math.min(aggressive, expected);

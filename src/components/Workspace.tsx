@@ -5,14 +5,12 @@ import DecisionCenter from './decision/DecisionCenter';
 import { ExecutiveBrief } from './decision/ExecutiveBrief';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
-type Tab = 'decision-center' | 'deal' | 'intelligence' | 'competition' | 'evidence' | 'validation';
+type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
 
 const tabs: [Tab, string][] = [
-  ['decision-center', 'Decision Center'],
-  ['deal', 'Deal facts'],
-  ['intelligence', 'Intelligence'],
-  ['competition', 'Competition'],
-  ['evidence', 'Evidence'],
+  ['decision-center', 'Decision Brief'],
+  ['deal', 'Opportunity'],
+  ['market-evidence', 'Market Evidence'],
   ['validation', 'Validation']
 ];
 
@@ -64,7 +62,8 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button>
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">MARKET POSITION</span>
-          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">{analysis.meta.researchStatus?.replaceAll('_',' ')}</span>
+          <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">QUALITATIVE: {analysis.meta.researchStatus?.replaceAll('_',' ')}</span>
+          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${analysis.marketPosition.rangeStatus === 'SUPPORTED' ? 'bg-emerald-100 text-emerald-700' : analysis.marketPosition.rangeStatus === 'DIRECTIONAL' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>NUMERIC: {analysis.marketPosition.rangeStatus.replaceAll('_', ' ')}</span>
         </div>
         <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1>
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
@@ -82,8 +81,8 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       {analysis.meta.warnings.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><strong className="mr-2">Research note:</strong>{analysis.meta.warnings.join(' ')}</div>}
       
       {analysis.meta.connectors && analysis.meta.connectors.length > 0 && (
-        <div className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
-        <div className="flex items-center justify-between"><div><h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Source Intelligence</h2><p className="mt-1 text-xs text-slate-400">Official-source health, query scope, and retrieval evidence.</p></div></div>
+        <details className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
+        <summary className="cursor-pointer list-none"><div className="flex items-center justify-between gap-4"><div><h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Research Status</h2><p className="mt-1 text-xs text-slate-400">{analysis.meta.connectors.filter((connector) => connector.status === 'SUCCESS' || connector.status === 'CACHED').length} of {analysis.meta.connectors.length} public sources returned usable records. Expand for diagnostics.</p></div><span className="text-[10px] font-black text-blue-600">VIEW SOURCES</span></div></summary>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
           {analysis.meta.connectors.map((connector) => (
             <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
@@ -95,7 +94,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
             </div>
           ))}
         </div>
-      </div>
+      </details>
     )}
 
     <div className="mt-5 flex gap-1 overflow-x-auto border-b border-slate-200 print:hidden">
@@ -105,9 +104,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     <div className="mt-8">
       {tab === 'decision-center' && <DecisionCenter analysis={analysis} />}
       {tab === 'deal' && <DealView analysis={analysis} />}
-      {tab === 'competition' && <CompetitionView analysis={analysis} />}
-      {tab === 'evidence' && <EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} />}
-      {tab === 'intelligence' && <IntelligenceView analysis={analysis} />}
+      {tab === 'market-evidence' && <div className="space-y-10"><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
     </div>
     </div>

@@ -23,13 +23,37 @@ const responseSchema = z.object({
   }).passthrough(),
 }).passthrough();
 
-const usefulTokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && !['the', 'and', 'for', 'senior', 'junior'].includes(token));
+const usefulTokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && ![
+  'the', 'and', 'for', 'senior', 'junior', 'level', 'personnel', 'key', 'lead', 'specialist',
+].includes(token));
+
+const canonicalRoles: Array<[RegExp, string]> = [
+  [/data scientist/i, 'Data Scientist'],
+  [/software|application developer|full.?stack/i, 'Software Engineer'],
+  [/cloud/i, 'Cloud Engineer'],
+  [/cyber|information security|security engineer/i, 'Cybersecurity Engineer'],
+  [/systems? engineer/i, 'Systems Engineer'],
+  [/program manager|project manager/i, 'Program Manager'],
+  [/business analyst/i, 'Business Analyst'],
+  [/subject matter expert|\bSME\b/i, 'Subject Matter Expert'],
+  [/data engineer/i, 'Data Engineer'],
+  [/solution architect|technical architect/i, 'Solution Architect'],
+];
+
+function normalizeLaborCategory(value: string) {
+  return canonicalRoles.find(([pattern]) => pattern.test(value))?.[1];
+}
 
 export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<AdapterResult> {
   const retrievedAt = new Date().toISOString();
-  const category = laborSignals?.find((item) => item.title?.trim())?.title?.trim();
-  const querySummary = category ? `labor category: ${category}` : 'No labor category extracted';
-  if (!category) {
+  const categories = [...new Set((laborSignals || [])
+    .map((item) => item.title?.trim())
+    .filter((title): title is string => Boolean(title))
+    .map(normalizeLaborCategory)
+    .filter((title): title is string => Boolean(title)))]
+    .slice(0, 4);
+  const querySummary = categories.length ? `labor categories: ${categories.join(', ')}` : 'No sufficiently specific labor category extracted';
+  if (!categories.length) {
     return {
       name: 'GSA CALC+', success: true, status: 'ZERO_RESULTS', recordsFound: 0, evidence: [],
       message: 'No labor category was available to search.', durationMs: 0, attempts: 0, retrievedAt, querySummary,
@@ -37,17 +61,27 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
   }
 
   try {
-    const url = `https://api.gsa.gov/acquisition/calc/v3/api/ceilingrates/?keyword=${encodeURIComponent(category)}`;
-    const response = await fetchJsonWithRetry<unknown>(url, { headers: { Accept: 'application/json' } }, { timeoutMs: 15_000, maxAttempts: 3 });
-    const parsed = responseSchema.parse(response.data);
-    const tokens = usefulTokens(category);
-    const comparable = parsed.hits.hits
-      .map((hit) => hit._source)
-      .filter((rate) => {
-        const normalized = rate.labor_category.toLowerCase();
-        return tokens.length === 0 || tokens.some((token) => normalized.includes(token));
-      })
-      .slice(0, 10);
+    const settled = await Promise.allSettled(categories.map(async (category) => {
+      const url = `https://api.gsa.gov/acquisition/calc/v3/api/ceilingrates/?keyword=${encodeURIComponent(category)}`;
+      const response = await fetchJsonWithRetry<unknown>(url, { headers: { Accept: 'application/json' } }, { timeoutMs: 12_000, maxAttempts: 2 });
+      const parsed = responseSchema.parse(response.data);
+      const tokens = usefulTokens(category);
+      const rates = parsed.hits.hits
+        .map((hit) => hit._source)
+        .filter((rate) => {
+          const normalized = rate.labor_category.toLowerCase();
+          const matches = tokens.filter((token) => normalized.includes(token)).length;
+          return tokens.length > 0 && matches / tokens.length >= 0.5;
+        })
+        .slice(0, 3);
+      return { response, rates };
+    }));
+    const successful = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    if (!successful.length) {
+      const firstFailure = settled.find((result) => result.status === 'rejected');
+      throw firstFailure && firstFailure.status === 'rejected' ? firstFailure.reason : new Error('GSA CALC+ searches failed.');
+    }
+    const comparable = successful.flatMap((result) => result.rates);
 
     const evidence: EvidenceItem[] = comparable.map((rate) => {
       const price = Number(rate.current_price);
@@ -76,7 +110,8 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
     return {
       name: 'GSA CALC+', success: true, status: evidence.length ? 'SUCCESS' : 'ZERO_RESULTS', recordsFound: evidence.length, evidence,
       message: evidence.length ? undefined : 'GSA responded successfully but returned no sufficiently comparable labor categories.',
-      durationMs: response.durationMs, attempts: response.attempts, retrievedAt, querySummary,
+      durationMs: Math.max(0, ...successful.map((result) => result.response.durationMs)),
+      attempts: successful.reduce((sum, result) => sum + result.response.attempts, 0), retrievedAt, querySummary,
     };
   } catch (error) {
     const failure = error instanceof ConnectorError ? error : undefined;

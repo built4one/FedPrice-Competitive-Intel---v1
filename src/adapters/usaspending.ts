@@ -27,6 +27,43 @@ const responseSchema = z.object({
 const isoDate = (date: Date) => date.toISOString().slice(0, 10);
 const validNaics = (value?: string) => value?.match(/\b\d{6}\b/)?.[0];
 
+const agencyAliases: Array<[RegExp, { tier: 'toptier' | 'subtier'; name: string }]> = [
+  [/\bNASA\b|National Aeronautics|Langley/i, { tier: 'toptier', name: 'National Aeronautics and Space Administration' }],
+  [/Food and Drug|\bFDA\b/i, { tier: 'subtier', name: 'Food and Drug Administration' }],
+  [/Air Force|\bAFRL\b/i, { tier: 'subtier', name: 'Department of the Air Force' }],
+  [/\bArmy\b|ACC-/i, { tier: 'subtier', name: 'Department of the Army' }],
+  [/\bNavy\b|NAVSEA|NAVAIR/i, { tier: 'subtier', name: 'Department of the Navy' }],
+  [/Department of Defense|\bDoD\b/i, { tier: 'toptier', name: 'Department of Defense' }],
+  [/Health and Human Services|\bHHS\b/i, { tier: 'toptier', name: 'Department of Health and Human Services' }],
+];
+
+export function normalizeAwardingAgency(value?: string) {
+  if (!value?.trim()) return undefined;
+  return agencyAliases.find(([pattern]) => pattern.test(value))?.[1] || { tier: 'toptier' as const, name: value.trim() };
+}
+
+const stopWords = new Set(['and', 'the', 'for', 'with', 'from', 'this', 'that', 'services', 'service', 'support', 'contract', 'department']);
+const textTokens = (value?: string) => new Set((value || '').toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && !stopWords.has(token)));
+const overlap = (left?: string, right?: string) => {
+  const a = textTokens(left); const b = textTokens(right);
+  if (!a.size || !b.size) return undefined;
+  return [...a].filter((token) => b.has(token)).length / Math.min(a.size, b.size);
+};
+
+function awardRelevance(award: z.infer<typeof awardSchema>, deal: DealProfile) {
+  const factors: Array<[number, number | undefined]> = [];
+  const targetAgency = normalizeAwardingAgency(deal.agency)?.name;
+  const awardAgency = `${award['Awarding Agency'] || ''} ${award['Awarding Sub Agency'] || ''}`;
+  factors.push([0.35, overlap(targetAgency, awardAgency)]);
+  factors.push([0.35, overlap(`${deal.title} ${deal.scopeSummary}`, award['Description'] || undefined)]);
+  const targetNaics = validNaics(deal.naics);
+  const awardNaics = validNaics(award['NAICS Code'] ? String(award['NAICS Code']) : undefined);
+  factors.push([0.20, targetNaics && awardNaics ? (targetNaics === awardNaics ? 1 : targetNaics.slice(0, 4) === awardNaics.slice(0, 4) ? 0.6 : 0) : undefined]);
+  factors.push([0.10, deal.psc && award['Product or Service Code'] ? (deal.psc === award['Product or Service Code'] ? 1 : deal.psc.slice(0, 2) === award['Product or Service Code']?.slice(0, 2) ? 0.6 : 0) : undefined]);
+  const covered = factors.reduce((sum, [weight, value]) => sum + (value === undefined ? 0 : weight), 0);
+  return covered ? factors.reduce((sum, [weight, value]) => sum + weight * (value || 0), 0) / covered : 0;
+}
+
 function filtersFor(deal: DealProfile, broadened = false) {
   const start = new Date();
   start.setUTCFullYear(start.getUTCFullYear() - 8);
@@ -36,8 +73,9 @@ function filtersFor(deal: DealProfile, broadened = false) {
   };
   const naics = validNaics(deal.naics);
   if (naics) filters.naics_codes = { require: [naics] };
-  if (!broadened && deal.agency?.trim()) {
-    filters.agencies = [{ type: 'awarding', tier: 'toptier', name: deal.agency.trim() }];
+  const agency = normalizeAwardingAgency(deal.agency);
+  if (!broadened && agency) {
+    filters.agencies = [{ type: 'awarding', tier: agency.tier, name: agency.name }];
   }
   return filters;
 }
@@ -50,7 +88,7 @@ async function search(deal: DealProfile, broadened: boolean) {
       'Awarding Sub Agency', 'Award Type', 'Description', 'NAICS Code', 'Product or Service Code',
     ],
     page: 1,
-    limit: 10,
+    limit: 50,
     subawards: false,
   };
   return fetchJsonWithRetry<unknown>('https://api.usaspending.gov/api/v2/search/spending_by_award/', {
@@ -91,7 +129,13 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
       broadened = true;
     }
 
-    const evidence: EvidenceItem[] = parsed.results.map((award, index) => {
+    const ranked = parsed.results
+      .map((award) => ({ award, relevance: awardRelevance(award, deal) }))
+      .filter(({ relevance }) => relevance >= 0.45)
+      .sort((a, b) => b.relevance - a.relevance)
+      .slice(0, 10);
+
+    const evidence: EvidenceItem[] = ranked.map(({ award }, index) => {
       const amount = Number(award['Award Amount'] ?? 0);
       const awardId = award['Award ID'] || `record-${index + 1}`;
       const recipient = award['Recipient Name'] || 'recipient not reported';
@@ -123,6 +167,7 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
           scopeText: award['Description'] || undefined,
           acquisitionStructure: award['Award Type'] || undefined,
           laborIntensity: 'UNKNOWN' as const,
+          valueBasis: 'INDIVIDUAL_AWARD' as const,
         } : undefined,
         retrievedAt,
         url: award.generated_internal_id ? `https://www.usaspending.gov/award/${award.generated_internal_id}` : 'https://www.usaspending.gov/search',
@@ -132,9 +177,9 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
     return {
       name: 'USAspending', success: true, status: evidence.length ? 'SUCCESS' : 'ZERO_RESULTS',
       recordsFound: evidence.length, evidence,
-      message: evidence.length ? undefined : 'The query completed successfully but found no comparable awards.',
+      message: evidence.length ? undefined : `The query completed successfully but none of ${parsed.results.length} returned awards met the minimum relevance standard.`,
       durationMs: response.durationMs, attempts: response.attempts, retrievedAt,
-      querySummary: `${querySummary}${broadened ? ' · broadened to NAICS' : ''}`,
+      querySummary: `${querySummary}${broadened ? ' · broadened to NAICS' : ''} · ${evidence.length}/${parsed.results.length} relevance-qualified`,
     };
   } catch (error) {
     const failure = error instanceof ConnectorError ? error : undefined;

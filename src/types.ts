@@ -16,6 +16,15 @@ export type NumericValueType =
   | 'UNKNOWN';
 
 export type NumericUnits = 'TOTAL_USD' | 'USD_PER_HOUR' | 'PERCENT' | 'OTHER';
+export type NumericValueBasis =
+  | 'OPPORTUNITY_TOTAL'
+  | 'INDIVIDUAL_AWARD'
+  | 'PROGRAM_TOTAL'
+  | 'MULTIPLE_AWARD_POOL'
+  | 'ORDER_LIMIT'
+  | 'PAST_PERFORMANCE_THRESHOLD'
+  | 'BUDGET'
+  | 'UNKNOWN';
 export type CalculationRole = 'CENTRAL_ANCHOR' | 'CONSTRAINT' | 'MODIFIER' | 'COMPONENT' | 'CONTEXT' | 'EXCLUDED';
 
 export interface DealFact { label: string; value: string; section?: string; confidence: number; }
@@ -52,6 +61,9 @@ export interface NumericEvidence {
   recurringService?: boolean;
   scalableByQuantity?: boolean;
   sharedAcrossAwards?: boolean;
+  valueBasis?: NumericValueBasis;
+  rangeBound?: 'LOW' | 'HIGH';
+  rangeId?: string;
 }
 
 export interface EvidenceItem {
@@ -137,6 +149,9 @@ export interface EvaluatedNumericAnchor {
   exclusionReasons: string[];
   normalizationSteps: NormalizationStep[];
   evidenceIds: string[];
+  valueBasis?: NumericValueBasis;
+  rangeBound?: 'LOW' | 'HIGH';
+  rangeId?: string;
 }
 
 export interface EvidenceReadinessBreakdown {

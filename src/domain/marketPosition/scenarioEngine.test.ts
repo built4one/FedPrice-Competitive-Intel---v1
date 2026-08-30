@@ -138,7 +138,7 @@ test('normalizes recurring service duration with an explicit traceable step', ()
 });
 
 test('never mixes hourly rates or escalation percentages into total contract value', () => {
-  const result = calculateDeterministicScenarios(draft([
+  const hourlyDraft = draft([
     evidence('TOTAL', 100_000_000, { opportunitySpecific: true }, { type: 'SOLICITATION_FACT', section: 'B.2' }),
     evidence('RATE', 190, {
       valueType: 'HOURLY_CEILING_RATE',
@@ -151,11 +151,38 @@ test('never mixes hourly rates or escalation percentages into total contract val
       currency: 'UNKNOWN',
       periodMonths: undefined,
     }),
-  ]), { asOfDate });
+  ]);
+  hourlyDraft.deal = { ...deal, laborSignals: [{ title: 'Cloud Engineer', quantity: 20, annualHours: 2_000 }] };
+  const result = calculateDeterministicScenarios(hourlyDraft, { asOfDate });
   assert.equal(result.expected, 100_000_000);
   assert.equal(result.anchors.find((anchor) => anchor.evidenceId === 'RATE')?.role, 'COMPONENT');
   assert.equal(result.anchors.find((anchor) => anchor.evidenceId === 'BLS')?.role, 'MODIFIER');
   assert.equal(result.anchors.filter((anchor) => anchor.included).length, 1);
+  assert.equal(result.anchors.some((anchor) => anchor.evidenceId.startsWith('SYNTH-')), false);
+});
+
+test('uses a solicitation-stated individual award range without mixing in program funding', () => {
+  const result = calculateDeterministicScenarios(draft([
+    evidence('PROGRAM', 460_000_000, { opportunitySpecific: true, valueBasis: 'PROGRAM_TOTAL' }, { type: 'SOLICITATION_FACT', section: 'Funding' }),
+    evidence('LOW', 10_000_000, { opportunitySpecific: true, valueBasis: 'INDIVIDUAL_AWARD', rangeBound: 'LOW', rangeId: 'RANGE-1' }, { type: 'SOLICITATION_FACT', section: 'Funding' }),
+    evidence('HIGH', 50_000_000, { opportunitySpecific: true, valueBasis: 'INDIVIDUAL_AWARD', rangeBound: 'HIGH', rangeId: 'RANGE-1' }, { type: 'SOLICITATION_FACT', section: 'Funding' }),
+    evidence('CEILING', 99_000_000, { valueType: 'CONTRACT_CEILING', opportunitySpecific: true, valueBasis: 'INDIVIDUAL_AWARD' }, { type: 'SOLICITATION_FACT', section: 'Funding' }),
+  ]), { asOfDate });
+  assert.equal(result.anchors.find((anchor) => anchor.evidenceId === 'PROGRAM')?.role, 'CONTEXT');
+  assert.equal(result.aggressive, 10_000_000);
+  assert.equal(result.expected, 30_000_000);
+  assert.equal(result.conservative, 50_000_000);
+  assert.notEqual(result.aggressive, result.conservative);
+});
+
+test('excludes order limits and past-performance thresholds from Market Position', () => {
+  const result = calculateDeterministicScenarios(draft([
+    evidence('ORDER', 25_000_000, { valueType: 'CONTRACT_CEILING', opportunitySpecific: true, valueBasis: 'ORDER_LIMIT' }, { type: 'SOLICITATION_FACT' }),
+    evidence('PAST', 1_000_000, { valueType: 'ESTIMATED_VALUE', opportunitySpecific: true, valueBasis: 'PAST_PERFORMANCE_THRESHOLD' }, { type: 'SOLICITATION_FACT' }),
+  ]), { asOfDate });
+  assert.equal(result.expected, null);
+  assert.equal(result.anchors.find((anchor) => anchor.evidenceId === 'ORDER')?.role, 'CONTEXT');
+  assert.equal(result.anchors.find((anchor) => anchor.evidenceId === 'PAST')?.role, 'EXCLUDED');
 });
 
 test('returns a wide directional range for one exceptionally strong anchor', () => {

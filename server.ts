@@ -19,6 +19,8 @@ import { queryGsaCalc } from './src/adapters/gsa.js';
 import { queryBls } from './src/adapters/bls.js';
 import type { AdapterResult } from './src/adapters/types.js';
 import { calculateDeterministicScenarios } from './src/domain/marketPosition/scenarioEngine.js';
+import { MARKET_POSITION_ENGINE_VERSION } from './src/domain/marketPosition/engineConfig.js';
+import { classifyNumericEvidence } from './src/domain/marketPosition/evidenceClassification.js';
 import {
   createLegacyPosition,
   enforceAuthoritativeAnalysis,
@@ -34,13 +36,13 @@ const model = process.env.GEMINI_MODEL || 'gemini-2.5-pro';
 const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024, files: 1 },
+  limits: { fileSize: 4 * 1024 * 1024, files: 10 },
 });
 
 app.use(express.json({ limit: '5mb' }));
 
 function aiClient() {
-  if (!apiKey) throw new Error('GEMINI_API_KEY is not configured. Add it in Google AI Studio Secrets and restart the app.');
+  if (!apiKey) throw new Error('GEMINI_API_KEY is not configured in the server environment.');
   return new GoogleGenAI({ apiKey });
 }
 
@@ -79,8 +81,11 @@ const numericEvidenceSchema = {
     recurringService: { type: 'BOOLEAN' },
     scalableByQuantity: { type: 'BOOLEAN' },
     sharedAcrossAwards: { type: 'BOOLEAN' },
+    valueBasis: { type: 'STRING' },
+    rangeBound: { type: 'STRING' },
+    rangeId: { type: 'STRING' },
   },
-  required: ['originalValue', 'valueType', 'currency', 'units'],
+  required: ['originalValue', 'valueType', 'currency', 'units', 'valueBasis'],
 };
 
 const driverSchema = {
@@ -273,11 +278,16 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
 - Keep evaluated price, estimated value, ceiling, initial obligation, current obligations, eventual spend, total award value, hourly ceiling rate, escalation rate, and budget context distinct.
 - CRITICAL: If a value represents the total deal or contract size, you MUST use valueType 'ESTIMATED_VALUE', 'TOTAL_AWARD_VALUE', or 'EVALUATED_PRICE', and YOU MUST set units exactly to 'TOTAL_USD'.
+- Classify the measurement basis using valueBasis exactly from: OPPORTUNITY_TOTAL, INDIVIDUAL_AWARD, PROGRAM_TOTAL, MULTIPLE_AWARD_POOL, ORDER_LIMIT, PAST_PERFORMANCE_THRESHOLD, BUDGET, UNKNOWN.
+- Program-wide funding, portfolio funding, annual funding, and multiple-award pools are context, not the expected value of one award.
+- Minimum/maximum order limitations and past-performance eligibility thresholds are not Market Position anchors.
+- For a stated individual-award range, return the low and high values as separate evidence items with the same rangeId and rangeBound LOW or HIGH.
 - Use valueType values exactly from: EVALUATED_PRICE, ESTIMATED_VALUE, TOTAL_AWARD_VALUE, CURRENT_AWARD_AMOUNT, CONTRACT_CEILING, INITIAL_OBLIGATION, CURRENT_OBLIGATIONS, EVENTUAL_SPEND, HOURLY_CEILING_RATE, ESCALATION_RATE, BUDGET_CONTEXT, UNKNOWN.
 - Use units TOTAL_USD, USD_PER_HOUR, PERCENT, or OTHER. Do not convert unlike units.
 - Set opportunitySpecific true only for a value that describes this solicitation.
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
+- Do not create numeric evidence for dates, page numbers, proposal-validity days, or periods of performance. Keep those as deal facts.
 - SOLICITATION_FACT requires a document citation. Label deductions ANALYST_INFERENCE.
 - Confidence values are 0-100, but do not create an opportunity score or probability of win.
 - Do not claim public-source research was performed during this extraction pass.
@@ -294,6 +304,20 @@ Use concise language suitable for a federal pricing lead.`;
 const sourceNames: ConnectorStatus['name'][] = ['SAM.gov', 'USAspending', 'GSA CALC+', 'BLS'];
 const connectorCache = new Map<string, { expiresAt: number; result: AdapterResult }>();
 const connectorCacheTtlMs = 15 * 60 * 1000;
+const blockedResearchHosts = [
+  'facebook.com', 'wikipedia.org', 'fool.com', 'marketsandmarkets.com', 'mordorintelligence.com',
+  'govtribe.com', 'highergov.com', 'govoppintel.com', 'orangeslices.ai',
+];
+
+function usableResearchUrl(value?: string) {
+  if (!value) return false;
+  try {
+    const host = new URL(value).hostname.toLowerCase().replace(/^www\./, '');
+    return !blockedResearchHosts.some((blocked) => host === blocked || host.endsWith(`.${blocked}`));
+  } catch {
+    return false;
+  }
+}
 
 function connectorCacheKey(name: ConnectorStatus['name'], deal: OpportunityAnalysis['deal']) {
   const labor = deal.laborSignals?.map((item) => item.title).filter(Boolean).slice(0, 5) || [];
@@ -396,6 +420,7 @@ async function analyzeFiles(files: Express.Multer.File[]): Promise<OpportunityAn
   });
   const draft = parseJson(response.text) as AiAnalysisDraft;
   draft.evidence = draft.evidence || [];
+  classifyNumericEvidence(draft.evidence);
   draft.gaps = draft.gaps || [];
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
@@ -403,46 +428,49 @@ async function analyzeFiles(files: Express.Multer.File[]): Promise<OpportunityAn
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
   const connectors: ConnectorStatus[] = [];
 
-  try {
-    const fileNames = files.map(f => f.originalname);
-    const results = await runConnectorSet(draft.deal, undefined, false, fileNames);
+  const fileNames = files.map(f => f.originalname);
+  const connectorWork = runConnectorSet(draft.deal, undefined, false, fileNames);
+  const researchWork = process.env.ENABLE_GOOGLE_SEARCH !== 'false'
+    ? client.models.generateContent({
+      model,
+      contents: `Research the public federal market for this opportunity using Google Search.
+Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
+Improve only qualitative claims supported by current public sources and preserve the existing shapes.
+Never return or revise an authoritative Market Position dollar value, numeric range, opportunity score, or probability of win.
+Do not put dollar values in narrative strings. Put source URLs in competitor and incumbent sourceRefs.
+Prefer official .gov/.mil records and first-party company sources. Do not rely on Wikipedia, social media, market-size aggregators, procurement aggregators, or search-result snippets.
+
+BASE ANALYSIS:
+${JSON.stringify(draft)}`,
+      config: { tools: [{ googleSearch: {} }], temperature: 0.1 },
+    })
+    : Promise.resolve(null);
+
+  const [connectorOutcome, researchOutcome] = await Promise.allSettled([connectorWork, researchWork]);
+
+  if (connectorOutcome.status === 'fulfilled') {
+    const results = connectorOutcome.value;
     for (const result of results) {
       connectors.push(connectorStatus(result));
       draft.evidence = mergeEvidence(draft.evidence, result.evidence);
     }
     if (results.some((result) => result.success && result.recordsFound > 0)) {
       researchStatus = 'PARTIAL';
-      try {
-        await synthesizeOfficialEvidence(draft);
-      } catch (error) {
-        warnings.push(`Official evidence was retrieved but qualitative synthesis could not be refreshed. ${error instanceof Error ? error.message : ''}`.trim());
-      }
     }
-  } catch (error) {
-    warnings.push(`Government API adapters failed to run: ${error instanceof Error ? error.message : String(error)}`);
+  } else {
+    warnings.push(`Government API adapters failed to run: ${connectorOutcome.reason instanceof Error ? connectorOutcome.reason.message : String(connectorOutcome.reason)}`);
   }
 
-  if (process.env.ENABLE_GOOGLE_SEARCH !== 'false') {
+  if (researchOutcome.status === 'fulfilled' && researchOutcome.value) {
     try {
-      const researchResponse = await client.models.generateContent({
-        model,
-        contents: `Research the public federal market for this opportunity using Google Search.
-Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
-Improve only qualitative claims supported by current public sources and preserve the existing shapes.
-Never return or revise an authoritative Market Position dollar value, numeric range, opportunity score, or probability of win.
-Do not put dollar values in narrative strings. Put source URLs in competitor and incumbent sourceRefs.
-
-BASE ANALYSIS:
-${JSON.stringify(draft)}`,
-        config: { tools: [{ googleSearch: {} }], temperature: 0.1 },
-      });
+      const researchResponse = researchOutcome.value;
       const research = parseJson(researchResponse.text);
       draft.marketAssessment = sanitizeMarketAssessment(research.marketAssessment || draft.marketAssessment);
       draft.competitors = research.competitors || draft.competitors;
       draft.incumbent = research.incumbent || draft.incumbent;
       draft.narrative = sanitizeNarrative(research.narrative || draft.narrative);
       const chunks = researchResponse.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
-      const sources: EvidenceItem[] = chunks.flatMap((chunk: any, index: number) => chunk.web?.uri ? [{
+      const sources: EvidenceItem[] = chunks.flatMap((chunk: any, index: number) => usableResearchUrl(chunk.web?.uri) ? [{
         id: `EXT-${index + 1}`,
         type: 'EXTERNAL_SOURCE' as const,
         sourceLabel: chunk.web.title || `External source ${index + 1}`,
@@ -452,10 +480,14 @@ ${JSON.stringify(draft)}`,
         retrievedAt: new Date().toISOString(),
       }] : []);
       draft.evidence = mergeEvidence(draft.evidence, sources);
-      researchStatus = 'GROUNDED';
+      researchStatus = sources.length ? 'GROUNDED' : researchStatus;
     } catch (error) {
       warnings.push(`Public-market enrichment was unavailable; the brief remains solicitation and official-adapter grounded. ${error instanceof Error ? error.message : ''}`.trim());
-      researchStatus = 'PARTIAL';
+    }
+  } else if (researchOutcome.status === 'rejected') {
+    warnings.push(`Public-market enrichment was unavailable; the brief remains solicitation and official-adapter grounded. ${researchOutcome.reason instanceof Error ? researchOutcome.reason.message : ''}`.trim());
+    if (researchStatus === 'SOLICITATION_ONLY') {
+      researchStatus = connectors.some((connector) => connector.status === 'SUCCESS') ? 'PARTIAL' : 'SOLICITATION_ONLY';
     }
   }
 
@@ -475,7 +507,7 @@ app.get('/api/health', (_req, res) => res.json({
   status: 'ok',
   aiConfigured: Boolean(apiKey),
   model,
-  calculationEngine: 'market-position-v2.0.0',
+  calculationEngine: MARKET_POSITION_ENGINE_VERSION,
 }));
 
 let localRuns: OpportunityAnalysis[] = [];
@@ -531,6 +563,7 @@ app.delete('/api/runs/:id', (req, res) => {
 
 app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) => {
   try {
+    if (!apiKey) return res.status(503).json({ error: 'GEMINI_API_KEY is not configured for this deployment.' });
     const files = req.files as Express.Multer.File[];
     if (!files || files.length === 0) return res.status(400).json({ error: 'Choose solicitation files before starting the analysis.' });
     const allowed = [
@@ -632,6 +665,7 @@ app.post('/api/export-brief', async (req, res) => {
     ]);
 
     const methodology = workbook.addWorksheet('Calculation Methodology');
+    const evidenceById = new Map(analysis.evidence.map((item) => [item.id, item]));
     methodology.columns = [
       { header: 'Evidence ID', key: 'evidenceId', width: 18 },
       { header: 'Source', key: 'source', width: 28 },
@@ -645,6 +679,7 @@ app.post('/api/export-brief', async (req, res) => {
       { header: 'Weight', key: 'weight', width: 12 },
       { header: 'Used', key: 'used', width: 10 },
       { header: 'Rationale', key: 'rationale', width: 80 },
+      { header: 'Underlying Claim', key: 'claim', width: 90 },
     ];
     methodology.addRows(analysis.marketPosition.anchors.map((anchor) => ({
       evidenceId: anchor.evidenceId,
@@ -659,10 +694,17 @@ app.post('/api/export-brief', async (req, res) => {
       weight: anchor.weight,
       used: anchor.included ? 'Yes' : 'No',
       rationale: anchor.included ? anchor.inclusionRationale : anchor.exclusionReasons.join(' '),
+      claim: evidenceById.get(anchor.evidenceId)?.claim || '',
     })));
 
     const intelligence = workbook.addWorksheet('Intelligence');
     intelligence.columns = [{ header: 'Category', key: 'category', width: 24 }, { header: 'Finding', key: 'finding', width: 100 }];
+    intelligence.addRow({ category: 'Market Assessment', finding: analysis.marketPosition.summary });
+    intelligence.addRow({ category: 'Incumbent', finding: analysis.incumbent.name ? `${analysis.incumbent.name} — ${analysis.incumbent.status}; transition risk ${analysis.incumbent.transitionRisk}.` : 'No incumbent was verified.' });
+    analysis.narrative.decisionFactors.forEach((finding) => intelligence.addRow({ category: 'Decision Factor', finding }));
+    analysis.narrative.guardrails.forEach((finding) => intelligence.addRow({ category: 'Guardrail', finding }));
+    analysis.narrative.nextActions.forEach((finding) => intelligence.addRow({ category: 'Next Action', finding }));
+    analysis.gaps.forEach((gap) => intelligence.addRow({ category: `Gap — ${gap.priority}`, finding: `${gap.question} ${gap.impact}` }));
     if (analysis.affordability) {
       intelligence.addRow({ category: 'Affordability', finding: analysis.affordability.estimatedCeiling ? `Reported ceiling: ${analysis.affordability.estimatedCeiling}` : 'No reported ceiling.' });
       intelligence.addRow({ category: 'Budget Signals', finding: analysis.affordability.budgetSignals?.join('; ') });
@@ -674,14 +716,23 @@ app.post('/api/export-brief', async (req, res) => {
     competitors.columns = [
       { header: 'Name', key: 'name', width: 25 }, { header: 'Role', key: 'role', width: 20 },
       { header: 'Capabilities', key: 'capabilities', width: 50 }, { header: 'Technology', key: 'technology', width: 30 },
-      { header: 'Evidence Type', key: 'evidenceType', width: 22 },
+      { header: 'Delivery Model', key: 'deliveryModel', width: 32 }, { header: 'Cost Drivers', key: 'costDrivers', width: 45 },
+      { header: 'Risks / Unknowns', key: 'risks', width: 55 }, { header: 'Assessment', key: 'rationale', width: 80 },
+      { header: 'Evidence Type', key: 'evidenceType', width: 22 }, { header: 'Confidence', key: 'confidence', width: 14 },
+      { header: 'Sources', key: 'sources', width: 60 },
     ];
     analysis.competitors.forEach((competitor) => competitors.addRow({
       name: competitor.name,
       role: competitor.role,
-      capabilities: competitor.demonstratedCapabilities?.join(', '),
+      capabilities: (competitor.demonstratedCapabilities?.length ? competitor.demonstratedCapabilities : competitor.differentiators)?.join(', '),
       technology: competitor.techPlatform,
+      deliveryModel: competitor.deliveryModel,
+      costDrivers: competitor.costDrivers?.join(', '),
+      risks: [...(competitor.risks || []), ...(competitor.unknowns || [])].join(', '),
+      rationale: competitor.rationale,
       evidenceType: competitor.evidenceType,
+      confidence: competitor.confidence,
+      sources: competitor.sourceRefs?.join(', '),
     }));
 
     const evidence = workbook.addWorksheet('Evidence Ledger');
@@ -710,6 +761,13 @@ app.post('/api/export-brief', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Export failed.' });
   }
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (!(error instanceof multer.MulterError)) return next(error);
+  if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Each uploaded file must be 4 MB or smaller in the hosted demo.' });
+  if (error.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: 'Upload no more than 10 solicitation files at once.' });
+  return res.status(400).json({ error: `Upload failed: ${error.message}` });
 });
 
 async function start() {

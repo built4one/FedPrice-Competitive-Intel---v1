@@ -21,7 +21,7 @@ export function calculateEvidenceReadiness(
   const sourceDiversity = Math.min(1, new Set(anchors.map((anchor) => anchor.sourceLabel)).size / 3);
   const consistency = anchors.length ? Math.max(0, 1 - dispersion / 0.5) : 0;
   const highGaps = gaps.filter((gap) => gap.priority === 'HIGH').length;
-  const gapResolution = 1 - Math.min(1, highGaps / 4);
+  const gapResolution = anchors.length === 0 && gaps.length === 0 ? 0 : 1 - Math.min(1, highGaps / 4);
   const comparability = weightedAverage(anchors, 'comparabilityScore');
   const evidenceQuality = weightedAverage(anchors, 'evidenceQuality');
   const normalizationConfidence = weightedAverage(anchors, 'normalizationConfidence');

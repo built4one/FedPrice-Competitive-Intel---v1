@@ -43,12 +43,17 @@ export async function querySamGov(deal: DealProfile, uploadedFiles: string[] = [
       try {
         response = await fetchJsonWithRetry<unknown>(`https://api.sam.gov/prod/opportunities/v2/search?${params}`, { headers: { Accept: 'application/json' } }, { timeoutMs: 15_000, maxAttempts: 2 });
         const solParsed = responseSchema.parse(response.data);
-        if (solParsed.opportunitiesData.length > 0) {
-          parsed = solParsed;
+        const exact = solParsed.opportunitiesData.filter((opportunity) =>
+          opportunity.solicitationNumber?.trim().toLowerCase() === deal.solicitationNumber?.trim().toLowerCase(),
+        );
+        if (exact.length > 0) {
+          parsed = { ...solParsed, opportunitiesData: exact };
           statusMsg = undefined;
         }
       } catch (e) {
-        // Fallthrough if it fails
+        if (e instanceof ConnectorError && ['RATE_LIMITED', 'AUTH_REQUIRED', 'TIMEOUT', 'SOURCE_UNAVAILABLE'].includes(e.status)) {
+          throw e;
+        }
       }
     }
 

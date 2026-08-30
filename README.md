@@ -26,6 +26,8 @@ The completed-run experience is the Decision Center. It presents deterministic A
 - Gemini does not create or revise authoritative Market Position dollars.
 - The server recalculates authoritative values before saving or exporting.
 - Raw hourly CALC+ rates and BLS percentages cannot enter total-contract-value weighting.
+- Program funding, multiple-award pools, order limits, and past-performance thresholds cannot be treated as one expected award value.
+- Solicitation-stated individual-award ranges retain their native low and high bounds.
 - Qualitative competitive factors never add or subtract an arbitrary percentage.
 - Insufficient evidence returns null scenarios rather than a manufactured range.
 
@@ -64,6 +66,8 @@ The suite covers connector resilience, comparable scoring, normalization, weight
 - `ENABLE_GOOGLE_SEARCH` — optional; defaults to enabled.
 - `SAM_API_KEY` — optional supplemental opportunity intelligence.
 - `BLS_API_KEY` — optional higher BLS quota.
+
+The hosted Vercel demo accepts up to 10 files with a combined package size of 4 MB. Larger production packages require direct object-storage upload rather than routing binary files through a serverless request.
 
 USAspending and GSA CALC+ do not require API keys.
 

@@ -27,12 +27,18 @@ export function determineCalculationRole(numeric: NumericEvidence, asOfDate: str
   if (!Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) return 'EXCLUDED';
   if (numeric.currency !== 'USD' && numeric.units !== 'PERCENT') return 'EXCLUDED';
   if (numeric.sharedAcrossAwards) return 'EXCLUDED';
+  if (numeric.valueBasis === 'PAST_PERFORMANCE_THRESHOLD') return 'EXCLUDED';
+  if (numeric.valueBasis === 'ORDER_LIMIT') return 'CONTEXT';
+  if (['PROGRAM_TOTAL', 'MULTIPLE_AWARD_POOL', 'BUDGET'].includes(numeric.valueBasis || '')) return 'CONTEXT';
   if (CENTRAL_VALUE_TYPES.has(numeric.valueType)) return numeric.units === 'TOTAL_USD' ? 'CENTRAL_ANCHOR' : 'EXCLUDED';
   if (numeric.valueType === 'CURRENT_AWARD_AMOUNT') {
     const completed = numeric.endDate && Date.parse(numeric.endDate) <= Date.parse(asOfDate);
     return completed && numeric.units === 'TOTAL_USD' ? 'CENTRAL_ANCHOR' : 'CONTEXT';
   }
-  if (numeric.valueType === 'CONTRACT_CEILING') return numeric.units === 'TOTAL_USD' ? 'CONSTRAINT' : 'EXCLUDED';
+  if (numeric.valueType === 'CONTRACT_CEILING') {
+    const compatibleBasis = numeric.valueBasis === 'OPPORTUNITY_TOTAL' || numeric.valueBasis === 'INDIVIDUAL_AWARD';
+    return numeric.units === 'TOTAL_USD' && numeric.opportunitySpecific && compatibleBasis ? 'CONSTRAINT' : 'CONTEXT';
+  }
   if (numeric.valueType === 'HOURLY_CEILING_RATE') return 'COMPONENT';
   if (numeric.valueType === 'ESCALATION_RATE') return 'MODIFIER';
   if (['INITIAL_OBLIGATION', 'CURRENT_OBLIGATIONS', 'BUDGET_CONTEXT'].includes(numeric.valueType)) return 'CONTEXT';
