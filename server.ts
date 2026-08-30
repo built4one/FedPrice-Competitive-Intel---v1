@@ -723,4 +723,7 @@ async function start() {
   app.listen(port, '0.0.0.0', () => console.log(`Federal Market Position running on http://localhost:${port}`));
 }
 
-start();
+export default app;
+if (process.env.VERCEL !== "1") {
+  start();
+}
