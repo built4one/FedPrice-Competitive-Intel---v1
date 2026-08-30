@@ -1,4 +1,6 @@
 {
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "alias": ["fed-price-comp-intel-v1.vercel.app"],
   "functions": {
     "api/index.js": {
       "maxDuration": 300
