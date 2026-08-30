@@ -12,7 +12,7 @@ import type {
   EvidenceItem,
   OpportunityAnalysis,
 } from './src/types.js';
-import { querySamGov } from './src/adapters/sam.js';
+import { querySamGov, resolveSamOpportunityPackage, type SamOpportunityMetadata, type SamRetrievedFile } from './src/adapters/sam.js';
 import { queryUSASpending } from './src/adapters/usaspending.js';
 import { queryGsaCalc } from './src/adapters/gsa.js';
 import { queryBls } from './src/adapters/bls.js';
@@ -37,6 +37,8 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 4 * 1024 * 1024, files: 10 },
 });
+
+type AnalysisFile = { originalname: string; mimetype: string; size: number; buffer: Buffer };
 
 app.use(express.json({ limit: '5mb' }));
 
@@ -290,6 +292,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - SOLICITATION_FACT requires a document citation. Label deductions ANALYST_INFERENCE.
 - Confidence values are 0-100, but do not create an opportunity score or probability of win.
 - Do not claim public-source research was performed during this extraction pass.
+- When a file named SAM Opportunity Metadata.txt is present, treat its notice ID, solicitation number, agency, NAICS, PSC, response deadline, set-aside, and notice type as authoritative SAM.gov facts.
 
 PRODUCT TASK
 1. Extract deal, evaluation, staffing, pricing, and acquisition facts.
@@ -371,6 +374,90 @@ function mergeEvidence(existing: EvidenceItem[] = [], incoming: EvidenceItem[] =
   return [...merged.values()];
 }
 
+function samMetadataFile(metadata: SamOpportunityMetadata, naicsOverride?: string): AnalysisFile {
+  const content = [
+    'OFFICIAL SAM.GOV OPPORTUNITY METADATA',
+    `Notice ID: ${metadata.noticeId || ''}`,
+    `Title: ${metadata.title || ''}`,
+    `Solicitation Number: ${metadata.solicitationNumber || ''}`,
+    `Agency: ${metadata.agency || ''}`,
+    `Department: ${metadata.department || ''}`,
+    `Sub-Tier: ${metadata.subTier || ''}`,
+    `Office: ${metadata.office || ''}`,
+    `NAICS: ${metadata.naics || naicsOverride || ''}`,
+    `PSC / Classification: ${metadata.psc || ''}`,
+    `Notice Type: ${metadata.noticeType || ''}`,
+    `Set-Aside: ${metadata.setAside || ''}`,
+    `Posted Date: ${metadata.postedDate || ''}`,
+    `Response Deadline: ${metadata.responseDeadline || ''}`,
+    `SAM Opportunity URL: ${metadata.uiUrl || ''}`,
+  ].join('\n');
+  const buffer = Buffer.from(content, 'utf8');
+  return { originalname: 'SAM Opportunity Metadata.txt', mimetype: 'text/plain', size: buffer.length, buffer };
+}
+
+function autoFile(file: SamRetrievedFile): AnalysisFile {
+  return { originalname: file.originalname, mimetype: file.mimetype, size: file.size, buffer: file.buffer };
+}
+
+async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
+  const isXlsx = file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' || file.originalname.toLowerCase().endsWith('.xlsx');
+  if (!isXlsx) return file;
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.load(file.buffer as never);
+  const lines: string[] = [`SOURCE SPREADSHEET: ${file.originalname}`];
+  workbook.eachSheet((worksheet) => {
+    lines.push(`\nSHEET: ${worksheet.name}`);
+    worksheet.eachRow({ includeEmpty: false }, (row) => {
+      const values = Array.isArray(row.values) ? row.values.slice(1) : [];
+      const rendered = values.map((value) => {
+        if (value == null) return '';
+        if (typeof value === 'object') {
+          if ('text' in (value as Record<string, unknown>)) return String((value as Record<string, unknown>).text || '');
+          if ('result' in (value as Record<string, unknown>)) return String((value as Record<string, unknown>).result || '');
+          try { return JSON.stringify(value); } catch { return String(value); }
+        }
+        return String(value);
+      }).join('\t');
+      if (rendered.trim()) lines.push(rendered);
+    });
+  });
+  const buffer = Buffer.from(lines.join('\n'), 'utf8');
+  return { originalname: `${file.originalname}.txt`, mimetype: 'text/plain', size: buffer.length, buffer };
+}
+
+async function normalizeAnalysisFiles(files: AnalysisFile[]) {
+  return Promise.all(files.map((file) => normalizeSpreadsheet(file)));
+}
+
+function mergeSamDealMetadata(analysis: OpportunityAnalysis, metadata: SamOpportunityMetadata, naicsOverride?: string) {
+  analysis.deal = {
+    ...analysis.deal,
+    title: metadata.title || analysis.deal.title,
+    agency: metadata.agency || analysis.deal.agency,
+    solicitationNumber: metadata.solicitationNumber || analysis.deal.solicitationNumber,
+    dueDate: metadata.responseDeadline || analysis.deal.dueDate,
+    naics: metadata.naics || naicsOverride || analysis.deal.naics,
+    psc: metadata.psc || analysis.deal.psc,
+  };
+}
+
+function recalculateForOfficialDealMetadata(analysis: OpportunityAnalysis) {
+  const draft: AiAnalysisDraft = {
+    deal: analysis.deal,
+    marketAssessment: marketAssessmentFromPosition(analysis.marketPosition),
+    competitors: analysis.competitors,
+    incumbent: analysis.incumbent,
+    evidence: analysis.evidence,
+    gaps: analysis.gaps,
+    narrative: analysis.narrative,
+    affordability: analysis.affordability,
+    gaoFindings: analysis.gaoFindings,
+    preRfpSignals: analysis.preRfpSignals,
+  };
+  analysis.marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt });
+}
+
 async function synthesizeOfficialEvidence(draft: AiAnalysisDraft) {
   const official = draft.evidence.filter((item) => item.type === 'EXTERNAL_SOURCE' && /API/.test(item.sourceLabel));
   if (official.length === 0) return;
@@ -401,7 +488,7 @@ ${JSON.stringify(official)}`,
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 
-async function analyzeFiles(files: Express.Multer.File[]): Promise<OpportunityAnalysis> {
+async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
   const client = aiClient();
   const inlineDataParts = files.map(file => ({
     inlineData: { data: file.buffer.toString('base64'), mimeType: file.mimetype || 'application/octet-stream' }
@@ -563,20 +650,61 @@ app.delete('/api/runs/:id', (req, res) => {
 app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) => {
   try {
     if (!apiKey) return res.status(503).json({ error: 'GEMINI_API_KEY is not configured for this deployment.' });
-    const files = req.files as Express.Multer.File[];
-    if (!files || files.length === 0) return res.status(400).json({ error: 'Choose solicitation files before starting the analysis.' });
+    const uploadedFiles = ((req.files as Express.Multer.File[] | undefined) || []) as AnalysisFile[];
+    const opportunityRef = String(req.body?.opportunityRef || '').trim();
+    const naicsOverride = String(req.body?.naicsOverride || '').trim();
+    if (naicsOverride && !/^\d{6}$/.test(naicsOverride)) return res.status(400).json({ error: 'NAICS override must be a 6-digit code.' });
+    if (!opportunityRef && uploadedFiles.length === 0) return res.status(400).json({ error: 'Enter a solicitation number or SAM.gov URL, or upload a solicitation package.' });
+
     const allowed = [
       'application/pdf',
       'text/plain',
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
       'application/msword',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ];
-    for (const file of files) {
+    for (const file of uploadedFiles) {
       if (!allowed.includes(file.mimetype)) {
-        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, DOC, or TXT file.` });
+        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, DOC, TXT, or XLSX file.` });
       }
     }
-    res.json({ data: await analyzeFiles(files) });
+
+    let samPackage: Awaited<ReturnType<typeof resolveSamOpportunityPackage>> | undefined;
+    let samFallbackWarning = '';
+    if (opportunityRef) {
+      try {
+        samPackage = await resolveSamOpportunityPackage(opportunityRef, uploadedFiles.map((file) => file.originalname));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'SAM.gov opportunity intake failed.';
+        if (uploadedFiles.length === 0) return res.status(502).json({ error: `SAM-first intake could not continue: ${message}` });
+        samFallbackWarning = `SAM-first intake was unavailable, so the run used the analyst-provided package. ${message}`;
+      }
+    }
+
+    const packageFiles: AnalysisFile[] = samPackage
+      ? [samMetadataFile(samPackage.opportunity, naicsOverride), ...samPackage.files.map(autoFile)]
+      : [];
+    const combined = [...uploadedFiles, ...packageFiles];
+    const deduped = [...new Map(combined.map((file) => [file.originalname.trim().toLowerCase(), file])).values()];
+    if (deduped.length === 0) return res.status(400).json({ error: 'No analyzable solicitation documents were available.' });
+    const normalizedFiles = await normalizeAnalysisFiles(deduped);
+    const analysis = await analyzeFiles(normalizedFiles);
+
+    if (samFallbackWarning) analysis.meta.warnings.push(samFallbackWarning);
+    if (samPackage) {
+      mergeSamDealMetadata(analysis, samPackage.opportunity, naicsOverride);
+      analysis.evidence = mergeEvidence(analysis.evidence, samPackage.adapterResult.evidence);
+      analysis.meta.connectors = [
+        connectorStatus(samPackage.adapterResult),
+        ...(analysis.meta.connectors || []).filter((connector) => connector.name !== 'SAM.gov'),
+      ].sort((a, b) => sourceNames.indexOf(a.name) - sourceNames.indexOf(b.name));
+      const unresolved = (samPackage.adapterResult.samDocuments || []).filter((document) => !['RETRIEVED', 'PROVIDED'].includes(document.retrievalStatus || '')).length;
+      if (unresolved > 0) {
+        analysis.meta.warnings.push(`${unresolved} SAM.gov document(s) could not be automatically analyzed. Review the SAM source diagnostics for unresolved or restricted files.`);
+      }
+      recalculateForOfficialDealMetadata(analysis);
+    }
+    res.json({ data: analysis });
   } catch (error) {
     console.error('Analysis failed', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });
@@ -765,7 +893,7 @@ app.post('/api/export-brief', async (req, res) => {
 app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
   if (!(error instanceof multer.MulterError)) return next(error);
   if (error.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Each uploaded file must be 4 MB or smaller in the hosted demo.' });
-  if (error.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: 'Upload no more than 10 solicitation files at once.' });
+  if (error.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: 'Upload no more than 10 supplemental files at once.' });
   return res.status(400).json({ error: `Upload failed: ${error.message}` });
 });
 
