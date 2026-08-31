@@ -67,6 +67,7 @@ export interface SamOpportunityPackage {
   adapterResult: AdapterResult;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 const mmddyyyy = (date: Date) => `${String(date.getUTCMonth() + 1).padStart(2, '0')}/${String(date.getUTCDate()).padStart(2, '0')}/${date.getUTCFullYear()}`;
 const normalize = (value?: string | null) => value?.trim().toLowerCase() || '';
 const maxAutoFiles = Math.max(1, Number(process.env.SAM_AUTO_MAX_FILES || 20));
@@ -156,42 +157,35 @@ export function parseSamOpportunityReference(value: string) {
   return { solicitationNumber: input };
 }
 
+export function buildSamPostedDateWindows(now = new Date(), count = 6) {
+  const windows: Array<{ postedFrom: string; postedTo: string }> = [];
+  let postedTo = new Date(now);
+  for (let index = 0; index < count; index += 1) {
+    const postedFrom = new Date(postedTo.getTime() - (364 * DAY_MS));
+    windows.push({ postedFrom: mmddyyyy(postedFrom), postedTo: mmddyyyy(postedTo) });
+    postedTo = new Date(postedFrom.getTime() - DAY_MS);
+  }
+  return windows;
+}
+
 function exactMatches(data: z.infer<typeof responseSchema>, reference: ReturnType<typeof parseSamOpportunityReference>) {
   if (reference.noticeId) return data.opportunitiesData.filter((item) => normalize(item.noticeId) === normalize(reference.noticeId));
   if (reference.solicitationNumber) return data.opportunitiesData.filter((item) => normalize(item.solicitationNumber) === normalize(reference.solicitationNumber));
   return [];
 }
 
-async function findOpportunity(referenceValue: string, apiKey: string) {
-  const reference = parseSamOpportunityReference(referenceValue);
-  if (!reference.noticeId && !reference.solicitationNumber) throw new Error('Enter a solicitation number or SAM.gov opportunity URL.');
-
+async function searchOpportunityWindows(reference: ReturnType<typeof parseSamOpportunityReference>, apiKey: string) {
   const baseParams = new URLSearchParams({ api_key: apiKey, limit: '10', offset: '0' });
   if (reference.noticeId) baseParams.set('noticeid', reference.noticeId);
   if (reference.solicitationNumber) baseParams.set('solnum', reference.solicitationNumber);
 
-  // Preserve the known-good exact lookup first. Some SAM deployments accept exact identifiers without dates.
-  try {
-    const response = await fetchJsonWithRetry<unknown>(`https://api.sam.gov/prod/opportunities/v2/search?${baseParams}`, { headers: { Accept: 'application/json' } }, { timeoutMs: 15_000, maxAttempts: 2 });
-    const parsed = responseSchema.parse(response.data);
-    const exact = exactMatches(parsed, reference);
-    if (exact.length) return { opportunity: exact[0], durationMs: response.durationMs, attempts: response.attempts };
-  } catch (error) {
-    if (error instanceof ConnectorError && ['RATE_LIMITED', 'AUTH_REQUIRED', 'TIMEOUT', 'SOURCE_UNAVAILABLE'].includes(error.status)) throw error;
-  }
-
-  // Documented API behavior requires a <= 1-year posted-date window. Walk recent windows only when needed.
   let attempts = 0;
   let durationMs = 0;
-  for (let yearOffset = 0; yearOffset < 4; yearOffset += 1) {
-    const postedTo = new Date();
-    postedTo.setUTCFullYear(postedTo.getUTCFullYear() - yearOffset);
-    const postedFrom = new Date(postedTo);
-    postedFrom.setUTCFullYear(postedFrom.getUTCFullYear() - 1);
+  for (const window of buildSamPostedDateWindows()) {
     const params = new URLSearchParams(baseParams);
-    params.set('postedFrom', mmddyyyy(postedFrom));
-    params.set('postedTo', mmddyyyy(postedTo));
-    const response = await fetchJsonWithRetry<unknown>(`https://api.sam.gov/prod/opportunities/v2/search?${params}`, { headers: { Accept: 'application/json' } }, { timeoutMs: 15_000, maxAttempts: 2 });
+    params.set('postedFrom', window.postedFrom);
+    params.set('postedTo', window.postedTo);
+    const response = await fetchJsonWithRetry<unknown>(`https://api.sam.gov/opportunities/v2/search?${params}`, { headers: { Accept: 'application/json' } }, { timeoutMs: 15_000, maxAttempts: 2 });
     attempts += response.attempts;
     durationMs += response.durationMs;
     const parsed = responseSchema.parse(response.data);
@@ -199,6 +193,52 @@ async function findOpportunity(referenceValue: string, apiKey: string) {
     if (exact.length) return { opportunity: exact[0], durationMs, attempts };
   }
   return { opportunity: undefined, durationMs, attempts };
+}
+
+async function solicitationNumberFromSamPage(noticeId: string) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10_000);
+  try {
+    const response = await fetch(`https://sam.gov/opp/${encodeURIComponent(noticeId)}/view`, {
+      headers: { Accept: 'text/html,application/xhtml+xml' },
+      redirect: 'follow',
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const text = await response.text();
+    const patterns = [
+      /"solicitationNumber"\s*:\s*"([^"]+)"/i,
+      /Solicitation\s+Number[\s\S]{0,160}?([A-Z0-9][A-Z0-9-]{5,})/i,
+      /(?:ARA|RFP|RFQ)\s+(?:NUMBER|NO\.?)[\s:=-]*([A-Z0-9][A-Z0-9-]{5,})/i,
+    ];
+    for (const pattern of patterns) {
+      const match = text.match(pattern)?.[1]?.trim();
+      if (match) return match;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function findOpportunity(referenceValue: string, apiKey: string) {
+  const reference = parseSamOpportunityReference(referenceValue);
+  if (!reference.noticeId && !reference.solicitationNumber) throw new Error('Enter a solicitation number or SAM.gov opportunity URL.');
+
+  const direct = await searchOpportunityWindows(reference, apiKey);
+  if (direct.opportunity || !reference.noticeId) return direct;
+
+  // SAM UI action URLs can outlive or differ from the latest public-API notice ID. Resolve the visible solicitation number and retry exactly.
+  const solicitationNumber = await solicitationNumberFromSamPage(reference.noticeId);
+  if (!solicitationNumber) return direct;
+  const fallback = await searchOpportunityWindows({ solicitationNumber }, apiKey);
+  return {
+    opportunity: fallback.opportunity,
+    durationMs: direct.durationMs + fallback.durationMs,
+    attempts: direct.attempts + fallback.attempts,
+  };
 }
 
 function metadataFromOpportunity(opportunity: SamOpportunity): SamOpportunityMetadata {
