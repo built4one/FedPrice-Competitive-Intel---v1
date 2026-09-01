@@ -1,0 +1,28 @@
+name: Publish exact demo commit 660ce9f
+on:
+  push:
+    branches:
+      - codex/transfer-660ce9f
+    paths:
+      - .github/workflows/publish-660ce9f.yml
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Publish exact verified commit
+        env:
+          TARGET_SHA: 660ce9f878437e2fc7b2a28c0ebf6ee9497c13af
+          PARENT_SHA: d60d807a4074878876b09de4296d25548362cb6a
+        run: |
+          base64 --decode transfer/660ce9f.bundle.b64 > /tmp/660ce9f.bundle
+          git fetch /tmp/660ce9f.bundle refs/heads/codex-transfer-660
+          test "$(git rev-parse FETCH_HEAD)" = "$TARGET_SHA"
+          test "$(git rev-parse origin/main)" = "$PARENT_SHA"
+          git push origin "$TARGET_SHA:refs/heads/main"
