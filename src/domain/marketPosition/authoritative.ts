@@ -89,7 +89,18 @@ export function createLegacyPosition(position: Partial<MarketPosition> = {}): Ma
     rangeStatus: 'LEGACY_RECALCULATION_REQUIRED',
     posture: 'UNDETERMINED',
     summary: position.summary || 'This saved run predates the evidence-weighted calculation engine.',
+    estimationMethod: 'NO_RESPONSIBLE_ESTIMATE',
+    methodLabel: 'Legacy run - recalculate required',
+    confidence: 'LOW',
     formulaVersion: 'legacy-unverified',
+    publicBenchmark: {
+      status: 'NOT_SUPPORTED',
+      aggressive: null,
+      expected: null,
+      conservative: null,
+      evidenceIds: [],
+      summary: 'Recalculate this run before using a public-market benchmark.',
+    },
     evidenceReadiness: {
       score: 0,
       comparability: 0,
@@ -107,6 +118,8 @@ export function createLegacyPosition(position: Partial<MarketPosition> = {}): Ma
     constraints: [],
     rangeFactors: ['Recalculate this run before using its numeric Market Position.'],
     assumptions: [],
+    verifiedInputs: [],
+    sensitivities: [],
     basis: Array.isArray(position.basis) ? position.basis.map(String) : [],
     drivers: normalizeDrivers(position.drivers),
   };

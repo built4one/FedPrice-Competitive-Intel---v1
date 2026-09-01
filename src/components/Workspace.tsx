@@ -1,16 +1,15 @@
 import { useState } from 'react';
-import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, Printer, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
+import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
-import { ExecutiveBrief } from './decision/ExecutiveBrief';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
 
 const tabs: [Tab, string][] = [
-  ['decision-center', 'Decision Brief'],
+  ['decision-center', 'Decision'],
   ['deal', 'Opportunity'],
-  ['market-evidence', 'Market Evidence'],
+  ['market-evidence', 'Supporting Analysis'],
   ['validation', 'Validation']
 ];
 
@@ -21,17 +20,38 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('decision-center');
   const [notice, setNotice] = useState('');
   const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
+  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
 
-  const exportExcel = async () => {
-    const response = await fetch('/api/export-brief', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
-    if (!response.ok) return setNotice('Export failed. Try again.');
-    const blob = await response.blob(); const url = URL.createObjectURL(blob); const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = `${analysis.deal.solicitationNumber || 'Market_Position'}_Brief.xlsx`; anchor.click(); URL.revokeObjectURL(url); setNotice('Excel evidence package downloaded.');
+  const downloadExport = async (endpoint: string, extension: 'pdf' | 'xlsx') => {
+    setExporting(extension === 'pdf' ? 'pdf' : 'excel');
+    setNotice('');
+    try {
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
+      }
+      const blob = await response.blob();
+      if (!blob.size) throw new Error(`${extension.toUpperCase()} export returned an empty file.`);
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const safeName = (analysis.deal.solicitationNumber || 'Market_Position').replace(/[^a-z0-9-]/gi, '_');
+      anchor.href = url;
+      anchor.download = `${safeName}_Market_Position.${extension}`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      setNotice(extension === 'pdf' ? 'Leadership PDF downloaded.' : 'Excel evidence package downloaded.');
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Export failed. Try again.');
+    } finally {
+      setExporting(null);
+    }
   };
 
-  const printPdf = () => {
-    window.print();
-  };
+  const exportExcel = () => downloadExport('/api/export-brief', 'xlsx');
+  const exportPdf = () => downloadExport('/api/export-pdf', 'pdf');
 
   const retryConnector = async (source: ConnectorStatus['name']) => {
     setRetrying(source); setNotice('');
@@ -51,10 +71,6 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   };
 
   return <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8 print:max-w-none print:p-0">
-    <div className="hidden print:block">
-      <ExecutiveBrief analysis={analysis} />
-    </div>
-    
     {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl print:hidden"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
     
     <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between print:hidden">
@@ -69,34 +85,15 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
       </div>
       <div className="flex flex-wrap gap-2 print:hidden">
-        <button onClick={exportExcel} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black"><Download className="h-4 w-4" /> XLSX</button>
-        <button onClick={printPdf} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white">
-          <Printer className="h-4 w-4" />
-          EXPORT PDF
+        <button onClick={exportExcel} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black disabled:opacity-50"><Download className="h-4 w-4" /> {exporting === 'excel' ? 'BUILDING EXCEL' : 'DOWNLOAD EXCEL'}</button>
+        <button onClick={exportPdf} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
+          {exporting === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+          {exporting === 'pdf' ? 'BUILDING PDF' : 'DOWNLOAD PDF'}
         </button>
       </div>
     </div>
     
     <div className="print:hidden">
-      {analysis.meta.warnings.length > 0 && <div className="mt-5 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900"><strong className="mr-2">Research note:</strong>{analysis.meta.warnings.join(' ')}</div>}
-      
-      {analysis.meta.connectors && analysis.meta.connectors.length > 0 && (
-        <details className="mt-5 rounded-xl border border-slate-200 bg-white p-4">
-        <summary className="cursor-pointer list-none"><div className="flex items-center justify-between gap-4"><div><h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Research Status</h2><p className="mt-1 text-xs text-slate-400">{analysis.meta.connectors.filter((connector) => connector.status === 'SUCCESS' || connector.status === 'CACHED').length} of {analysis.meta.connectors.length} public sources returned usable records. Expand for diagnostics.</p></div><span className="text-[10px] font-black text-blue-600">VIEW SOURCES</span></div></summary>
-        <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {analysis.meta.connectors.map((connector) => (
-            <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
-              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'CACHED' ? 'bg-blue-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status?.replaceAll('_',' ')}</span></div>
-              <p className="mt-2 text-[10px] font-bold text-slate-500">{connector.recordsFound} records · {connector.durationMs ?? 0}ms · {connector.attempts ?? 0} attempt{connector.attempts === 1 ? '' : 's'}</p>
-              {connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{connector.querySummary}</p>}
-              {connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{connector.message}</p>}
-              <button onClick={() => retryConnector(connector.name)} disabled={retrying !== null} className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-black text-blue-600 disabled:opacity-40"><RefreshCw className={`h-3 w-3 ${retrying === connector.name ? 'animate-spin' : ''}`} />{retrying === connector.name ? 'RETRYING' : 'RETRY SOURCE'}</button>
-            </div>
-          ))}
-        </div>
-      </details>
-    )}
-
     <div className="mt-5 flex gap-1 overflow-x-auto border-b border-slate-200 print:hidden">
       {tabs.map(([id,label]) => <button key={id} onClick={() => setTab(id)} className={`shrink-0 border-b-2 px-3 py-3 text-xs font-black ${tab === id ? 'border-blue-600 text-blue-700' : 'border-transparent text-slate-400 hover:text-slate-700'}`}>{label.toUpperCase()}</button>)}
     </div>
@@ -104,11 +101,56 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     <div className="mt-8">
       {tab === 'decision-center' && <DecisionCenter analysis={analysis} />}
       {tab === 'deal' && <DealView analysis={analysis} />}
-      {tab === 'market-evidence' && <div className="space-y-10"><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
+      {tab === 'market-evidence' && <div className="space-y-10"><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
     </div>
     </div>
   </div>;
+}
+
+function ResearchDetails({
+  analysis,
+  retrying,
+  onRetry,
+}: {
+  analysis: OpportunityAnalysis;
+  retrying: ConnectorStatus['name'] | null;
+  onRetry: (source: ConnectorStatus['name']) => void;
+}) {
+  const connectors = analysis.meta.connectors || [];
+  const usable = connectors.filter((connector) => ['SUCCESS', 'CACHED'].includes(connector.status)).length;
+  return (
+    <details className="rounded-2xl border border-slate-200 bg-white">
+      <summary className="cursor-pointer list-none px-5 py-4">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <h2 className="text-sm font-black text-slate-900">Research status and diagnostics</h2>
+            <p className="mt-1 text-xs text-slate-500">{usable} of {connectors.length} public sources returned usable records. Open only when you need source-level detail.</p>
+          </div>
+          <span className="text-[10px] font-black text-blue-600">VIEW DETAILS</span>
+        </div>
+      </summary>
+      <div className="border-t border-slate-100 p-5">
+        {analysis.meta.warnings.length > 0 && (
+          <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
+            <strong className="block">Research notes</strong>
+            <ul className="mt-2 space-y-1">{analysis.meta.warnings.map((warning, index) => <li key={index}>- {warning}</li>)}</ul>
+          </div>
+        )}
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          {connectors.map((connector) => (
+            <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
+              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'CACHED' ? 'bg-blue-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status.replaceAll('_',' ')}</span></div>
+              <p className="mt-2 text-[10px] font-bold text-slate-500">{connector.recordsFound} records · {connector.durationMs ?? 0}ms · {connector.attempts ?? 0} attempt{connector.attempts === 1 ? '' : 's'}</p>
+              {connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{connector.querySummary}</p>}
+              {connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{connector.message}</p>}
+              <button onClick={() => onRetry(connector.name)} disabled={retrying !== null} className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-black text-blue-600 disabled:opacity-40"><RefreshCw className={`h-3 w-3 ${retrying === connector.name ? 'animate-spin' : ''}`} />{retrying === connector.name ? 'RETRYING' : 'RETRY SOURCE'}</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
+  );
 }
 
 function DealView({ analysis }: { analysis: OpportunityAnalysis }) { const d=analysis.deal; return <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Core deal facts</h2><dl className="mt-5 space-y-4">{[['Agency',d.agency],['Solicitation',d.solicitationNumber],['Contract type',d.contractType],['Due date',d.dueDate],['Period',d.periodOfPerformance],['NAICS',d.naics],['Award structure',d.awardStructure],['Evaluation',d.evaluationMethod]].map(([label,value]) => <div key={label} className="border-b border-slate-100 pb-3"><dt className="text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold">{value || 'Not found'}</dd></div>)}</dl></section><div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Scope summary</h2><p className="mt-3 text-sm leading-7 text-slate-600">{d.scopeSummary}</p></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Requirements and evaluation signals</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{d.requirements.map((item,index) => <div key={index} className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black text-blue-600">{item.category}</span><h3 className="mt-1 text-sm font-black">{item.name}</h3><p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p><p className="mt-2 text-[10px] font-bold text-slate-400">{item.section || 'Section not resolved'} · {item.confidence}%</p></div>)}</div></section></div></div>; }

@@ -20,6 +20,7 @@ import type { AdapterResult } from './src/adapters/types.js';
 import { calculateDeterministicScenarios } from './src/domain/marketPosition/scenarioEngine.js';
 import { MARKET_POSITION_ENGINE_VERSION } from './src/domain/marketPosition/engineConfig.js';
 import { classifyNumericEvidence } from './src/domain/marketPosition/evidenceClassification.js';
+import { createExecutivePdf } from './src/exports/executivePdf.js';
 import {
   createLegacyPosition,
   enforceAuthoritativeAnalysis,
@@ -288,6 +289,8 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set opportunitySpecific true only for a value that describes this solicitation.
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
+- Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
+- Preserve predecessor contract numbers, incumbent names, program names, acronyms, task-order identifiers, and vehicle identifiers as deal facts so official award searches can use them.
 - Do not create numeric evidence for dates, page numbers, proposal-validity days, or periods of performance. Keep those as deal facts.
 - SOLICITATION_FACT requires a document citation. Label deductions ANALYST_INFERENCE.
 - Confidence values are 0-100, but do not create an opportunity score or probability of win.
@@ -295,7 +298,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - When a file named SAM Opportunity Metadata.txt is present, treat its notice ID, solicitation number, agency, NAICS, PSC, response deadline, set-aside, and notice type as authoritative SAM.gov facts.
 
 PRODUCT TASK
-1. Extract deal, evaluation, staffing, pricing, and acquisition facts.
+1. Extract deal, evaluation, staffing, pricing, acquisition, predecessor, and program-identifier facts.
 2. Build an evidence ledger, including explicit numeric evidence with correct value types.
 3. Identify gaps that affect comparability or normalization.
 4. Produce qualitative competitor and incumbent reconstruction with fact/inference separation.
@@ -413,8 +416,9 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
       const rendered = values.map((value) => {
         if (value == null) return '';
         if (typeof value === 'object') {
-          if ('text' in (value as Record<string, unknown>)) return String((value as Record<string, unknown>).text || '');
-          if ('result' in (value as Record<string, unknown>)) return String((value as Record<string, unknown>).result || '');
+          const record = value as unknown as Record<string, unknown>;
+          if ('text' in record) return String(record.text || '');
+          if ('result' in record) return String(record.result || '');
           try { return JSON.stringify(value); } catch { return String(value); }
         }
         return String(value);
@@ -612,18 +616,25 @@ function legacyNarrative(raw: any): DecisionNarrative {
 function normalizeIncomingRun(raw: any): OpportunityAnalysis {
   if (!raw?.id || !raw?.deal || !raw?.meta) throw new Error('A valid Opportunity Run is required.');
   if (!isCurrentEngine(raw.marketPosition)) {
-    return {
+    const migrated = enforceAuthoritativeAnalysis({
       ...raw,
-      marketPosition: createLegacyPosition(raw.marketPosition),
+      marketPosition: raw.marketPosition || createLegacyPosition(),
       narrative: legacyNarrative(raw),
       meta: {
         ...raw.meta,
+        warnings: [...new Set(raw.meta.warnings || [])],
+      },
+    } as OpportunityAnalysis);
+    return {
+      ...migrated,
+      meta: {
+        ...migrated.meta,
         warnings: [...new Set([
-          ...(raw.meta.warnings || []),
-          'This legacy run must be recalculated before its numeric Market Position can be used.',
+          ...migrated.meta.warnings,
+          `This saved run was recalculated under ${MARKET_POSITION_ENGINE_VERSION}.`,
         ])],
       },
-    } as OpportunityAnalysis;
+    };
   }
   return enforceAuthoritativeAnalysis(raw as OpportunityAnalysis);
 }
@@ -786,9 +797,13 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Expected Market Position', value: displayValue(analysis.marketPosition.expected) },
       { field: 'Conservative Market Position', value: displayValue(analysis.marketPosition.conservative) },
       { field: 'Range Status', value: analysis.marketPosition.rangeStatus },
+      { field: 'Estimation Method', value: analysis.marketPosition.methodLabel },
+      { field: 'Confidence', value: analysis.marketPosition.confidence },
+      { field: 'Public Benchmark Status', value: analysis.marketPosition.publicBenchmark.status },
+      { field: 'Public Benchmark Expected', value: displayValue(analysis.marketPosition.publicBenchmark.expected) },
       { field: 'Evidence Readiness', value: `${analysis.marketPosition.evidenceReadiness.score}/100` },
       { field: 'Formula Version', value: analysis.marketPosition.formulaVersion },
-      { field: 'Calculation Basis', value: 'Weighted comparable total-value evidence only' },
+      { field: 'Calculation Basis', value: analysis.marketPosition.methodLabel },
     ]);
 
     const methodology = workbook.addWorksheet('Calculation Methodology');
@@ -887,6 +902,22 @@ app.post('/api/export-brief', async (req, res) => {
     res.send(Buffer.from(buffer));
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'Export failed.' });
+  }
+});
+
+app.post('/api/export-pdf', async (req, res) => {
+  try {
+    const analysis = normalizeIncomingRun(req.body);
+    if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
+    const buffer = await createExecutivePdf(analysis);
+    if (!buffer.length) throw new Error('PDF generator returned an empty document.');
+    const safeName = analysis.deal.solicitationNumber?.replace(/[^a-z0-9-]/gi, '_') || 'market-position';
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', String(buffer.length));
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}_Market_Position.pdf"`);
+    res.send(buffer);
+  } catch (error) {
+    res.status(500).json({ error: error instanceof Error ? error.message : 'PDF export failed.' });
   }
 });
 

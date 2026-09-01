@@ -98,16 +98,30 @@ function draft(items: EvidenceItem[], gaps: AiAnalysisDraft['gaps'] = []): AiAna
   };
 }
 
-test('calculates Expected as the deterministic weighted average of eligible anchors', () => {
+test('calculates Expected as the deterministic weighted average within the selected method', () => {
   const result = calculateDeterministicScenarios(draft([
     evidence('A-1', 100_000_000, { opportunitySpecific: true }, { type: 'SOLICITATION_FACT', section: 'L.3' }),
-    evidence('A-2', 220_000_000),
+    evidence('A-2', 220_000_000, { opportunitySpecific: true }),
   ]), { asOfDate });
   const included = result.anchors.filter((anchor) => anchor.included);
   const expected = Math.round(included.reduce((sum, anchor) => sum + (anchor.normalizedValue || 0) * anchor.weight, 0) /
     included.reduce((sum, anchor) => sum + anchor.weight, 0));
   assert.equal(result.expected, expected);
   assert.ok((result.expected || 0) < 160_000_000, 'the higher-quality opportunity-specific anchor should exert more influence');
+});
+
+test('prefers a verified predecessor award before broader comparable awards', () => {
+  const result = calculateDeterministicScenarios(draft([
+    evidence('PRIOR', 92_000_000, {}, {
+      sourceRecordId: 'PREDECESSOR-123',
+      claim: 'The predecessor contract covered the same enterprise data platform mission.',
+    }),
+    evidence('COMPARABLE', 140_000_000),
+  ]), { asOfDate });
+
+  assert.equal(result.estimationMethod, 'PREDECESSOR_INCUMBENT');
+  assert.equal(result.expected, 92_000_000);
+  assert.equal(result.publicBenchmark.status, 'SUPPORTED');
 });
 
 test('scores a close comparable above a weak, poorly described record', () => {
@@ -173,6 +187,47 @@ test('uses a solicitation-stated individual award range without mixing in progra
   assert.equal(result.expected, 30_000_000);
   assert.equal(result.conservative, 50_000_000);
   assert.notEqual(result.aggressive, result.conservative);
+  assert.equal(result.estimationMethod, 'DIRECT_GOVERNMENT');
+});
+
+test('uses a complete staffing-and-hours model when no total-value anchor is available', () => {
+  const bottomUpDraft = draft([
+    evidence('RATE-1', 180, {
+      valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', periodMonths: undefined,
+      scopeText: 'Cloud Engineer', opportunitySpecific: false,
+    }),
+    evidence('RATE-2', 200, {
+      valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', periodMonths: undefined,
+      scopeText: 'Senior Cloud Engineer', opportunitySpecific: false,
+    }),
+    evidence('ESC', 3, {
+      valueType: 'ESCALATION_RATE', units: 'PERCENT', currency: 'UNKNOWN', periodMonths: undefined,
+    }),
+  ]);
+  bottomUpDraft.deal = {
+    ...deal,
+    periodOfPerformance: '2 years',
+    laborSignals: [{ title: 'Cloud Engineer', quantity: 10, annualHours: 2_000 }],
+  };
+  const result = calculateDeterministicScenarios(bottomUpDraft, { asOfDate });
+  assert.equal(result.estimationMethod, 'BOTTOM_UP_LABOR');
+  assert.equal(result.rangeStatus, 'DIRECTIONAL');
+  assert.equal(result.expected, 7_714_000);
+  assert.ok(result.anchors.some((anchor) => anchor.evidenceId === 'MODEL-BOTTOM-UP' && anchor.included));
+  assert.equal(result.publicBenchmark.status, 'NOT_SUPPORTED');
+});
+
+test('does not build a bottom-up total when any labor quantity or annual-hours input is missing', () => {
+  const incomplete = draft([
+    evidence('RATE-ONLY', 190, {
+      valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', periodMonths: undefined,
+      scopeText: 'Cloud Engineer', opportunitySpecific: false,
+    }),
+  ]);
+  incomplete.deal = { ...deal, laborSignals: [{ title: 'Cloud Engineer', quantity: 10 }] };
+  const result = calculateDeterministicScenarios(incomplete, { asOfDate });
+  assert.equal(result.estimationMethod, 'NO_RESPONSIBLE_ESTIMATE');
+  assert.equal(result.expected, null);
 });
 
 test('excludes order limits and past-performance thresholds from Market Position', () => {
@@ -208,6 +263,8 @@ test('multiple strong consistent anchors produce a supported narrower range', ()
     evidence('X-3', 300_000_000),
   ]), { asOfDate });
   assert.equal(consistent.rangeStatus, 'SUPPORTED');
+  assert.equal(consistent.estimationMethod, 'COMPARABLE_AWARDS');
+  assert.equal(consistent.publicBenchmark.status, 'SUPPORTED');
   assert.equal(conflicting.rangeStatus, 'SUPPORTED');
   assert.ok(consistent.rangeWidthPct < conflicting.rangeWidthPct);
   assert.ok(consistent.evidenceReadiness.consistency > conflicting.evidenceReadiness.consistency);

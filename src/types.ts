@@ -1,5 +1,12 @@
 export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export type EvidenceType = 'SOLICITATION_FACT' | 'EXTERNAL_SOURCE' | 'ANALYST_INFERENCE' | 'DATA_GAP';
+export type EstimationMethod =
+  | 'DIRECT_GOVERNMENT'
+  | 'PREDECESSOR_INCUMBENT'
+  | 'COMPARABLE_AWARDS'
+  | 'BOTTOM_UP_LABOR'
+  | 'PARAMETRIC_ANALOGY'
+  | 'NO_RESPONSIBLE_ESTIMATE';
 
 export type NumericValueType =
   | 'EVALUATED_PRICE'
@@ -149,6 +156,7 @@ export interface EvaluatedNumericAnchor {
   exclusionReasons: string[];
   normalizationSteps: NormalizationStep[];
   evidenceIds: string[];
+  opportunitySpecific?: boolean;
   valueBasis?: NumericValueBasis;
   rangeBound?: 'LOW' | 'HIGH';
   rangeId?: string;
@@ -165,6 +173,15 @@ export interface EvidenceReadinessBreakdown {
   gapResolution: number;
 }
 
+export interface PublicMarketBenchmark {
+  status: 'SUPPORTED' | 'DIRECTIONAL' | 'NOT_SUPPORTED';
+  aggressive: number | null;
+  expected: number | null;
+  conservative: number | null;
+  evidenceIds: string[];
+  summary: string;
+}
+
 export interface MarketPosition {
   currency: 'USD';
   aggressive: number | null;
@@ -173,7 +190,11 @@ export interface MarketPosition {
   rangeStatus: 'SUPPORTED' | 'DIRECTIONAL' | 'INSUFFICIENT_EVIDENCE' | 'LEGACY_RECALCULATION_REQUIRED';
   posture: 'AGGRESSIVE' | 'MARKET_ALIGNED' | 'VALUE_LED' | 'UNDETERMINED';
   summary: string;
+  estimationMethod: EstimationMethod;
+  methodLabel: string;
+  confidence: ConfidenceLevel;
   formulaVersion: string;
+  publicBenchmark: PublicMarketBenchmark;
   evidenceReadiness: EvidenceReadinessBreakdown;
   anchors: EvaluatedNumericAnchor[];
   effectiveSampleSize: number;
@@ -182,6 +203,8 @@ export interface MarketPosition {
   constraints: string[];
   rangeFactors: string[];
   assumptions: string[];
+  verifiedInputs: string[];
+  sensitivities: string[];
   basis: string[];
   drivers: RecommendationDriver[];
 }
@@ -237,7 +260,16 @@ export interface ConnectorStatus {
   attempts?: number;
   retrievedAt?: string;
   querySummary?: string;
-  samDocuments?: { name: string; url: string; provided: boolean; type: string }[];
+  samDocuments?: Array<{
+    name: string;
+    url: string;
+    provided: boolean;
+    type: string;
+    retrievalStatus?: 'DISCOVERED' | 'RETRIEVED' | 'PROVIDED' | 'RESTRICTED' | 'UNSUPPORTED' | 'TOO_LARGE' | 'SKIPPED' | 'FAILED';
+    sizeBytes?: number;
+    mimeType?: string;
+    message?: string;
+  }>;
 }
 
 export interface AnalysisMeta {

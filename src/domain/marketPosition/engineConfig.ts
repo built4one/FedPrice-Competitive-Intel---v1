@@ -1,4 +1,4 @@
-export const MARKET_POSITION_ENGINE_VERSION = 'market-position-v2.1.0';
+export const MARKET_POSITION_ENGINE_VERSION = 'market-position-v3.0.0';
 
 export const COMPARABILITY_WEIGHTS = {
   scope: 0.25,

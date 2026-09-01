@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { querySamGov } from './sam';
-import { normalizeAwardingAgency, queryUSASpending } from './usaspending';
+import { normalizeAwardingAgency, queryUSASpending, searchTermsFor } from './usaspending';
 import { queryGsaCalc } from './gsa';
 import { queryBls } from './bls';
 import type { DealProfile, LaborSignal } from '../types';
@@ -38,9 +38,11 @@ test('SAM.gov uses exact solnum search and parses attachments correctly', async 
   await withMockFetch(async (url, init) => {
     const params = new URL(url as string).searchParams;
     assert.equal(params.get('solnum'), 'W9128F21R0001');
-    assert.ok(!params.has('postedFrom'), 'Should not use dates when solnum is provided');
+    assert.ok(params.has('postedFrom'));
+    assert.ok(params.has('postedTo'));
     
     return new Response(JSON.stringify({
+      totalRecords: 1,
       opportunitiesData: [{
         noticeId: 'O-123',
         title: 'Enterprise IT',
@@ -88,7 +90,8 @@ test('USAspending sends required fields and normalizes a successful award', asyn
     assert.ok(payload.fields.includes('Award ID'));
     assert.equal(payload.page, 1);
     assert.equal(payload.subawards, false);
-    assert.deepEqual(payload.filters.naics_codes, { require: ['541512'] });
+    if (payload.filters.keywords) assert.equal(payload.filters.naics_codes, undefined);
+    else assert.deepEqual(payload.filters.naics_codes, { require: ['541512'] });
     return new Response(JSON.stringify({
       results: [{
         'Award ID': 'FAKE-TEST-1', 'Recipient Name': 'TEST CONTRACTOR', 'Award Amount': 1250000,
@@ -128,15 +131,30 @@ test('USAspending broadens to NAICS when an agency filter is rejected', async ()
     calls += 1;
     const payload = JSON.parse(String(init?.body));
     if (calls === 1) return new Response('{"detail":"unknown agency"}', { status: 422 });
-    assert.equal(payload.filters.agencies, undefined);
+    if (calls === 2) assert.equal(payload.filters.agencies, undefined);
     return new Response(JSON.stringify({ results: [], page_metadata: { page: 1, hasNext: false }, messages: [] }), { status: 200 });
   }, async () => {
     const result = await queryUSASpending(mockDeal);
     assert.equal(result.status, 'ZERO_RESULTS');
     assert.equal(result.success, true);
-    assert.equal(calls, 2);
+    assert.ok(calls >= 2);
     assert.match(result.querySummary, /broadened to NAICS/);
   });
+});
+
+test('USAspending builds focused search terms from opportunity identifiers and predecessor facts', () => {
+  const terms = searchTermsFor({
+    ...mockDeal,
+    title: 'Cloud Mission Platform (CMP)',
+    facts: [
+      { label: 'Incumbent', value: 'Example Systems', confidence: 90 },
+      { label: 'Predecessor contract number', value: 'FA-OLD-123', confidence: 95 },
+    ],
+  });
+  assert.ok(terms.includes('W9128F21R0001'));
+  assert.ok(terms.includes('Example Systems'));
+  assert.ok(terms.includes('FA-OLD-123'));
+  assert.ok(terms.includes('CMP'));
 });
 
 test('USAspending normalizes common federal customer names', () => {

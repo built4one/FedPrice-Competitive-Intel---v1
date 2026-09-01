@@ -4,9 +4,11 @@ import { calculateCompanyPosition } from './companyPosition';
 import type { MarketPosition } from '../types';
 const market: MarketPosition = {
   currency: 'USD', aggressive: 90, expected: 100, conservative: 110, rangeStatus: 'SUPPORTED',
-  posture: 'MARKET_ALIGNED', summary: '', formulaVersion: 'test', basis: [], drivers: [], anchors: [],
+  posture: 'MARKET_ALIGNED', summary: '', estimationMethod: 'COMPARABLE_AWARDS', methodLabel: 'Comparable awards', confidence: 'HIGH', formulaVersion: 'test',
+  publicBenchmark: { status: 'SUPPORTED', aggressive: 90, expected: 100, conservative: 110, evidenceIds: [], summary: '' },
+  basis: [], drivers: [], anchors: [],
   evidenceReadiness: { score: 85, comparability: 90, evidenceQuality: 90, normalizationConfidence: 90, effectiveQuantity: 70, sourceDiversity: 60, consistency: 95, gapResolution: 80 },
-  effectiveSampleSize: 2, dispersionPct: 5, rangeWidthPct: 10, constraints: [], rangeFactors: [], assumptions: [],
+  effectiveSampleSize: 2, dispersionPct: 5, rangeWidthPct: 10, constraints: [], rangeFactors: [], assumptions: [], verifiedInputs: [], sensitivities: [],
 };
 test('positions a company price inside the market band', () => {
   const result = calculateCompanyPosition(market, { companyName: 'Example', estimatedPrice: 105, riskPosture: 'BALANCED', differentiators: '', constraints: '' });

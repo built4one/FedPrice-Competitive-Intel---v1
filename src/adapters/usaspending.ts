@@ -54,17 +54,33 @@ function awardRelevance(award: z.infer<typeof awardSchema>, deal: DealProfile) {
   const factors: Array<[number, number | undefined]> = [];
   const targetAgency = normalizeAwardingAgency(deal.agency)?.name;
   const awardAgency = `${award['Awarding Agency'] || ''} ${award['Awarding Sub Agency'] || ''}`;
-  factors.push([0.35, overlap(targetAgency, awardAgency)]);
-  factors.push([0.35, overlap(`${deal.title} ${deal.scopeSummary}`, award['Description'] || undefined)]);
+  const searchableAward = `${award['Award ID'] || ''} ${award['Recipient Name'] || ''} ${award['Description'] || ''}`.toLowerCase();
+  const identifiers = searchTermsFor(deal).filter((term) => term.length >= 4);
+  const identifierMatch = identifiers.length
+    ? Math.max(...identifiers.map((term) => searchableAward.includes(term.toLowerCase()) ? 1 : overlap(term, searchableAward) || 0))
+    : undefined;
+  factors.push([0.25, overlap(targetAgency, awardAgency)]);
+  factors.push([0.30, overlap(`${deal.title} ${deal.scopeSummary}`, award['Description'] || undefined)]);
   const targetNaics = validNaics(deal.naics);
   const awardNaics = validNaics(award['NAICS Code'] ? String(award['NAICS Code']) : undefined);
-  factors.push([0.20, targetNaics && awardNaics ? (targetNaics === awardNaics ? 1 : targetNaics.slice(0, 4) === awardNaics.slice(0, 4) ? 0.6 : 0) : undefined]);
+  factors.push([0.15, targetNaics && awardNaics ? (targetNaics === awardNaics ? 1 : targetNaics.slice(0, 4) === awardNaics.slice(0, 4) ? 0.6 : 0) : undefined]);
   factors.push([0.10, deal.psc && award['Product or Service Code'] ? (deal.psc === award['Product or Service Code'] ? 1 : deal.psc.slice(0, 2) === award['Product or Service Code']?.slice(0, 2) ? 0.6 : 0) : undefined]);
+  factors.push([0.20, identifierMatch]);
   const covered = factors.reduce((sum, [weight, value]) => sum + (value === undefined ? 0 : weight), 0);
   return covered ? factors.reduce((sum, [weight, value]) => sum + weight * (value || 0), 0) / covered : 0;
 }
 
-function filtersFor(deal: DealProfile, broadened = false) {
+export function searchTermsFor(deal: DealProfile) {
+  const factTerms = (deal.facts || [])
+    .filter((fact) => /program|acronym|incumbent|predecessor|current contract|prior contract|contract number|award id|vehicle/i.test(fact.label))
+    .map((fact) => fact.value.trim())
+    .filter((value) => value.length >= 4 && !/unknown|not found|not provided|n\/a/i.test(value));
+  const acronyms = (deal.title.match(/\b[A-Z][A-Z0-9]{2,}\b/g) || []).filter((value) => !['RFP', 'RFQ', 'IDIQ'].includes(value));
+  const title = deal.title.trim().length >= 8 ? deal.title.trim().slice(0, 100) : '';
+  return [...new Set([deal.solicitationNumber?.trim(), ...factTerms, ...acronyms, title].filter((value): value is string => Boolean(value)))].slice(0, 6);
+}
+
+function filtersFor(deal: DealProfile, broadened = false, keyword?: string) {
   const start = new Date();
   start.setUTCFullYear(start.getUTCFullYear() - 8);
   const filters: Record<string, unknown> = {
@@ -72,17 +88,18 @@ function filtersFor(deal: DealProfile, broadened = false) {
     time_period: [{ start_date: isoDate(start), end_date: isoDate(new Date()) }],
   };
   const naics = validNaics(deal.naics);
-  if (naics) filters.naics_codes = { require: [naics] };
+  if (naics && !keyword) filters.naics_codes = { require: [naics] };
   const agency = normalizeAwardingAgency(deal.agency);
   if (!broadened && agency) {
     filters.agencies = [{ type: 'awarding', tier: agency.tier, name: agency.name }];
   }
+  if (keyword) filters.keywords = [keyword];
   return filters;
 }
 
-async function search(deal: DealProfile, broadened: boolean) {
+async function search(deal: DealProfile, broadened: boolean, keyword?: string) {
   const payload = {
-    filters: filtersFor(deal, broadened),
+    filters: filtersFor(deal, broadened, keyword),
     fields: [
       'Award ID', 'Recipient Name', 'Award Amount', 'Start Date', 'End Date', 'Awarding Agency',
       'Awarding Sub Agency', 'Award Type', 'Description', 'NAICS Code', 'Product or Service Code',
@@ -95,7 +112,7 @@ async function search(deal: DealProfile, broadened: boolean) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
     body: JSON.stringify(payload),
-  }, { timeoutMs: 15_000, maxAttempts: 3 });
+  }, { timeoutMs: keyword ? 10_000 : 15_000, maxAttempts: keyword ? 2 : 3 });
 }
 
 export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult> {
@@ -110,26 +127,36 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
     };
   }
   try {
-    let response;
+    let baselineResponse;
     let broadened = false;
     try {
-      response = await search(deal, false);
+      baselineResponse = await search(deal, false);
     } catch (error) {
       if (error instanceof ConnectorError && error.status === 'INVALID_QUERY' && deal.agency && naics) {
-        response = await search(deal, true);
+        baselineResponse = await search(deal, true);
         broadened = true;
       } else {
         throw error;
       }
     }
-    let parsed = responseSchema.parse(response.data);
-    if (parsed.results.length === 0 && deal.agency && naics && !broadened) {
-      response = await search(deal, true);
-      parsed = responseSchema.parse(response.data);
+    let baseline = responseSchema.parse(baselineResponse.data);
+    if (baseline.results.length === 0 && deal.agency && naics && !broadened) {
+      baselineResponse = await search(deal, true);
+      baseline = responseSchema.parse(baselineResponse.data);
       broadened = true;
     }
 
-    const ranked = parsed.results
+    const focusedTerms = searchTermsFor(deal).slice(0, 5);
+    const focusedSettled = await Promise.allSettled(focusedTerms.map((term) => search(deal, false, term)));
+    const focusedResponses = focusedSettled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
+    const focusedResults = focusedResponses.flatMap((response) => responseSchema.parse(response.data).results);
+    const allResults = [...baseline.results, ...focusedResults];
+    const dedupedResults = [...new Map(allResults.map((award, index) => [
+      award.generated_internal_id || award['Award ID'] || `record-${index}`,
+      award,
+    ])).values()];
+
+    const ranked = dedupedResults
       .map((award) => ({ award, relevance: awardRelevance(award, deal) }))
       .filter(({ relevance }) => relevance >= 0.45)
       .sort((a, b) => b.relevance - a.relevance)
@@ -177,9 +204,11 @@ export async function queryUSASpending(deal: DealProfile): Promise<AdapterResult
     return {
       name: 'USAspending', success: true, status: evidence.length ? 'SUCCESS' : 'ZERO_RESULTS',
       recordsFound: evidence.length, evidence,
-      message: evidence.length ? undefined : `The query completed successfully but none of ${parsed.results.length} returned awards met the minimum relevance standard.`,
-      durationMs: response.durationMs, attempts: response.attempts, retrievedAt,
-      querySummary: `${querySummary}${broadened ? ' · broadened to NAICS' : ''} · ${evidence.length}/${parsed.results.length} relevance-qualified`,
+      message: evidence.length ? undefined : `The query completed successfully but none of ${dedupedResults.length} returned awards met the minimum relevance standard.`,
+      durationMs: baselineResponse.durationMs + focusedResponses.reduce((sum, response) => sum + response.durationMs, 0),
+      attempts: baselineResponse.attempts + focusedResponses.reduce((sum, response) => sum + response.attempts, 0),
+      retrievedAt,
+      querySummary: `${querySummary}${broadened ? ' · broadened to NAICS' : ''}${focusedTerms.length ? ` · focused: ${focusedTerms.join(', ')}` : ''} · ${evidence.length}/${dedupedResults.length} relevance-qualified`,
     };
   } catch (error) {
     const failure = error instanceof ConnectorError ? error : undefined;
