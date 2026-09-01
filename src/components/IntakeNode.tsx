@@ -43,7 +43,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
     const response = await fetch('/api/analyze-solicitation', { method: 'POST', body, signal: controller.signal });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      if (response.status === 404) throw new Error('The production analysis API is not deployed. Verify the current Vercel deployment and retry.');
+      if (response.status === 404) throw new Error('The analysis service is unavailable in this published app.');
       if (response.status === 413) throw new Error('An uploaded file is too large for the hosted analysis endpoint.');
       if (response.status === 502) throw new Error(payload.error || 'SAM.gov could not assemble the opportunity package. Upload the official solicitation and retry.');
       if (response.status === 503) throw new Error(payload.error || 'The production analysis service is not configured. Verify the server-side keys.');
@@ -61,29 +61,17 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
     const controller = new AbortController();
     abortRef.current = controller;
     try {
-      if (samReference) {
-        setStatusText('Resolving the SAM.gov opportunity, retrieving the official package, and building Market Position.');
-        const analysis = await submitAnalysis(controller, samReference);
-        onSuccess(analysis);
-        return;
-      }
-
-      setStatusText('Reading the uploaded solicitation to identify the opportunity automatically.');
-      const initialAnalysis = await submitAnalysis(controller);
-      const extractedSolicitation = initialAnalysis.deal?.solicitationNumber?.trim();
-
-      if (!extractedSolicitation || /^(unknown|n\/a|not provided|not found)$/i.test(extractedSolicitation)) {
-        initialAnalysis.meta.warnings = [
-          ...(initialAnalysis.meta.warnings || []),
-          'The uploaded package did not expose a reliable solicitation number, so SAM.gov package completion could not run automatically.',
+      setStatusText(samReference
+        ? 'Retrieving the official opportunity package and building Market Position.'
+        : 'Reading the uploaded package and building Market Position.');
+      const analysis = await submitAnalysis(controller, samReference);
+      if (!samReference) {
+        analysis.meta.warnings = [
+          ...(analysis.meta.warnings || []),
+          'For faster analysis, uploaded packages are processed in one pass. Enter a SAM.gov URL or solicitation number at intake when automatic official-package completion is required.',
         ];
-        onSuccess(initialAnalysis);
-        return;
       }
-
-      setStatusText(`Solicitation ${extractedSolicitation} identified. Retrieving the remaining official SAM.gov package and rebuilding the analysis.`);
-      const completedAnalysis = await submitAnalysis(controller, extractedSolicitation);
-      onSuccess(completedAnalysis);
+      onSuccess(analysis);
     } catch (failure) {
       setError(failure instanceof DOMException && failure.name === 'AbortError'
         ? 'Analysis cancelled. Your opportunity reference and uploaded files are still available.'

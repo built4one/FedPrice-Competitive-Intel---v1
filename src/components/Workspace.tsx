@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
+import { createBrowserExecutivePdf } from '../exports/browserPdf';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
@@ -26,12 +27,22 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     setExporting(extension === 'pdf' ? 'pdf' : 'excel');
     setNotice('');
     try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
+      let blob: Blob;
+      try {
+        const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
+        }
+        blob = await response.blob();
+        if (extension === 'pdf') {
+          const signature = new TextDecoder().decode((await blob.slice(0, 4).arrayBuffer()));
+          if (signature !== '%PDF') throw new Error('The PDF service returned an invalid file.');
+        }
+      } catch (serverError) {
+        if (extension !== 'pdf') throw serverError;
+        blob = createBrowserExecutivePdf(analysis);
       }
-      const blob = await response.blob();
       if (!blob.size) throw new Error(`${extension.toUpperCase()} export returned an empty file.`);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
@@ -42,7 +53,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       anchor.click();
       anchor.remove();
       window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      setNotice(extension === 'pdf' ? 'Leadership PDF downloaded.' : 'Excel evidence package downloaded.');
+      setNotice(extension === 'pdf' ? 'Leadership PDF downloaded successfully.' : 'Excel evidence package downloaded.');
     } catch (error) {
       setNotice(error instanceof Error ? error.message : 'Export failed. Try again.');
     } finally {
