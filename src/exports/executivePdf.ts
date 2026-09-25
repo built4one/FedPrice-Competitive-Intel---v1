@@ -1,6 +1,4 @@
 import PDFDocument from 'pdfkit';
-import { createRequire } from 'node:module';
-import path from 'node:path';
 import type { OpportunityAnalysis } from '../types';
 
 const colors = {
@@ -20,11 +18,8 @@ const pageWidth = 612;
 const pageHeight = 792;
 const margin = 42;
 const contentWidth = pageWidth - margin * 2;
-const regularFont = 'FMP-Regular';
-const boldFont = 'FMP-Bold';
-const requireFromProject = createRequire(path.join(process.cwd(), 'package.json'));
-const regularFontPath = requireFromProject.resolve('@fontsource/inter/files/inter-latin-400-normal.woff');
-const boldFontPath = requireFromProject.resolve('@fontsource/inter/files/inter-latin-700-normal.woff');
+const regularFont = 'Helvetica';
+const boldFont = 'Helvetica-Bold';
 
 function clean(value: unknown) {
   return String(value ?? '')
@@ -259,8 +254,6 @@ function addFooters(doc: PDFKit.PDFDocument) {
 export function createExecutivePdf(analysis: OpportunityAnalysis): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'LETTER', margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: true });
-    doc.registerFont(regularFont, regularFontPath);
-    doc.registerFont(boldFont, boldFontPath);
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('error', reject);
