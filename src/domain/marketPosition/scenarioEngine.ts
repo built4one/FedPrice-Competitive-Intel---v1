@@ -509,7 +509,9 @@ export function calculateDeterministicScenarios(
     summary: draft.marketAssessment.summary,
     estimationMethod: selected.method,
     methodLabel: selected.methodLabel,
-    confidence: confidenceFor(selected.status, selected.readiness.score),
+    confidence: selected.methodLabel.startsWith('Provisional')
+      ? 'LOW'
+      : confidenceFor(selected.status, selected.readiness.score),
     formulaVersion: MARKET_POSITION_ENGINE_VERSION,
     publicBenchmark: benchmark,
     evidenceReadiness: selected.readiness,
