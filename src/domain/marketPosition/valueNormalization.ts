@@ -13,9 +13,44 @@ const CENTRAL_VALUE_TYPES = new Set<NumericEvidence['valueType']>([
   'EVENTUAL_SPEND',
 ]);
 
+const periodNumberWords: Record<string, number> = {
+  one: 1, two: 2, three: 3, four: 4, five: 5, six: 6,
+  seven: 7, eight: 8, nine: 9, ten: 10,
+};
+
+const periodNumber = '(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)';
+const periodUnit = '(year|years|yr|yrs|month|months|mo|mos)';
+
+function periodNumberValue(value: string) {
+  return periodNumberWords[value] ?? Number(value);
+}
+
+function durationMonths(value: string, unit: string) {
+  const amount = periodNumberValue(value);
+  return /^y|^yr/.test(unit) ? amount * 12 : amount;
+}
+
 export function extractPeriodMonths(value?: string): number | undefined {
   if (!value) return undefined;
-  const normalized = value.toLowerCase().replace(/,/g, '');
+  const normalized = value.toLowerCase().replace(/,/g, '').replace(/[–—]/g, '-');
+
+  const basePatterns = [
+    new RegExp(`${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+(?:base|base\\s+period)`),
+    new RegExp(`base(?:\\s+period)?(?:\\s+of|\\s*[:=-])?\\s*${periodNumber}\\s*[- ]?\\s*${periodUnit}`),
+  ];
+  const baseMatch = basePatterns.map((pattern) => normalized.match(pattern)).find(Boolean);
+  const optionDuration = normalized.match(new RegExp(`${periodNumber}\\s+${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+option`));
+  const optionUnits = normalized.match(new RegExp(`${periodNumber}\\s+option(?:al)?\\s+${periodUnit}`));
+
+  if (baseMatch && (optionDuration || optionUnits)) {
+    const baseMonths = durationMonths(baseMatch[1], baseMatch[2]);
+    const optionMonths = optionDuration
+      ? periodNumberValue(optionDuration[1]) * durationMonths(optionDuration[2], optionDuration[3])
+      : periodNumberValue(optionUnits![1]) * durationMonths('1', optionUnits![2]);
+    const total = baseMonths + optionMonths;
+    if (Number.isFinite(total) && total > 0) return total;
+  }
+
   const months = normalized.match(/(\d+(?:\.\d+)?)\s*(?:month|months|mo\b)/);
   if (months) return Number(months[1]);
   const years = normalized.match(/(\d+(?:\.\d+)?)\s*(?:year|years|yr\b)/);
