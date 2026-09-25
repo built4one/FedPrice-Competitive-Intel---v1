@@ -11,6 +11,20 @@ type View = 'home' | 'runs' | 'intake' | 'workspace';
 const storageKey = 'federal-market-position-runs-v2';
 const legacyStorageKey = 'fedprice-competitive-intel-runs-v1';
 
+function mergeRuns(local: OpportunityAnalysis[], remote: OpportunityAnalysis[]) {
+  const merged = new Map<string, OpportunityAnalysis>();
+  for (const run of [...local, ...remote].filter(Boolean)) {
+    if (!run?.id) continue;
+    const existing = merged.get(run.id);
+    const existingAt = Date.parse(existing?.meta?.analyzedAt || '') || 0;
+    const candidateAt = Date.parse(run.meta?.analyzedAt || '') || 0;
+    if (!existing || candidateAt >= existingAt) merged.set(run.id, run);
+  }
+  return [...merged.values()].sort((a, b) =>
+    (Date.parse(b.meta?.analyzedAt || '') || 0) - (Date.parse(a.meta?.analyzedAt || '') || 0),
+  );
+}
+
 function loadRuns(): OpportunityAnalysis[] {
   try {
     const parsed = JSON.parse(localStorage.getItem(storageKey) || localStorage.getItem(legacyStorageKey) || '[]').filter(Boolean);
@@ -35,20 +49,26 @@ export default function App() {
   const [view, setView] = useState<View>('home');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   
-  // Sync with backend (Phase 2 simple implementation)
+  // Keep browser-saved analyses safe even when a serverless instance has only a partial in-memory run set.
   useEffect(() => {
     fetch('/api/runs').then(res => res.json()).then(async data => {
-      if (data.data && data.data.length > 0) {
-        setRuns(data.data);
-      } else if (runs.length > 0) {
-        const migrated = await Promise.all(runs.map(async run => {
-          const response = await fetch('/api/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(run) });
-          const payload = await response.json();
-          return payload.data || run;
-        }));
-        setRuns(migrated);
+      const remote = Array.isArray(data.data) ? data.data.filter(Boolean) : [];
+      if (remote.length > 0) {
+        setRuns((current) => mergeRuns(current, remote));
+      } else {
+        const local = loadRuns();
+        if (local.length > 0) {
+          const migrated = await Promise.all(local.map(async run => {
+            const response = await fetch('/api/runs', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(run) });
+            const payload = await response.json().catch(() => ({}));
+            return response.ok && payload.data ? payload.data : run;
+          }));
+          setRuns((current) => mergeRuns(current, migrated));
+        }
       }
-    }).catch(console.error);
+    }).catch((error) => {
+      console.warn('Server run sync unavailable; continuing with browser-saved analyses.', error);
+    });
   }, []);
 
   useEffect(() => localStorage.setItem(storageKey, JSON.stringify(runs)), [runs]);

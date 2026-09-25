@@ -235,7 +235,10 @@ function bottomUpCandidate(
   const months = extractPeriodMonths(draft.deal.periodOfPerformance);
   const labor = (draft.deal.laborSignals || []).filter((signal) => signal.title?.trim());
   if (!months || !labor.length) return null;
-  if (labor.some((signal) => !signal.quantity || signal.quantity <= 0 || !signal.annualHours || signal.annualHours <= 0)) return null;
+  // Quantity is essential. Annual hours may use an explicit planning assumption when the
+  // solicitation provides headcount but omits productive hours.
+  if (labor.some((signal) => !signal.quantity || signal.quantity <= 0)) return null;
+  const assumedAnnualHours = labor.filter((signal) => !signal.annualHours || signal.annualHours <= 0);
 
   const rates = draft.evidence.filter((item) =>
     item.numeric?.valueType === 'HOURLY_CEILING_RATE' &&
@@ -250,9 +253,10 @@ function bottomUpCandidate(
     const matches = rates.filter((item) => roleMatch(signal.title, item.numeric?.scopeText || item.claim) >= 0.5);
     if (!matches.length) return null;
     const hourlyRate = median(matches.map((item) => item.numeric!.originalValue));
+    const annualHours = signal.annualHours && signal.annualHours > 0 ? signal.annualHours : 2_080;
     components.push({
-      label: `${signal.title}: ${signal.quantity} FTE x ${signal.annualHours} hours`,
-      annualCost: signal.quantity! * signal.annualHours! * hourlyRate,
+      label: `${signal.title}: ${signal.quantity} FTE x ${annualHours} hours${signal.annualHours ? '' : ' (planning assumption)'}`,
+      annualCost: signal.quantity! * annualHours * hourlyRate,
       evidenceIds: matches.map((item) => item.id),
     });
   }
@@ -291,11 +295,13 @@ function bottomUpCandidate(
       scope: 1, scale: 1, acquisition: 1, customer: 1, period: 1,
       naicsPsc: 1, laborIntensity: 1, recency: 1, technologySecurityLocation: 1, coverage: 1,
     },
-    evidenceQuality: 0.86,
-    normalizationConfidence: escalationEvidence || months <= 12 ? 0.84 : 0.76,
-    weight: 0.72,
+    evidenceQuality: assumedAnnualHours.length ? 0.72 : 0.86,
+    normalizationConfidence: assumedAnnualHours.length ? 0.62 : (escalationEvidence || months <= 12 ? 0.84 : 0.76),
+    weight: assumedAnnualHours.length ? 0.45 : 0.72,
     included: true,
-    inclusionRationale: 'Complete solicitation staffing quantities and hours were multiplied by matched official hourly-rate evidence.',
+    inclusionRationale: assumedAnnualHours.length
+      ? 'Documented staffing quantities were multiplied by matched official hourly-rate evidence using an explicit annual-hours planning assumption.'
+      : 'Complete solicitation staffing quantities and hours were multiplied by matched official hourly-rate evidence.',
     exclusionReasons: [],
     normalizationSteps: [],
     evidenceIds,
@@ -303,10 +309,10 @@ function bottomUpCandidate(
     valueBasis: 'OPPORTUNITY_TOTAL',
   };
   const readiness = calculateEvidenceReadiness([synthetic], draft.gaps, 0);
-  const rangeWidth = Math.max(ENGINE_THRESHOLDS.oneAnchorMinimumRangeWidth, 0.20);
+  const rangeWidth = Math.max(ENGINE_THRESHOLDS.oneAnchorMinimumRangeWidth, assumedAnnualHours.length ? 0.35 : 0.20);
   return {
     method: 'BOTTOM_UP_LABOR',
-    methodLabel: 'Bottom-up labor model',
+    methodLabel: assumedAnnualHours.length ? 'Provisional bottom-up labor estimate' : 'Bottom-up labor model',
     anchors: [synthetic],
     aggressive: roundCurrency(expected * (1 - rangeWidth)),
     expected: roundCurrency(expected),
@@ -317,17 +323,22 @@ function bottomUpCandidate(
     dispersion: 0,
     rangeWidth,
     rangeFactors: [
-      `Complete quantified staffing was modeled across ${months} months.`,
-      'A 20% planning band reflects labor mix, fee, and non-labor uncertainty.',
+      `${assumedAnnualHours.length ? 'Documented staffing quantities' : 'Complete quantified staffing'} were modeled across ${months} months.`,
+      assumedAnnualHours.length
+        ? 'A 35% provisional planning band reflects assumed productive hours, labor mix, fee, and non-labor uncertainty.'
+        : 'A 20% planning band reflects labor mix, fee, and non-labor uncertainty.',
     ],
     assumptions: [
-      'The extracted staffing quantities and annual hours represent the complete priced labor model.',
+      assumedAnnualHours.length
+        ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(', ')}; 2,080 hours per FTE-year is used only as a visible planning assumption.`
+        : 'The extracted staffing quantities and annual hours represent the complete priced labor model.',
       'Matched GSA CALC+ values are treated as loaded public ceiling-rate proxies, not company-specific rates.',
       escalationEvidence ? `BLS escalation evidence (${escalationEvidence.id}) was applied by performance year.` : 'No escalation was applied because a suitable cited series was unavailable.',
       'Travel, materials, ODCs, subcontractor premiums, fee, and unpriced CLINs are excluded unless embedded in the cited rates.',
     ],
     verifiedInputs: components.map((component) => component.label),
     sensitivities: [
+      ...(assumedAnnualHours.length ? ['Replace the 2,080-hour planning assumption with solicitation-specific productive hours as soon as they are known.'] : []),
       'Changes to staffing mix, productive hours, or period of performance move the estimate directly.',
       'Company-specific rates, fee, ODCs, and subcontractor structure may materially change the working position.',
     ],
@@ -498,7 +509,9 @@ export function calculateDeterministicScenarios(
     summary: draft.marketAssessment.summary,
     estimationMethod: selected.method,
     methodLabel: selected.methodLabel,
-    confidence: confidenceFor(selected.status, selected.readiness.score),
+    confidence: selected.methodLabel.startsWith('Provisional')
+      ? 'LOW'
+      : confidenceFor(selected.status, selected.readiness.score),
     formulaVersion: MARKET_POSITION_ENGINE_VERSION,
     publicBenchmark: benchmark,
     evidenceReadiness: selected.readiness,

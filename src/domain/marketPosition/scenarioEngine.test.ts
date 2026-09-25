@@ -9,7 +9,7 @@ import type {
 import { authoritativeScenarioValues, enforceAuthoritativeAnalysis, hasAuthoritativeDollarClaim, sanitizeNarrative } from './authoritative';
 import { scoreComparability } from './comparability';
 import { calculateDeterministicScenarios } from './scenarioEngine';
-import { normalizeNumericEvidence } from './valueNormalization';
+import { extractPeriodMonths, normalizeNumericEvidence } from './valueNormalization';
 
 const asOfDate = '2026-08-29T12:00:00.000Z';
 
@@ -142,6 +142,13 @@ test('scores a close comparable above a weak, poorly described record', () => {
   assert.ok(weak.score < 0.55);
 });
 
+test('includes base and option periods when parsing performance duration', () => {
+  assert.equal(extractPeriodMonths('1 year base plus 4 one-year options'), 60);
+  assert.equal(extractPeriodMonths('Base period: 12 months plus four 12-month option periods'), 60);
+  assert.equal(extractPeriodMonths('1 year base + 4 option years'), 60);
+  assert.equal(extractPeriodMonths('5 years'), 60);
+});
+
 test('normalizes recurring service duration with an explicit traceable step', () => {
   const item = evidence('POP', 20_000_000, { periodMonths: 12, recurringService: true });
   const result = normalizeNumericEvidence(item, deal, [item], asOfDate);
@@ -217,7 +224,7 @@ test('uses a complete staffing-and-hours model when no total-value anchor is ava
   assert.equal(result.publicBenchmark.status, 'NOT_SUPPORTED');
 });
 
-test('does not build a bottom-up total when any labor quantity or annual-hours input is missing', () => {
+test('returns a provisional bottom-up estimate when headcount is known but annual hours are missing', () => {
   const incomplete = draft([
     evidence('RATE-ONLY', 190, {
       valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', periodMonths: undefined,
@@ -225,6 +232,24 @@ test('does not build a bottom-up total when any labor quantity or annual-hours i
     }),
   ]);
   incomplete.deal = { ...deal, laborSignals: [{ title: 'Cloud Engineer', quantity: 10 }] };
+  const result = calculateDeterministicScenarios(incomplete, { asOfDate });
+  assert.equal(result.estimationMethod, 'BOTTOM_UP_LABOR');
+  assert.equal(result.methodLabel, 'Provisional bottom-up labor estimate');
+  assert.equal(result.expected, 19_760_000);
+  assert.equal(result.rangeStatus, 'DIRECTIONAL');
+  assert.equal(result.confidence, 'LOW');
+  assert.ok(result.rangeWidthPct >= 35);
+  assert.match(result.assumptions.join(' '), /2,080 hours per FTE-year/i);
+});
+
+test('does not manufacture a bottom-up total when staffing quantity is missing', () => {
+  const incomplete = draft([
+    evidence('RATE-ONLY', 190, {
+      valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', periodMonths: undefined,
+      scopeText: 'Cloud Engineer', opportunitySpecific: false,
+    }),
+  ]);
+  incomplete.deal = { ...deal, laborSignals: [{ title: 'Cloud Engineer', annualHours: 2_000 }] };
   const result = calculateDeterministicScenarios(incomplete, { asOfDate });
   assert.equal(result.estimationMethod, 'NO_RESPONSIBLE_ESTIMATE');
   assert.equal(result.expected, null);
