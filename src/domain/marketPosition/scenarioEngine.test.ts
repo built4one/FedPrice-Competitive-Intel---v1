@@ -9,7 +9,7 @@ import type {
 import { authoritativeScenarioValues, enforceAuthoritativeAnalysis, hasAuthoritativeDollarClaim, sanitizeNarrative } from './authoritative';
 import { scoreComparability } from './comparability';
 import { calculateDeterministicScenarios } from './scenarioEngine';
-import { normalizeNumericEvidence } from './valueNormalization';
+import { extractPeriodMonths, normalizeNumericEvidence } from './valueNormalization';
 
 const asOfDate = '2026-08-29T12:00:00.000Z';
 
@@ -140,6 +140,13 @@ test('scores a close comparable above a weak, poorly described record', () => {
   assert.ok(close.score > weak.score);
   assert.ok(close.score >= 0.8);
   assert.ok(weak.score < 0.55);
+});
+
+test('includes base and option periods when parsing performance duration', () => {
+  assert.equal(extractPeriodMonths('1 year base plus 4 one-year options'), 60);
+  assert.equal(extractPeriodMonths('Base period: 12 months plus four 12-month option periods'), 60);
+  assert.equal(extractPeriodMonths('1 year base + 4 option years'), 60);
+  assert.equal(extractPeriodMonths('5 years'), 60);
 });
 
 test('normalizes recurring service duration with an explicit traceable step', () => {
