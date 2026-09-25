@@ -237,6 +237,7 @@ test('returns a provisional bottom-up estimate when headcount is known but annua
   assert.equal(result.methodLabel, 'Provisional bottom-up labor estimate');
   assert.equal(result.expected, 19_760_000);
   assert.equal(result.rangeStatus, 'DIRECTIONAL');
+  assert.equal(result.confidence, 'LOW');
   assert.ok(result.rangeWidthPct >= 35);
   assert.match(result.assumptions.join(' '), /2,080 hours per FTE-year/i);
 });
