@@ -3,6 +3,6 @@
   "description": "Evidence-led federal intelligence that turns a solicitation and comparable public evidence into one traceable Market Position.",
   "requestFramePermissions": [],
   "majorCapabilities": [
-    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+    "MAJOR_CAPABILITY_SERVER_SIDE_OPENAI_API"
   ]
 }

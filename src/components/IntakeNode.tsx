@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, CheckCircle2, FileText, Loader2, Search, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import type { OpportunityAnalysis } from '../types';
 
-interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => void; }
+interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => Promise<void>; }
 
 export default function IntakeNode({ onBack, onSuccess }: Props) {
   const [opportunityRef, setOpportunityRef] = useState('');
@@ -71,7 +71,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
           'For faster analysis, uploaded packages are processed in one pass. Enter a SAM.gov URL or solicitation number at intake when automatic official-package completion is required.',
         ];
       }
-      onSuccess(analysis);
+      await onSuccess(analysis);
     } catch (failure) {
       setError(failure instanceof DOMException && failure.name === 'AbortError'
         ? 'Analysis cancelled. Your opportunity reference and uploaded files are still available.'

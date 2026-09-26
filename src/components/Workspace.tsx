@@ -2,9 +2,8 @@ import { useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
-import { createBrowserExecutivePdf } from '../exports/browserPdf';
 
-interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => void; }
+interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
 
 const tabs: [Tab, string][] = [
@@ -27,21 +26,15 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     setExporting(extension === 'pdf' ? 'pdf' : 'excel');
     setNotice('');
     try {
-      let blob: Blob;
-      try {
-        const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
-        if (!response.ok) {
-          const payload = await response.json().catch(() => ({}));
-          throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
-        }
-        blob = await response.blob();
-        if (extension === 'pdf') {
-          const signature = new TextDecoder().decode((await blob.slice(0, 4).arrayBuffer()));
-          if (signature !== '%PDF') throw new Error('The PDF service returned an invalid file.');
-        }
-      } catch (serverError) {
-        if (extension !== 'pdf') throw serverError;
-        blob = createBrowserExecutivePdf(analysis);
+      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
+      }
+      const blob = await response.blob();
+      if (extension === 'pdf') {
+        const signature = new TextDecoder().decode((await blob.slice(0, 4).arrayBuffer()));
+        if (signature !== '%PDF') throw new Error('The PDF service returned an invalid file.');
       }
       if (!blob.size) throw new Error(`${extension.toUpperCase()} export returned an empty file.`);
       const url = URL.createObjectURL(blob);
@@ -72,7 +65,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       });
       const payload = await response.json();
       if (!response.ok || !payload.data) throw new Error(payload.error || 'Retry failed.');
-      onUpdate(payload.data);
+      await onUpdate({ ...payload.data, storageVersion: analysis.storageVersion });
       setNotice(`${source} refreshed.`);
     } catch (error) {
       setNotice(error instanceof Error ? error.message : `${source} retry failed.`);
@@ -311,7 +304,8 @@ function IntelligenceView({ analysis }: { analysis: OpportunityAnalysis }) {
 }
 
 
-function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis; onUpdate?: (a: OpportunityAnalysis) => void }) {
+function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis; onUpdate?: (a: OpportunityAnalysis) => Promise<void> }) {
+  const [notice, setNotice] = useState('');
   const [actualAward, setActualAward] = useState(analysis.validation?.actualValue?.toString() || '');
   const [actualValueType, setActualValueType] = useState<ValidationValueType>(analysis.validation?.actualValueType || 'TOTAL_AWARD_VALUE');
   const [actualAwardee, setActualAwardee] = useState(analysis.validation?.actualAwardee || '');
@@ -358,11 +352,16 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
       retrospectiveNotes: notes,
     };
 
-    onUpdate({ ...analysis, validation });
+    try {
+      await onUpdate({ ...analysis, validation });
+    } catch (error) {
+      setNotice(error instanceof Error ? error.message : 'Validation could not be saved.');
+    }
   };
 
   return (
     <div className="space-y-5">
+      {notice && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{notice}</p>}
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <div className="flex items-center justify-between">
           <div>

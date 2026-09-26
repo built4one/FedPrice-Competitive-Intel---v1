@@ -55,6 +55,7 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
     ...analysis.gaps.filter((gap) => gap.priority === 'HIGH').map((gap) => `${gap.question} ${gap.impact}`),
   ]).slice(0, 3);
   const nextActions = unique(analysis.narrative.nextActions).slice(0, 3);
+  const firstGap = analysis.gaps.find((gap) => gap.priority === 'HIGH')?.question || analysis.gaps[0]?.question;
   const supported = position.rangeStatus === 'SUPPORTED';
   const directional = position.rangeStatus === 'DIRECTIONAL';
   const recommendation = scenario.expected === null
@@ -109,6 +110,14 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
           <Scenario label="Conservative" value={money(scenario.conservative)} />
         </div>
       </section>
+
+      {scenario.expected === null && (
+        <section role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-950">
+          <strong>What is missing for a dollar recommendation</strong>
+          <p className="mt-1">{position.rangeFactors[0] || 'The available evidence does not support a like-for-like total.'}</p>
+          <p className="mt-2"><strong>First input to review:</strong> {firstGap || 'Provide an opportunity-specific value or complete staffing quantities, hours, period, and applicable labor benchmarks.'}</p>
+        </section>
+      )}
 
       <section className="grid gap-4 lg:grid-cols-3">
         <DecisionList icon={Target} title="Why this position" values={why} empty="The calculation basis is available in Analysis Details." tone="blue" />

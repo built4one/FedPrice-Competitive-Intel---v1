@@ -1,4 +1,5 @@
 import PDFDocument from 'pdfkit';
+import { regularFontData, boldFontData } from './fontData';
 import type { OpportunityAnalysis } from '../types';
 
 const colors = {
@@ -18,8 +19,8 @@ const pageWidth = 612;
 const pageHeight = 792;
 const margin = 42;
 const contentWidth = pageWidth - margin * 2;
-const regularFont = 'Helvetica';
-const boldFont = 'Helvetica-Bold';
+const regularFont = 'FMP-Regular';
+const boldFont = 'FMP-Bold';
 
 function clean(value: unknown) {
   return String(value ?? '')
@@ -253,7 +254,11 @@ function addFooters(doc: PDFKit.PDFDocument) {
 
 export function createExecutivePdf(analysis: OpportunityAnalysis): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ size: 'LETTER', margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: true });
+    const regular = Buffer.from(regularFontData, 'base64');
+    const bold = Buffer.from(boldFontData, 'base64');
+    const doc = new PDFDocument({ font: regular as unknown as string, size: 'LETTER', margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: true });
+    doc.registerFont(regularFont, regular);
+    doc.registerFont(boldFont, bold);
     const chunks: Buffer[] = [];
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('error', reject);

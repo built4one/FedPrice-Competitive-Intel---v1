@@ -2,9 +2,12 @@ import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import { opportunityAnalysisFixture } from '../testFixtures/opportunityAnalysis';
+import { passwordHash } from '../server/auth';
 
 test('serves valid PDF and Excel downloads through the production export routes', async (t) => {
   process.env.VERCEL = '1';
+  process.env.STUDIO_USERS_JSON = JSON.stringify([{ username: 'exporter', workspace: 'exports', passwordHash: passwordHash('test-pass') }]);
+  process.env.SESSION_SECRET = 'test-session-secret-with-at-least-32-characters';
   const { default: app } = await import('../../server');
   const server = await new Promise<ReturnType<typeof app.listen>>((resolve) => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
@@ -14,6 +17,13 @@ test('serves valid PDF and Excel downloads through the production export routes'
   }));
 
   const { port } = server.address() as AddressInfo;
+  const signIn = await fetch(`http://127.0.0.1:${port}/api/session`, {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ username: 'exporter', password: 'test-pass' }),
+  });
+  assert.equal(signIn.status, 200);
+  const cookie = signIn.headers.get('set-cookie')?.split(';')[0];
+  assert.ok(cookie);
   const analysis = opportunityAnalysisFixture();
   const cases = [
     { endpoint: 'export-pdf', type: 'application/pdf', signature: '%PDF', extension: '.pdf' },
@@ -23,7 +33,7 @@ test('serves valid PDF and Excel downloads through the production export routes'
   for (const item of cases) {
     const response = await fetch(`http://127.0.0.1:${port}/api/${item.endpoint}`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', cookie },
       body: JSON.stringify(analysis),
     });
     const bytes = Buffer.from(await response.arrayBuffer());

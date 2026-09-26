@@ -324,6 +324,7 @@ export interface ValidationRecord {
 }
 
 export interface OpportunityAnalysis {
+  storageVersion?: number;
   id: string;
   deal: DealProfile;
   marketPosition: MarketPosition;

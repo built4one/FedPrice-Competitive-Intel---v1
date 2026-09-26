@@ -22,8 +22,8 @@ The completed-run experience is the Decision Center. It presents deterministic A
 
 ## Intelligence boundary
 
-- Gemini extracts, classifies, researches, and explains.
-- Gemini does not create or revise authoritative Market Position dollars.
+- OpenAI extracts, classifies, researches, and explains.
+- OpenAI does not create or revise authoritative Market Position dollars.
 - The server recalculates authoritative values before saving or exporting.
 - Raw hourly CALC+ rates and BLS percentages cannot enter total-contract-value weighting.
 - Program funding, multiple-award pools, order limits, and past-performance thresholds cannot be treated as one expected award value.
@@ -47,8 +47,8 @@ Range width is derived from weighted anchor dispersion, Evidence Readiness, and 
 ```bash
 npm ci
 cp .env.example .env
-# Add GEMINI_API_KEY to .env
-npm run dev
+# Add OPENAI_API_KEY to .env
+STUDIO_LOCAL_MODE=1 npm run dev
 ```
 
 ## Quality checks
@@ -61,9 +61,9 @@ The suite covers connector resilience, comparable scoring, normalization, weight
 
 ## Configuration
 
-- `GEMINI_API_KEY` — required for solicitation analysis.
-- `GEMINI_MODEL` — optional; defaults to `gemini-2.5-pro`.
-- `ENABLE_GOOGLE_SEARCH` — optional; defaults to enabled.
+- `OPENAI_API_KEY` — required for solicitation analysis; server-side only.
+- `OPENAI_MODEL` — optional; defaults to `gpt-5.4`.
+- `ENABLE_OPENAI_WEB_SEARCH` — optional; defaults to enabled. Public research uses OpenAI web search; government adapters remain separate.
 - `SAM_API_KEY` — optional supplemental opportunity intelligence.
 - `BLS_API_KEY` — optional higher BLS quota.
 
@@ -71,9 +71,15 @@ The hosted Vercel demo accepts up to 10 files with a combined package size of 4 
 
 USAspending and GSA CALC+ do not require API keys.
 
-## Current persistence boundary
+OpenAI Responses processes solicitation files as input, returns structured extraction, and can enrich the qualitative market view through web search. The app sends public opportunity facts to web search, not private company rates. The deterministic market engine still calculates the scenario dollars. OpenAI requests use `store: false`; this does not replace durable app-side storage. Configure an API account, billing, and the key in the deployment's server environment before live analysis. The health route reports whether a key is configured without exposing it.
 
-Runs are versioned in browser storage and synchronized with the active Express server session. The current server store is memory-backed and does not survive a server restart. Durable database persistence remains a separate future work package.
+## Private tester setup and persistence
+
+The API requires a signed-in tester. Set `STUDIO_USERS_JSON` to a JSON array of accounts with distinct `username`, `workspace`, and `passwordHash` fields. Generate one account object at a time with `node scripts/create-tester-account.mjs USERNAME`, then combine the objects into one array. Set a random `SESSION_SECRET` of at least 32 characters. Keep both values in server environment settings, never in the repository or browser. Each tester's workspace is isolated.
+
+Set `DATABASE_URL` to a PostgreSQL connection string for hosted deployment; hosted run storage fails closed if it is missing. Local development uses a SQLite file at `STUDIO_DB_PATH` (default `./data/market-intelligence.sqlite`). For local testing only, `STUDIO_LOCAL_MODE=1 npm run dev` allows loopback access as one local analyst. Saved runs are authoritative in the database, with optimistic version checks; older browser runs can be explicitly imported after sign-in. The uploaded original files are not yet stored, so retain the original RFP package outside the app.
+
+The OpenAI branch still needs a private preview deployment, credentials, and one complete live-RFP test before external testers should rely on it. No IBM confidential data or internal rates belong in this commercial app.
 
 ## V1 exclusions
 
