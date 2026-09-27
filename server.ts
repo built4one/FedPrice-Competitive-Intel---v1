@@ -7,6 +7,8 @@ import ExcelJS from 'exceljs';
 import { OpenAIIntelligence, getOpenAIModel, openAIConfigured } from './src/server/openaiIntelligence.js';
 import { authConfigured, installAuth } from './src/server/auth.js';
 import { ConflictError, RecordStore } from './src/server/store.js';
+import { preserveCurrentStrategy, synthesizePtwStrategy } from './src/server/ptwSynthesis.js';
+import { strategyStatements } from './src/domain/ptw/strategy.js';
 import type {
   AiAnalysisDraft,
   ConnectorStatus,
@@ -601,7 +603,7 @@ function legacyNarrative(raw: any): DecisionNarrative {
   });
 }
 
-function normalizeIncomingRun(raw: any): OpportunityAnalysis {
+function recalculateIncomingRun(raw: any): OpportunityAnalysis {
   if (!raw?.id || !raw?.deal || !raw?.meta) throw new Error('A valid Opportunity Run is required.');
   if (!isCurrentEngine(raw.marketPosition)) {
     const migrated = enforceAuthoritativeAnalysis({
@@ -627,10 +629,28 @@ function normalizeIncomingRun(raw: any): OpportunityAnalysis {
   return enforceAuthoritativeAnalysis(raw as OpportunityAnalysis);
 }
 
+function normalizeIncomingRun(raw: any): OpportunityAnalysis {
+  const analysis = recalculateIncomingRun(raw);
+  return {...analysis, ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy)};
+}
+
+// A separate bounded request lets intake and strategy retry independently.
+// The client retains the evidence run if the model or validation fails.
+app.post('/api/ptw-strategy', async (req, res) => {
+  try {
+    if (!openAIConfigured()) return res.status(503).json({error: 'OPENAI_API_KEY is not configured for this deployment.'});
+    const analysis = normalizeIncomingRun(req.body);
+    analysis.ptwStrategy = await synthesizePtwStrategy(analysis);
+    res.json({data: analysis});
+  } catch (error) {
+    res.status(400).json({error: error instanceof Error ? error.message : 'A valid analysis is required.'});
+  }
+});
+
 app.get('/api/runs', async (req, res) => {
   try {
     const saved = await runStore.list<OpportunityAnalysis>(req.principal.workspace, 'analysis');
-    res.json({ data: saved.map((item) => ({ ...item.value, storageVersion: item.version })) });
+    res.json({ data: saved.map((item) => ({ ...normalizeIncomingRun(item.value), storageVersion: item.version })) });
   } catch (error) {
     res.status(503).json({ error: error instanceof Error ? error.message : 'Saved analyses are unavailable.' });
   }
@@ -773,6 +793,7 @@ app.post('/api/retry-connector', async (req, res) => {
       narrative: sanitizeNarrative(draft.narrative),
       marketPosition: calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt }),
     };
+    analysis.ptwStrategy = preserveCurrentStrategy(analysis, analysis.ptwStrategy);
     res.json({ data: analysis });
   } catch (error) {
     res.status(500).json({ error: error instanceof Error ? error.message : 'The connector could not be retried.' });
@@ -794,9 +815,10 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Opportunity', value: analysis.deal.title },
       { field: 'Agency', value: analysis.deal.agency },
       { field: 'Solicitation', value: analysis.deal.solicitationNumber },
-      { field: 'Aggressive Market Position', value: displayValue(analysis.marketPosition.aggressive) },
-      { field: 'Expected Market Position', value: displayValue(analysis.marketPosition.expected) },
-      { field: 'Conservative Market Position', value: displayValue(analysis.marketPosition.conservative) },
+      { field: 'Benchmark lower reference', value: displayValue(analysis.marketPosition.aggressive) },
+      { field: 'Benchmark central reference', value: displayValue(analysis.marketPosition.expected) },
+      { field: 'Benchmark upper reference', value: displayValue(analysis.marketPosition.conservative) },
+      { field: 'Numeric interpretation', value: 'Heuristic market references. These are not priced competitive strategies or an approved bid recommendation.' },
       { field: 'Range Status', value: analysis.marketPosition.rangeStatus },
       { field: 'Estimation Method', value: analysis.marketPosition.methodLabel },
       { field: 'Confidence', value: analysis.marketPosition.confidence },
@@ -806,6 +828,15 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Formula Version', value: analysis.marketPosition.formulaVersion },
       { field: 'Calculation Basis', value: analysis.marketPosition.methodLabel },
     ]);
+
+    const strategy = workbook.addWorksheet('PTW Strategy');
+    strategy.columns = [{header:'Section',key:'section',width:38},{header:'Assessment',key:'assessment',width:100},{header:'Claim type',key:'kind',width:18},{header:'Evidence IDs',key:'evidence',width:36},{header:'Validation action',key:'validation',width:80}];
+    if (analysis.ptwStrategy?.status === 'DRAFT') {
+      const s = analysis.ptwStrategy.strategy;
+      strategy.addRow({section:'Selected option',assessment:s.options.find(o => o.id === s.recommendation.selectedOptionId)!.name,kind:'UNREVIEWED'});
+      strategyStatements(s).forEach(({section,statement}) => strategy.addRow({section,assessment:statement.text,kind:statement.kind,evidence:statement.evidenceIds.join(', '),validation:statement.validationAction}));
+      s.missingInputs.forEach(assessment => strategy.addRow({section:'Missing input',assessment}));
+    } else strategy.addRow({section:'Strategy status',assessment:analysis.ptwStrategy?.reason || 'Strategic synthesis has not been generated for this run.'});
 
     const methodology = workbook.addWorksheet('Calculation Methodology');
     const evidenceById = new Map(analysis.evidence.map((item) => [item.id, item]));

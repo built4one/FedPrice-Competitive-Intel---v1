@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import { opportunityAnalysisFixture } from '../testFixtures/opportunityAnalysis';
 import { passwordHash } from '../server/auth';
+import ExcelJS from 'exceljs';
+import { ptwStrategyFixture } from '../testFixtures/ptwStrategy';
+import { synthesizePtwStrategy } from '../server/ptwSynthesis';
 
 test('serves valid PDF and Excel downloads through the production export routes', async (t) => {
   process.env.VERCEL = '1';
@@ -24,7 +26,8 @@ test('serves valid PDF and Excel downloads through the production export routes'
   assert.equal(signIn.status, 200);
   const cookie = signIn.headers.get('set-cookie')?.split(';')[0];
   assert.ok(cookie);
-  const analysis = opportunityAnalysisFixture();
+  const {analysis,strategy} = ptwStrategyFixture();
+  analysis.ptwStrategy = await synthesizePtwStrategy(analysis,{interpret:async <T>() => strategy as T});
   const cases = [
     { endpoint: 'export-pdf', type: 'application/pdf', signature: '%PDF', extension: '.pdf' },
     { endpoint: 'export-brief', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', signature: 'PK', extension: '.xlsx' },
@@ -43,5 +46,16 @@ test('serves valid PDF and Excel downloads through the production export routes'
     assert.match(response.headers.get('content-disposition') || '', new RegExp(`${item.extension.replace('.', '\\.')}(?:"|$)`));
     assert.equal(bytes.subarray(0, item.signature.length).toString('ascii'), item.signature);
     assert.ok(bytes.length > 5_000);
+    if (item.extension === '.xlsx') {
+      const workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(bytes as any);
+      const sheet = workbook.getWorksheet('PTW Strategy');
+      assert.ok(sheet);
+      const exported = JSON.stringify(sheet.getSheetValues());
+      assert.ok(exported.includes(strategy.options[0].name));
+      assert.ok(exported.includes(strategy.recommendation.alternatives[0].reason.text));
+      assert.ok(exported.includes(strategy.recommendation.changeTriggers[0].text));
+      assert.match(exported,/SOL-EVAL/);
+    }
   }
 });

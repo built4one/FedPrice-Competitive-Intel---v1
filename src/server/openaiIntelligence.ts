@@ -57,6 +57,7 @@ export class OpenAIIntelligence {
     private readonly key = process.env.OPENAI_API_KEY,
     private readonly model = getOpenAIModel(),
     private readonly request: typeof fetch = fetch,
+    private readonly timeoutMs = 240_000,
   ) {}
 
   private async respond(body: Record<string, unknown>): Promise<OpenAIResponse> {
@@ -65,7 +66,7 @@ export class OpenAIIntelligence {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: this.model, store: false, ...body }),
-      signal: AbortSignal.timeout(240_000),
+      signal: AbortSignal.timeout(this.timeoutMs),
     });
     const data = await response.json() as OpenAIResponse;
     if (!response.ok) throw new Error(`OpenAI request failed (${response.status}): ${data.error?.message || 'unknown error'}`);

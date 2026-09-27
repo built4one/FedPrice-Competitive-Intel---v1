@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
+import { requestPtwStrategy } from '../client/ptwStrategy';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
@@ -20,6 +21,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [tab, setTab] = useState<Tab>('decision-center');
   const [notice, setNotice] = useState('');
   const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
+  const [generatingStrategy, setGeneratingStrategy] = useState(false);
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
 
   const downloadExport = async (endpoint: string, extension: 'pdf' | 'xlsx') => {
@@ -39,9 +41,9 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       if (!blob.size) throw new Error(`${extension.toUpperCase()} export returned an empty file.`);
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement('a');
-      const safeName = (analysis.deal.solicitationNumber || 'Market_Position').replace(/[^a-z0-9-]/gi, '_');
+      const safeName = (analysis.deal.solicitationNumber || 'PTW_Assessment').replace(/[^a-z0-9-]/gi, '_');
       anchor.href = url;
-      anchor.download = `${safeName}_Market_Position.${extension}`;
+      anchor.download = `${safeName}_PTW_Assessment.${extension}`;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -56,6 +58,16 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
 
   const exportExcel = () => downloadExport('/api/export-brief', 'xlsx');
   const exportPdf = () => downloadExport('/api/export-pdf', 'pdf');
+
+  const generateStrategy = async () => {
+    setGeneratingStrategy(true); setNotice('');
+    try {
+      const updated = await requestPtwStrategy(analysis);
+      await onUpdate(updated);
+      setNotice(updated.ptwStrategy?.status === 'DRAFT' ? 'Strategic assessment saved. Review its evidence and assumptions.' : updated.ptwStrategy?.reason || 'Strategic assessment is unavailable.');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Strategic assessment failed.'); }
+    finally { setGeneratingStrategy(false); }
+  };
 
   const retryConnector = async (source: ConnectorStatus['name']) => {
     setRetrying(source); setNotice('');
@@ -81,7 +93,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       <div>
         <button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button>
         <div className="mt-4 flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">MARKET POSITION</span>
+          <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">PTW INTELLIGENCE</span>
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">QUALITATIVE: {analysis.meta.researchStatus?.replaceAll('_',' ')}</span>
           <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${analysis.marketPosition.rangeStatus === 'SUPPORTED' ? 'bg-emerald-100 text-emerald-700' : analysis.marketPosition.rangeStatus === 'DIRECTIONAL' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>NUMERIC: {analysis.marketPosition.rangeStatus.replaceAll('_', ' ')}</span>
         </div>
@@ -103,7 +115,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     </div>
 
     <div className="mt-8">
-      {tab === 'decision-center' && <DecisionCenter analysis={analysis} />}
+      {tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />}
       {tab === 'deal' && <DealView analysis={analysis} />}
       {tab === 'market-evidence' && <div className="space-y-10"><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}

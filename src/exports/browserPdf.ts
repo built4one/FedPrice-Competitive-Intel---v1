@@ -36,17 +36,17 @@ function wrap(value: string, max = 88) {
 export function createBrowserExecutivePdf(analysis: OpportunityAnalysis) {
   const position = analysis.marketPosition;
   const lines: Array<{ text: string; size?: number; bold?: boolean; gap?: number }> = [
-    { text: 'FEDERAL MARKET POSITION - EXECUTIVE DECISION BRIEF', size: 9, bold: true, gap: 18 },
+    { text: 'FEDERAL PTW - SUPPORTING MARKET REFERENCES', size: 9, bold: true, gap: 18 },
     ...wrap(analysis.deal.title, 56).slice(0, 2).map((text, index) => ({ text, size: 17, bold: true, gap: index === 0 ? 21 : 24 })),
     { text: [analysis.deal.agency, analysis.deal.solicitationNumber].filter(Boolean).join(' | '), size: 9, gap: 22 },
-    { text: `AGGRESSIVE  ${money(position.aggressive)}`, size: 13, bold: true, gap: 19 },
-    { text: `EXPECTED    ${money(position.expected)}`, size: 17, bold: true, gap: 23 },
-    { text: `CONSERVATIVE  ${money(position.conservative)}`, size: 13, bold: true, gap: 25 },
+    { text: `LOWER REFERENCE  ${money(position.aggressive)}`, size: 13, bold: true, gap: 19 },
+    { text: `CENTRAL REFERENCE    ${money(position.expected)}`, size: 17, bold: true, gap: 23 },
+    { text: `UPPER REFERENCE  ${money(position.conservative)}`, size: 13, bold: true, gap: 25 },
     { text: `METHOD: ${position.methodLabel}`, size: 9, bold: true, gap: 14 },
     { text: `STATUS: ${position.rangeStatus.replaceAll('_', ' ')} | CONFIDENCE: ${position.confidence} | EVIDENCE READINESS: ${position.evidenceReadiness.score}/100`, size: 9, gap: 22 },
-    { text: 'RECOMMENDATION', size: 10, bold: true, gap: 16 },
+    { text: 'MARKET ASSESSMENT', size: 10, bold: true, gap: 16 },
     ...wrap(analysis.narrative.rationale, 92).slice(0, 5).map((text) => ({ text, size: 9, gap: 13 })),
-    { text: 'WHY THIS POSITION', size: 10, bold: true, gap: 18 },
+    { text: 'BENCHMARK BASIS', size: 10, bold: true, gap: 18 },
     ...[...analysis.narrative.decisionFactors, ...position.basis].slice(0, 3).flatMap((item) =>
       wrap(`- ${item}`, 92).slice(0, 3).map((text) => ({ text, size: 9, gap: 13 }))),
     { text: 'WHAT COULD MOVE IT', size: 10, bold: true, gap: 18 },
@@ -65,7 +65,7 @@ export function createBrowserExecutivePdf(analysis: OpportunityAnalysis) {
     commands.push(`BT ${font} ${line.size ?? 9} Tf 42 ${y} Td (${escapePdf(line.text)}) Tj ET`);
     y -= line.gap ?? 13;
   }
-  commands.push('BT /F1 7 Tf 42 24 Td (Generated from the authoritative Market Position result. See Excel export for full evidence lineage.) Tj ET');
+  commands.push('BT /F1 7 Tf 42 24 Td (Market references only. Download the server PDF for the strategic decision brief and evidence.) Tj ET');
   const stream = commands.join('\n');
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',

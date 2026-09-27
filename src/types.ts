@@ -1,3 +1,5 @@
+import type { PtwStrategyResult } from './domain/ptw/strategy';
+
 export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export type EvidenceType = 'SOLICITATION_FACT' | 'EXTERNAL_SOURCE' | 'ANALYST_INFERENCE' | 'DATA_GAP';
 export type EstimationMethod =
@@ -324,6 +326,7 @@ export interface ValidationRecord {
 }
 
 export interface OpportunityAnalysis {
+  ptwStrategy?: PtwStrategyResult;
   storageVersion?: number;
   id: string;
   deal: DealProfile;

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, CheckCircle2, FileText, Loader2, Search, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import type { OpportunityAnalysis } from '../types';
+import { requestPtwStrategy } from '../client/ptwStrategy';
 
 interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => Promise<void>; }
 
@@ -64,12 +65,18 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       setStatusText(samReference
         ? 'Retrieving the official opportunity package and building Market Position.'
         : 'Reading the uploaded package and building Market Position.');
-      const analysis = await submitAnalysis(controller, samReference);
+      let analysis = await submitAnalysis(controller, samReference);
       if (!samReference) {
         analysis.meta.warnings = [
           ...(analysis.meta.warnings || []),
           'For faster analysis, uploaded packages are processed in one pass. Enter a SAM.gov URL or solicitation number at intake when automatic official-package completion is required.',
         ];
+      }
+      setStatusText('Comparing competitive approaches, evaluation tradeoffs, and validation actions.');
+      try { analysis = await requestPtwStrategy(analysis, controller.signal); }
+      catch (failure) {
+        if (controller.signal.aborted) throw failure;
+        analysis.meta.warnings.push('Strategic assessment did not complete. The source evidence is preserved; retry strategy synthesis from the decision workspace.');
       }
       await onSuccess(analysis);
     } catch (failure) {
@@ -147,7 +154,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       {error && <div className="mt-5 max-w-3xl flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
       <div className="mt-6 max-w-3xl flex items-center justify-between gap-4">
         <p className="text-[11px] leading-5 text-slate-400">One identifier is enough. Uploading a solicitation and entering a SAM reference are both valid starting paths.</p>
-        <button onClick={runAnalysis} className="shrink-0 rounded-xl bg-[#10243e] px-6 py-3 text-sm font-black text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50" disabled={!canRun}>BUILD MARKET POSITION</button>
+        <button onClick={runAnalysis} className="shrink-0 rounded-xl bg-[#10243e] px-6 py-3 text-sm font-black text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50" disabled={!canRun}>BUILD PTW ASSESSMENT</button>
       </div>
     </> : <div className="mx-auto mt-16 max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
       <div className="flex items-start gap-3"><Loader2 className="mt-0.5 h-5 w-5 animate-spin text-blue-600" /><div className="flex-1"><div className="flex items-center justify-between gap-3"><p className="text-sm font-black">Building the opportunity intelligence package</p><span className="font-mono text-xs font-bold text-slate-400">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span></div><p className="mt-2 text-xs leading-5 text-slate-500">{statusText}</p></div></div>

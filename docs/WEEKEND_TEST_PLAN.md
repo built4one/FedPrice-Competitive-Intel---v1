@@ -1,11 +1,15 @@
 # Weekend private-test gate
 
+Controlling product vision: `docs/CONTROLLING_PRODUCT_VISION.md`. A benchmark-only workflow does not satisfy the PTW MVP. The strategic decision and its evidence must be tested along with the application plumbing.
+
 Branch: `codex/market-intelligence-openai-weekend`, integrated from the existing
 market-intelligence branch. Use this exact branch for private preview testing.
 
 ## What exists now
 
 One integrated Market Intelligence pipeline accepts an uploaded package or SAM.gov reference, extracts opportunity facts with OpenAI, queries public adapters, optionally researches public sources with OpenAI web search, computes deterministic Aggressive/Expected/Conservative market scenarios, and exports a PDF and Excel brief. Results include evidence, confidence, exclusions, assumptions, and gaps. Runs now use private signed-in workspaces and a durable database. These are not four separate agent services or four independent PDFs/JSON handoffs.
+
+The September 27 correction adds a separate strategy request after intake and a retry action for saved runs. It compares approaches under the evaluation criteria, selects an approach, rejects alternatives with reasons, records rival-response hypotheses, and names change triggers/validation actions. The benchmark values are displayed as lower/central/upper reference values. Priced strategy scenarios and independent Agent 1–3 handoffs remain incomplete. Hosted auth/storage code still requires configuration and live verification.
 
 The output is a **market-position planning range**, not a known competitor bid, guaranteed winning price, approved IBM price, or substitute for a company cost model. When evidence cannot support a number, the app states why and points to a missing input. The model must never invent a dollar value to satisfy an always-answer target.
 
@@ -16,6 +20,8 @@ The output is a **market-position planning range**, not a known competitor bid, 
 3. Run at least one real current RFP end to end: upload, check extraction and period/options, inspect cited public evidence and excluded values, confirm the range or a clear insufficient-evidence answer, save, reopen after redeployment, and compare PDF/XLSX with the screen.
 4. Run a second sparse or outdated package. Confirm the app gives a useful assessment and one concrete missing-input request, without a fabricated number.
 5. Verify each tester can access only their own saved runs. Do not upload IBM confidential or DCA material to this commercial preview.
+6. Verify the strategic output contains materially different delivery/pricing approaches, sources or visible assumptions for material claims, a selection and reasons for rejecting alternatives, and evidence that could change the decision. A generic low/medium/high band does not pass.
+7. Confirm strategy failure keeps the evidence available for retry, changed source data invalidates the previous strategy, and PDF/Excel match the saved decision brief. Do not claim the strategy's proposed prices are implemented until explicit scenario calculations are added and tested.
 
 ## Monday test brief
 

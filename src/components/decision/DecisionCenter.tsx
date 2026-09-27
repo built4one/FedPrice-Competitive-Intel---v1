@@ -10,6 +10,7 @@ import {
 } from 'lucide-react';
 import type { EvaluatedNumericAnchor, OpportunityAnalysis } from '../../types';
 import { authoritativeScenarioValues } from '../../domain/marketPosition/authoritative';
+import PtwStrategyBrief from './PtwStrategyBrief';
 
 const money = (value: number | null) => value === null
   ? 'Not supportable'
@@ -32,7 +33,7 @@ function unique(values: Array<string | undefined>) {
   return [...new Set(values.filter((value): value is string => Boolean(value?.trim())))];
 }
 
-export default function DecisionCenter({ analysis }: { analysis: OpportunityAnalysis }) {
+export default function DecisionCenter({ analysis, onGenerateStrategy, generatingStrategy }: { analysis: OpportunityAnalysis; onGenerateStrategy?: () => void; generatingStrategy?: boolean }) {
   const position = analysis.marketPosition;
   const scenario = authoritativeScenarioValues(position);
   const included = position.anchors.filter((anchor) => anchor.included);
@@ -59,11 +60,12 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
   const supported = position.rangeStatus === 'SUPPORTED';
   const directional = position.rangeStatus === 'DIRECTIONAL';
   const recommendation = scenario.expected === null
-    ? 'No responsible dollar recommendation is supportable yet.'
-    : `Plan around ${money(scenario.expected)} within the current ${money(scenario.aggressive)} to ${money(scenario.conservative)} market range.`;
+    ? 'A comparable market reference could not be established.'
+    : `${money(scenario.expected)} central market reference`;
 
   return (
     <div className="space-y-5">
+      <PtwStrategyBrief analysis={analysis} onGenerate={onGenerateStrategy} generating={generatingStrategy} />
       {(samUnavailable || unresolvedDocuments.length > 0) && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
@@ -78,10 +80,12 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
         </div>
       )}
 
-      <section className="overflow-hidden rounded-3xl bg-[#10243e] text-white shadow-[0_18px_50px_rgba(15,35,60,.18)]">
+      <details className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <summary className="cursor-pointer px-5 py-4 text-sm font-black text-slate-800">Market and affordability evidence · {position.methodLabel}</summary>
+      <section className="bg-[#10243e] text-white">
         <div className="border-b border-white/10 px-5 py-4 sm:px-7">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-blue-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[.14em] text-blue-200">Working Market Position</span>
+            <span className="rounded-full bg-blue-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[.14em] text-blue-200">Supporting market benchmark</span>
             <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[.1em] ${supported ? 'bg-emerald-300 text-emerald-950' : directional ? 'bg-amber-200 text-amber-950' : 'bg-white/10 text-slate-200'}`}>
               {position.rangeStatus.replaceAll('_', ' ')}
             </span>
@@ -93,7 +97,7 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
             <div>
               <p className="text-xs font-bold text-blue-200">{position.methodLabel}</p>
               <h2 className="mt-2 max-w-4xl text-xl font-black leading-tight sm:text-2xl">{recommendation}</h2>
-              <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300">{analysis.narrative.headline}</p>
+              <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300">These reference bands describe the market evidence and uncertainty. They have not been priced from competing delivery strategies or validated against the source-selection decision.</p>
             </div>
             {reviewedDocuments.length > 0 && (
               <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.06] px-3 py-2 text-[10px] font-bold text-slate-300">
@@ -105,22 +109,23 @@ export default function DecisionCenter({ analysis }: { analysis: OpportunityAnal
         </div>
 
         <div className="grid gap-px bg-white/10 sm:grid-cols-[1fr_1.35fr_1fr]">
-          <Scenario label="Aggressive" value={money(scenario.aggressive)} />
-          <Scenario label="Expected" value={money(scenario.expected)} emphasized />
-          <Scenario label="Conservative" value={money(scenario.conservative)} />
+          <Scenario label="Lower reference" value={money(scenario.aggressive)} />
+          <Scenario label="Central reference" value={money(scenario.expected)} emphasized />
+          <Scenario label="Upper reference" value={money(scenario.conservative)} />
         </div>
       </section>
+      </details>
 
       {scenario.expected === null && (
         <section role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-950">
-          <strong>What is missing for a dollar recommendation</strong>
+          <strong>Market-reference evidence gap</strong>
           <p className="mt-1">{position.rangeFactors[0] || 'The available evidence does not support a like-for-like total.'}</p>
           <p className="mt-2"><strong>First input to review:</strong> {firstGap || 'Provide an opportunity-specific value or complete staffing quantities, hours, period, and applicable labor benchmarks.'}</p>
         </section>
       )}
 
       <section className="grid gap-4 lg:grid-cols-3">
-        <DecisionList icon={Target} title="Why this position" values={why} empty="The calculation basis is available in Analysis Details." tone="blue" />
+        <DecisionList icon={Target} title="Benchmark basis" values={why} empty="The calculation basis is available in Analysis Details." tone="blue" />
         <DecisionList icon={Lightbulb} title="What could move it" values={movers} empty="No material sensitivities were identified." tone="amber" />
         <DecisionList icon={MoveRight} title="Recommended next actions" values={nextActions} empty="Continue validating the highest-impact open evidence." tone="emerald" numbered />
       </section>

@@ -1,14 +1,14 @@
-# Federal Market Position
+# Federal Price-to-Win Intelligence Suite
 
-Evidence-led federal pricing intelligence that turns a solicitation and comparable public evidence into one traceable Market Position.
+Coordinated procurement, competitor, market, and strategy intelligence for the Federal Pricer. The controlling contract is [docs/CONTROLLING_PRODUCT_VISION.md](docs/CONTROLLING_PRODUCT_VISION.md).
 
 ## Product outcome
 
 The application answers:
 
-> Where is the defensible competitive market position for this opportunity, what evidence supports it, and what could move it?
+> How should we compete and price this opportunity, why can that strategy win under the government's evaluation, and what evidence would change the recommendation?
 
-The completed-run experience is the Decision Center. It presents deterministic Aggressive, Expected, and Conservative positions, Evidence Readiness, included and excluded numeric anchors, normalization, comparability, weights, uncertainty, assumptions, and next actions.
+The Decision Center now leads with a separate unreviewed strategic assessment: evaluation, rival hypotheses, competing approaches, selected/rejected options, change triggers, and validation tasks. Market reference calculations remain supporting evidence. The explicit priced-strategy scenario engine and separate Agent 1–3 handoffs are still required; this build is not the completed PTW department.
 
 ## Golden path
 
@@ -17,7 +17,7 @@ The completed-run experience is the Decision Center. It presents deterministic A
 3. Retrieve available USAspending, GSA CALC+, BLS, and optional SAM.gov evidence.
 4. Keep evaluated prices, ceilings, award amounts, obligations, hourly rates, and percentages distinct.
 5. Run the versioned deterministic engine: **Collect → Normalize → Score → Weight → Range → Explain**.
-6. Review the authoritative Decision Center and evidence methodology.
+6. Generate and review a strategic assessment in a separate bounded request; retain the evidence run for retry if synthesis fails. Review its sources and assumptions.
 7. Save, export, or freeze the run for like-for-like award validation.
 
 ## Intelligence boundary
@@ -31,7 +31,7 @@ The completed-run experience is the Decision Center. It presents deterministic A
 - Qualitative competitive factors never add or subtract an arbitrary percentage.
 - Insufficient evidence returns null scenarios rather than a manufactured range.
 
-## Engine V2
+## Supporting benchmark engine
 
 Eligible total-value anchors receive deterministic comparability, evidence-quality, and normalization-confidence scores.
 
@@ -41,6 +41,8 @@ Expected = Σ(Normalized Value × Anchor Weight) ÷ Σ(Anchor Weight)
 ```
 
 Range width is derived from weighted anchor dispersion, Evidence Readiness, and evidence sparsity. The engine and thresholds are versioned in `src/domain/marketPosition/engineConfig.ts`.
+
+These widths are heuristic benchmark references, not competitive bid strategies. `src/server/ptwSynthesis.ts` owns the first separate strategy contract; its output cannot invent dollar or percentage claims, cite unknown sources, silently confirm bid intent from general capability, or omit why another option was rejected. It does not yet calculate strategy-specific prices. Source-reference checks do not establish the truth of a claim; human review remains required.
 
 ## Run locally
 

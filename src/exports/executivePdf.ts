@@ -1,6 +1,7 @@
 import PDFDocument from 'pdfkit';
 import { regularFontData, boldFontData } from './fontData';
 import type { OpportunityAnalysis } from '../types';
+import { strategyStatements } from '../domain/ptw/strategy';
 
 const colors = {
   navy: '#10243E',
@@ -105,7 +106,7 @@ function scenarioCard(
 
 function pageHeader(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) {
   doc.rect(0, 0, pageWidth, 108).fill(colors.navy);
-  label(doc, 'Federal Market Position - Executive Decision Brief', margin, 24, contentWidth, '#AFCBFA');
+  label(doc, 'Federal PTW Intelligence - Supporting Market Evidence', margin, 24, contentWidth, '#AFCBFA');
   doc.font(boldFont).fontSize(18).fillColor('#FFFFFF').text(truncate(analysis.deal.title, 105), margin, 42, {
     width: contentWidth,
     height: 43,
@@ -130,7 +131,7 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
   const position = analysis.marketPosition;
   pageHeader(doc, analysis);
 
-  label(doc, 'Recommended basis', margin, 128, 120);
+  label(doc, 'Benchmark basis', margin, 128, 120);
   doc.font(boldFont).fontSize(10).fillColor(colors.ink).text(truncate(position.methodLabel, 70), margin, 144, { width: 260, lineBreak: false, ellipsis: true });
   label(doc, 'Confidence', 334, 128, 80);
   doc.font(boldFont).fontSize(10).fillColor(position.confidence === 'HIGH' ? colors.green : position.confidence === 'MEDIUM' ? colors.amber : '#B42318')
@@ -140,11 +141,12 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
 
   const gap = 10;
   const cardWidth = (contentWidth - gap * 2) / 3;
-  scenarioCard(doc, margin, 176, cardWidth, 'Aggressive', position.aggressive);
-  scenarioCard(doc, margin + cardWidth + gap, 176, cardWidth, 'Expected', position.expected, true);
-  scenarioCard(doc, margin + (cardWidth + gap) * 2, 176, cardWidth, 'Conservative', position.conservative);
+  scenarioCard(doc, margin, 176, cardWidth, 'Lower reference', position.aggressive);
+  scenarioCard(doc, margin + cardWidth + gap, 176, cardWidth, 'Central reference', position.expected, true);
+  scenarioCard(doc, margin + (cardWidth + gap) * 2, 176, cardWidth, 'Upper reference', position.conservative);
+  doc.font(regularFont).fontSize(8).fillColor(colors.muted).text('Heuristic market references; strategy-specific bid scenarios require further modeling.', margin, 255, {width:contentWidth});
 
-  let y = sectionTitle(doc, 'Executive recommendation', 272);
+  let y = sectionTitle(doc, 'Qualitative market assessment', 272);
   doc.font(boldFont).fontSize(12).fillColor(colors.navy).text(truncate(analysis.narrative.headline, 150), margin, y, { width: contentWidth, lineGap: 3 });
   y += doc.heightOfString(truncate(analysis.narrative.headline, 150), { width: contentWidth, lineGap: 3 }) + 7;
   doc.font(regularFont).fontSize(9.3).fillColor(colors.ink).text(truncate(analysis.narrative.rationale, 370), margin, y, { width: contentWidth, lineGap: 3, height: 58, ellipsis: true });
@@ -153,7 +155,7 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
   const columnWidth = (contentWidth - 20) / 2;
   doc.roundedRect(margin, columnsY, columnWidth, 154, 8).fill(colors.panel);
   doc.roundedRect(margin + columnWidth + 20, columnsY, columnWidth, 154, 8).fill(colors.paleAmber);
-  label(doc, 'Why this position', margin + 14, columnsY + 14, columnWidth - 28, colors.blue);
+  label(doc, 'Benchmark evidence', margin + 14, columnsY + 14, columnWidth - 28, colors.blue);
   bulletList(doc, [...analysis.narrative.decisionFactors, ...position.basis], margin + 14, columnsY + 36, columnWidth - 28, 3);
   label(doc, 'What could move it', margin + columnWidth + 34, columnsY + 14, columnWidth - 28, colors.amber);
   bulletList(doc, [...position.sensitivities, ...analysis.narrative.guardrails], margin + columnWidth + 34, columnsY + 36, columnWidth - 28, 3);
@@ -176,6 +178,40 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
     benchmarkY + 13,
     { width: contentWidth - 182, align: 'right', lineBreak: false, ellipsis: true },
   );
+}
+
+function buildStrategyPages(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) {
+  if (analysis.ptwStrategy?.status !== 'DRAFT') return;
+  const strategy = analysis.ptwStrategy.strategy;
+  let y = margin;
+  const paragraph = (value: string, heading = false) => {
+    const font = heading ? boldFont : regularFont;
+    const size = heading ? 11 : 9;
+    doc.font(font).fontSize(size);
+    const height = doc.heightOfString(clean(value), {width:contentWidth, lineGap:3});
+    if (y + height + (heading ? 55 : 0) > 697) { doc.addPage(); y = margin; }
+    doc.font(font).fontSize(size).fillColor(heading ? colors.navy : colors.ink).text(clean(value), margin, y, {width:contentWidth, lineGap:3});
+    y += height + (heading ? 7 : 12);
+  };
+  paragraph('Federal PTW Intelligence - Strategic decision brief', true);
+  paragraph(analysis.deal.title, true);
+  paragraph('Analyst review required. Claims and assumptions below are unreviewed. A priced competitive corridor requires validated strategy-specific inputs; the later market references are supporting evidence.');
+  const selected = strategy.options.find(o => o.id === strategy.recommendation.selectedOptionId);
+  paragraph(`Recommended approach: ${selected?.name || 'Review required'}`, true);
+  paragraph(strategy.recommendation.rationale.text);
+  for (const {section,statement} of strategyStatements(strategy)) {
+    paragraph(section, true);
+    paragraph(`${statement.kind}: ${statement.text}`);
+    paragraph(`Sources: ${statement.evidenceIds.join(', ') || 'Working assumption'}.${statement.validationAction ? ` Validate: ${statement.validationAction}` : ''}`);
+  }
+  if (strategy.missingInputs.length) {
+    paragraph('Inputs needed to price and validate the strategy', true);
+    strategy.missingInputs.forEach(v => paragraph(v));
+  }
+  const sourceIds = new Set(strategyStatements(strategy).flatMap(row => row.statement.evidenceIds));
+  paragraph('Strategy evidence locators', true);
+  analysis.evidence.filter(e => sourceIds.has(e.id)).forEach(e => paragraph(`${e.id}: ${e.sourceLabel}. ${e.section || e.sourceRecordId || ''} ${e.url || ''}`));
+  doc.addPage();
 }
 
 function buildSecondPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) {
@@ -239,7 +275,7 @@ function addFooters(doc: PDFKit.PDFDocument) {
   for (let index = range.start; index < range.start + range.count; index += 1) {
     doc.switchToPage(index);
     doc.moveTo(margin, 720).lineTo(pageWidth - margin, 720).strokeColor(colors.line).lineWidth(0.6).stroke();
-    doc.font(regularFont).fontSize(7).fillColor(colors.muted).text('Federal Market Position | Decision support - validate before bid submission', margin, 725, {
+    doc.font(regularFont).fontSize(7).fillColor(colors.muted).text('Federal PTW Intelligence | Decision support - validate before bid submission', margin, 725, {
       width: contentWidth - 65,
       lineBreak: false,
       ellipsis: true,
@@ -263,6 +299,7 @@ export function createExecutivePdf(analysis: OpportunityAnalysis): Promise<Buffe
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('error', reject);
     doc.on('end', () => resolve(Buffer.concat(chunks)));
+    buildStrategyPages(doc, analysis);
     buildFirstPage(doc, analysis);
     buildSecondPage(doc, analysis);
     addFooters(doc);

@@ -3,6 +3,8 @@ import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { OpportunityAnalysis } from '../../types';
 import DecisionCenter from './DecisionCenter';
+import { ptwStrategyFixture } from '../../testFixtures/ptwStrategy';
+import { synthesizePtwStrategy } from '../../server/ptwSynthesis';
 
 const analysis: OpportunityAnalysis = {
   id: 'run-ui-test',
@@ -95,4 +97,20 @@ test('Decision Center displays the exact authoritative scenario-engine values', 
   assert.match(html, /\$300,000,000/);
   assert.doesNotMatch(html, /Opportunity score/i);
   assert.doesNotMatch(html, /targetPrice|rangeLow|rangeHigh/);
+  assert.doesNotMatch(html, /Plan around|Aggressive|Conservative/);
+  assert.match(html, /The competitive decision comes first/);
+  assert.match(html, /Central reference/);
+});
+
+test('decision brief presents distinct strategies, rejection rationale, sources, and change triggers before market values', async () => {
+  const {analysis,strategy} = ptwStrategyFixture();
+  analysis.ptwStrategy = await synthesizePtwStrategy(analysis,{interpret:async <T,>() => strategy as T});
+  const html = renderToStaticMarkup(<DecisionCenter analysis={analysis} />);
+  assert.ok(html.indexOf(strategy.options[0].name) < html.indexOf('Central reference'));
+  assert.ok(html.includes(strategy.options[1].name));
+  assert.ok(html.includes(strategy.recommendation.alternatives[0].reason.text));
+  assert.ok(html.includes(strategy.recommendation.changeTriggers[0].text));
+  assert.match(html,/SOL-EVAL/);
+  assert.match(html,/Analyst review required/);
+  assert.doesNotMatch(html,/Plan around/);
 });
