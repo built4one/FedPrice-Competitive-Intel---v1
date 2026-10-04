@@ -12,9 +12,18 @@ function matches(password: string, encoded: string) {
 }
 function accounts(): Account[] { try { const data = JSON.parse(process.env.STUDIO_USERS_JSON || '[]'); return Array.isArray(data) ? data.filter(x => x.username && x.workspace && x.passwordHash) : []; } catch { return []; } }
 export const localMode = () => process.env.STUDIO_LOCAL_MODE === '1' && process.env.VERCEL !== '1' && process.env.NODE_ENV !== 'production';
+// Owner-only testing on a specific Vercel-protected preview alias. Never applies
+// to production, local servers, custom domains, or other preview aliases.
+function previewOwner(req: Request): Principal | null {
+  const host = process.env.STUDIO_PREVIEW_OWNER_HOST;
+  if (process.env.VERCEL !== '1' || process.env.VERCEL_ENV !== 'preview'
+    || !host?.endsWith('.vercel.app') || req.headers.host !== host) return null;
+  return { username: 'boss', workspace: 'boss' };
+}
 export const authConfigured = () => localMode() || (accounts().length > 0 && (process.env.SESSION_SECRET?.length || 0) >= 32);
 const sign = (text: string) => crypto.createHmac('sha256', process.env.SESSION_SECRET || '').update(text).digest('base64url');
 function principal(req: Request): Principal | null {
+  const owner = previewOwner(req); if (owner) return owner;
   if (localMode() && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '')) return {username:'local-analyst',workspace:'local'};
   if (!authConfigured()) return null;
   const cookie = /(?:^|;\s*)fmp_session=([^;]+)/.exec(req.headers.cookie || '')?.[1];
@@ -36,7 +45,7 @@ export function installAuth(app: Express) {
     }
     next();
   });
-  app.get('/api/session', (req,res) => res.json({user:principal(req),configured:authConfigured(),local:localMode()}));
+  app.get('/api/session', (req,res) => res.json({user:principal(req),configured:!!previewOwner(req) || authConfigured(),local:localMode(),accessMode:previewOwner(req) ? 'vercel-preview' : 'password'}));
   app.post('/api/session', async (req,res) => {
     if (!authConfigured()) return res.status(503).json({error:'Private access is not configured. Set STUDIO_USERS_JSON and SESSION_SECRET on the server.'});
     const username=String(req.body?.username || '').slice(0,100); const password=String(req.body?.password || '').slice(0,1024);

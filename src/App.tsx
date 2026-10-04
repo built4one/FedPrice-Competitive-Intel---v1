@@ -7,7 +7,7 @@ import Workspace from './components/Workspace';
 import type { OpportunityAnalysis } from './types';
 
 type View = 'home' | 'runs' | 'intake' | 'workspace';
-type Session = { user: { username: string; workspace: string } | null; configured: boolean };
+type Session = { user: { username: string; workspace: string } | null; configured: boolean; accessMode?: 'vercel-preview' | 'password' };
 const storageKey = 'federal-market-position-runs-v2';
 const legacyStorageKey = 'fedprice-competitive-intel-runs-v1';
 
@@ -129,7 +129,8 @@ export default function App() {
   return <div className="min-h-screen bg-[#f4f7fb] text-slate-950">
     <Header view={view} activeTitle={selected?.deal.solicitationNumber || selected?.deal.title} onNavigate={setView} />
     <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
-      <span>{session.user.username}</span><button onClick={signOut} className="font-bold text-blue-700">Sign out</button>
+      <span>{session.user.username}{session.accessMode === 'vercel-preview' ? ' · Private Vercel preview' : ''}</span>
+      {session.accessMode !== 'vercel-preview' && <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>}
     </div>
     {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}</div>}
     <main>
