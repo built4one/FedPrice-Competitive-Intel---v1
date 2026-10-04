@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { passwordHash } from './auth.js';
 import { opportunityAnalysisFixture } from '../testFixtures/opportunityAnalysis.js';
+import ExcelJS from 'exceljs';
 
 test('run API saves only within the signed-in tester workspace and detects stale updates', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fmp-api-'));
@@ -48,4 +49,20 @@ test('run API saves only within the signed-in tester workspace and detects stale
   assert.equal((await (await fetch(`${base}/api/runs`, { headers: { cookie: alice } })).json()).data[0].id, fixture.id);
   assert.equal((await save(alice, fixture)).status, 409);
   assert.equal((await save(alice, saved)).status, 200);
+  const latest = (await (await fetch(`${base}/api/runs`,{headers:{cookie:alice}})).json()).data[0];
+  const priced = {...latest,pricingScenario:{target:1,low:1,high:1,inputs:{evaluationBasis:'CLIN 0001 includes all evaluated periods.',basisSource:'RFP Section M',completenessConfirmed:true,lines:[{label:'CLIN 0001',quantity:10,lowUnitPrice:90,targetUnitPrice:100,highUnitPrice:110,source:'Analyst test assumption, review required'}]}}};
+  const savedPrice = await save(alice,priced);
+  assert.equal(savedPrice.status,200);
+  const record=(await savedPrice.json()).data;
+  assert.equal(record.pricingScenario.target,1000,'server rejects client-forged totals by recalculating inputs');
+  assert.equal(record.pricingScenario.low,900);assert.equal(record.pricingScenario.high,1100);
+  const reopened=(await (await fetch(`${base}/api/runs`,{headers:{cookie:alice}})).json()).data[0];
+  assert.equal(reopened.pricingScenario.target,1000);
+  const excel=await fetch(`${base}/api/export-brief`,{method:'POST',headers:{'content-type':'application/json',cookie:alice},body:JSON.stringify(reopened)});
+  assert.equal(excel.status,200);
+  const workbook=new ExcelJS.Workbook();await workbook.xlsx.load(Buffer.from(await excel.arrayBuffer()) as any);
+  const totals=workbook.getWorksheet('Conditional Offer Scenarios')!.getRow(3).values as any[];
+  assert.equal(totals[3],900);assert.equal(totals[4],1000);assert.equal(totals[5],1100);
+  const pdf=await fetch(`${base}/api/export-pdf`,{method:'POST',headers:{'content-type':'application/json',cookie:alice},body:JSON.stringify(reopened)});
+  assert.equal(pdf.status,200);assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0,4).toString(),'%PDF');
 });

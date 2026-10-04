@@ -180,6 +180,33 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
   );
 }
 
+function buildPricingPages(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) {
+  const scenario = analysis.pricingScenario;
+  if (!scenario) return;
+  let y = margin;
+  const paragraph = (value: string, heading = false) => {
+    doc.font(heading ? boldFont : regularFont).fontSize(heading ? 12 : 9);
+    const text = clean(value);
+    const height = doc.heightOfString(text, {width:contentWidth,lineGap:3});
+    if (y + height > 690) {doc.addPage();y=margin;}
+    doc.fillColor(heading ? colors.navy : colors.ink).text(text,margin,y,{width:contentWidth,lineGap:3});
+    y += height + 12;
+  };
+  paragraph('Conditional offer scenarios',true);
+  paragraph(analysis.deal.title,true);
+  paragraph(`Target offer: ${money(scenario.target)} | Lower offer: ${money(scenario.low)} | Upper offer: ${money(scenario.high)}`,true);
+  paragraph('Analyst-entered quantities and offered rates. These scenarios do not establish a winning price or probability. Confirm competitive evidence, compliance and execution feasibility before pricing use.');
+  paragraph(`Evaluation basis: ${scenario.inputs.evaluationBasis}`);
+  paragraph(`Evaluation source: ${scenario.inputs.basisSource}`);
+  paragraph(scenario.formula);
+  scenario.inputs.lines.forEach((line,index)=>{
+    paragraph(`${index+1}. ${line.label}`,true);
+    paragraph(`Evaluated quantity: ${line.quantity}. Offered unit prices - lower ${money(line.lowUnitPrice)}, target ${money(line.targetUnitPrice)}, upper ${money(line.highUnitPrice)}.`);
+    paragraph(`Sources and assumptions: ${line.source}`);
+  });
+  doc.addPage();
+}
+
 function buildStrategyPages(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) {
   if (analysis.ptwStrategy?.status !== 'DRAFT') return;
   const strategy = analysis.ptwStrategy.strategy;
@@ -299,6 +326,7 @@ export function createExecutivePdf(analysis: OpportunityAnalysis): Promise<Buffe
     doc.on('data', (chunk: Buffer) => chunks.push(chunk));
     doc.on('error', reject);
     doc.on('end', () => resolve(Buffer.concat(chunks)));
+    buildPricingPages(doc, analysis);
     buildStrategyPages(doc, analysis);
     buildFirstPage(doc, analysis);
     buildSecondPage(doc, analysis);

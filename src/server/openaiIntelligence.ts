@@ -11,6 +11,7 @@ type LegacySchema = {
   properties?: Record<string, LegacySchema>;
   items?: LegacySchema;
   required?: string[];
+  enum?: string[];
 };
 
 type ResponseOutput = {
@@ -29,7 +30,7 @@ type OpenAIResponse = { status?: string; error?: { message?: string }; output?: 
 function strictSchema(schema: LegacySchema): Record<string, unknown> {
   const type = schema.type.toLowerCase();
   if (type === 'array') return { type, items: strictSchema(schema.items!) };
-  if (type !== 'object') return { type };
+  if (type !== 'object') return { type, ...(schema.enum ? {enum:schema.enum} : {}) };
   const properties = Object.fromEntries(
     Object.entries(schema.properties || {}).map(([name, property]) => {
       const value = strictSchema(property);
@@ -135,3 +136,4 @@ export class OpenAIIntelligence {
     };
   }
 }
+

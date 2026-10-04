@@ -4,6 +4,9 @@ import path from 'node:path';
 import express from 'express';
 import multer from 'multer';
 import ExcelJS from 'exceljs';
+import mammoth from 'mammoth';
+import { calculatePricingScenario } from './src/domain/ptw/pricingScenario.js';
+import { assessEligibility, IneligibleSolicitationError } from './src/server/eligibility.js';
 import { OpenAIIntelligence, getOpenAIModel, openAIConfigured } from './src/server/openaiIntelligence.js';
 import { authConfigured, installAuth } from './src/server/auth.js';
 import { ConflictError, RecordStore } from './src/server/store.js';
@@ -114,6 +117,9 @@ const baseSchema = {
       type: 'OBJECT',
       properties: {
         title: { type: 'STRING' },
+        documentStatus: { type: 'STRING', enum: ['OPEN_COMPETITIVE', 'NONCOMPETITIVE', 'EXPIRED', 'PRE_SOLICITATION', 'NON_SOLICITATION', 'UNKNOWN'] },
+        eligibilityReason: { type: 'STRING' },
+        eligibilitySource: { type: 'STRING' },
         agency: { type: 'STRING' },
         solicitationNumber: { type: 'STRING' },
         contractType: { type: 'STRING' },
@@ -168,7 +174,7 @@ const baseSchema = {
         },
       },
       required: [
-        'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
+        'documentStatus', 'eligibilityReason', 'eligibilitySource', 'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
         'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements',
         'laborSignals', 'pricingSignals',
       ],
@@ -266,6 +272,7 @@ const baseSchema = {
 const analysisPrompt = `You are a federal capture and competitive-pricing analyst. Analyze the attached solicitation and return a concise evidence-led market assessment.
 
 NON-NEGOTIABLE AUTHORITY RULES
+- First identify documentStatus: OPEN_COMPETITIVE, NONCOMPETITIVE, EXPIRED, PRE_SOLICITATION, NON_SOLICITATION, or UNKNOWN. Cite the file and section in eligibilitySource and give a concise eligibilityReason. RFI/sources sought/draft notices are PRE_SOLICITATION. Sole-source or intent-to-sole-source is NONCOMPETITIVE only if explicitly stated. Resolve amendments by their effective version; do not classify a superseded original deadline as current. DueDate must be YYYY-MM-DD when unambiguous; otherwise Unknown. Do not infer eligibility merely from a title.
 - Do not calculate or recommend Aggressive, Expected, Conservative, low, target, high, or any other Market Position dollar value.
 - Do not put dollar values in the narrative. The deterministic engine owns every authoritative Market Position number.
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
@@ -404,7 +411,7 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
     lines.push(`\nSHEET: ${worksheet.name}`);
     worksheet.eachRow({ includeEmpty: false }, (row) => {
       const values = Array.isArray(row.values) ? row.values.slice(1) : [];
-      const rendered = values.map((value) => {
+      const rendered = values.map((value, columnIndex) => {
         if (value == null) return '';
         if (typeof value === 'object') {
           const record = value as unknown as Record<string, unknown>;
@@ -412,7 +419,7 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
           if ('result' in record) return String(record.result || '');
           try { return JSON.stringify(value); } catch { return String(value); }
         }
-        return String(value);
+        return `${worksheet.getCell(row.number, columnIndex + 1).address}: ${String(value)}`;
       }).join('\t');
       if (rendered.trim()) lines.push(rendered);
     });
@@ -422,7 +429,16 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
 }
 
 async function normalizeAnalysisFiles(files: AnalysisFile[]) {
-  return Promise.all(files.map((file) => normalizeSpreadsheet(file)));
+  return Promise.all(files.map(async file => {
+    if (file.originalname.toLowerCase().endsWith('.docx')) {
+      const result = await mammoth.extractRawText({buffer:file.buffer});
+      if (!result.value.trim()) throw new Error(`${file.originalname} has no readable text. Upload a readable PDF or TXT version.`);
+      const paragraphs = result.value.split(/\n\s*\n/).filter(v=>v.trim()).map((v,i)=>`Paragraph ${i+1}: ${v}`);
+      const buffer = Buffer.from(`SOURCE DOCUMENT: ${file.originalname}\n${paragraphs.join('\n\n')}`);
+      return {...file,originalname:`${file.originalname}.txt`,mimetype:'text/plain',buffer,size:buffer.length};
+    }
+    return normalizeSpreadsheet(file);
+  }));
 }
 
 function mergeSamDealMetadata(analysis: OpportunityAnalysis, metadata: SamOpportunityMetadata, naicsOverride?: string) {
@@ -480,23 +496,28 @@ ${JSON.stringify(official)}`);
 }
 
 async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
-  const client = new OpenAIIntelligence();
+  const client = new OpenAIIntelligence(undefined, undefined, fetch, 110_000);
   const draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);
   draft.gaps = draft.gaps || [];
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
-  const warnings: string[] = [];
+  const warnings: string[] = assessEligibility(draft.deal);
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
   const connectors: ConnectorStatus[] = [];
 
   const fileNames = files.map(f => f.originalname);
   const connectorWork = runConnectorSet(draft.deal, undefined, false, fileNames);
   const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== 'false'
-    ? client.research<Partial<AiAnalysisDraft>>(`Research the public federal market for this opportunity using web search.
+    ? new OpenAIIntelligence(undefined, undefined, fetch, 90_000).research<Partial<AiAnalysisDraft>>(`Research the public federal market for this opportunity using web search.
 Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
-Improve only qualitative claims supported by current public sources and preserve the existing shapes.
+Improve only qualitative claims supported by current public sources. Match these JSON shapes exactly:
+marketAssessment: {posture:string,summary:string,basis:string[],drivers:{name:string,assessment:string,evidenceIds:string[],inference:boolean}[]}
+competitors: {name:string,role:string,pricingPosture:string,rationale:string,differentiators:string[],risks:string[],sourceRefs:string[],confidence:number,evidenceType:string}[]
+incumbent: {name:string,status:string,strengths:string[],vulnerabilities:string[],transitionRisk:string,confidence:number,sourceRefs:string[]}
+narrative: {headline:string,rationale:string,decisionFactors:string[],guardrails:string[],nextActions:string[]}
+Confidence is an uncalibrated qualitative assessment from 0–100, never a win probability. Empty arrays and unknowns are valid. Vehicle membership or past experience does not establish bid intent.
 Never return or revise an authoritative Market Position dollar value, numeric range, opportunity score, or probability of win.
 Do not put dollar values in narrative strings. Put source URLs in competitor and incumbent sourceRefs.
 Prefer official .gov/.mil records and first-party company sources. Do not rely on Wikipedia, social media, market-size aggregators, procurement aggregators, or search-result snippets.
@@ -631,7 +652,8 @@ function recalculateIncomingRun(raw: any): OpportunityAnalysis {
 
 function normalizeIncomingRun(raw: any): OpportunityAnalysis {
   const analysis = recalculateIncomingRun(raw);
-  return {...analysis, ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy)};
+  return {...analysis, ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy),
+    pricingScenario: raw.pricingScenario ? calculatePricingScenario(raw.pricingScenario.inputs) : undefined};
 }
 
 // A separate bounded request lets intake and strategy retry independently.
@@ -696,11 +718,17 @@ app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) =>
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     ];
     for (const file of uploadedFiles) {
-      if (!allowed.includes(file.mimetype)) {
-        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, DOC, TXT, or XLSX file.` });
+      if (!allowed.includes(file.mimetype) || !/\.(pdf|docx?|txt|xlsx)$/i.test(file.originalname)) {
+        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, TXT, or XLSX file.` });
       }
     }
 
+    if (uploadedFiles.reduce((n,file)=>n+file.size,0)>4*1024*1024) return res.status(413).json({error:'Uploaded files must total 4 MB or less.'});
+    for (const file of uploadedFiles) {
+      if (file.size === 0) return res.status(400).json({error:`${file.originalname} is empty.`});
+      if (/\.doc$/i.test(file.originalname)) return res.status(415).json({error:`Convert ${file.originalname} to DOCX or PDF before uploading.`});
+      if (/\.pdf$/i.test(file.originalname) && !file.buffer.subarray(0,5).equals(Buffer.from('%PDF-'))) return res.status(415).json({error:`${file.originalname} is not a readable PDF file.`});
+    }
     let samPackage: Awaited<ReturnType<typeof resolveSamOpportunityPackage>> | undefined;
     let samFallbackWarning = '';
     if (opportunityRef) {
@@ -721,6 +749,7 @@ app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) =>
     if (deduped.length === 0) return res.status(400).json({ error: 'No analyzable solicitation documents were available.' });
     const normalizedFiles = await normalizeAnalysisFiles(deduped);
     const analysis = await analyzeFiles(normalizedFiles);
+    analysis.meta.warnings.push(`Package snapshot: ${deduped.map(f=>`${f.originalname} [SHA-256 ${crypto.createHash('sha256').update(f.buffer).digest('hex')}]`).join('; ')}. Keep these source files with the exported decision package.`);
 
     if (samFallbackWarning) analysis.meta.warnings.push(samFallbackWarning);
     if (samPackage) {
@@ -739,7 +768,7 @@ app.post('/api/analyze-solicitation', upload.array('files'), async (req, res) =>
     res.json({ data: analysis });
   } catch (error) {
     console.error('Analysis failed', error);
-    res.status(500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });
+    res.status(error instanceof IneligibleSolicitationError ? 422 : 500).json({ error: error instanceof Error ? error.message : 'The analysis could not be completed.' });
   }
 });
 
@@ -829,6 +858,17 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Calculation Basis', value: analysis.marketPosition.methodLabel },
     ]);
 
+    const priced = workbook.addWorksheet('Conditional Offer Scenarios');
+    priced.columns = [{header:'CLIN / period',key:'label',width:32},{header:'Evaluated quantity',key:'quantity',width:22},{header:'Lower unit price',key:'lowUnitPrice',width:22},{header:'Target unit price',key:'targetUnitPrice',width:22},{header:'Upper unit price',key:'highUnitPrice',width:22},{header:'Sources / assumptions',key:'source',width:90}];
+    if (analysis.pricingScenario) {
+      const scenario = analysis.pricingScenario;
+      priced.addRows(scenario.inputs.lines);
+      priced.addRow({label:'EVALUATED TOTALS',lowUnitPrice:scenario.low,targetUnitPrice:scenario.target,highUnitPrice:scenario.high});
+      priced.addRow({label:'Evaluation basis',source:scenario.inputs.evaluationBasis});
+      priced.addRow({label:'Evaluation source',source:scenario.inputs.basisSource});
+      priced.addRow({label:'Calculation',source:scenario.formula});
+      priced.addRow({label:'Status',source:'CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price.'});
+    } else priced.addRow({label:'No priced scenario',source:'Enter explicit evaluated quantities and offered unit prices in the decision workspace.'});
     const strategy = workbook.addWorksheet('PTW Strategy');
     strategy.columns = [{header:'Section',key:'section',width:38},{header:'Assessment',key:'assessment',width:100},{header:'Claim type',key:'kind',width:18},{header:'Evidence IDs',key:'evidence',width:36},{header:'Validation action',key:'validation',width:80}];
     if (analysis.ptwStrategy?.status === 'DRAFT') {
@@ -913,7 +953,7 @@ app.post('/api/export-brief', async (req, res) => {
     evidence.columns = [
       { header: 'ID', key: 'id', width: 16 }, { header: 'Type', key: 'type', width: 22 },
       { header: 'Source', key: 'sourceLabel', width: 35 }, { header: 'Section', key: 'section', width: 20 },
-      { header: 'Claim', key: 'claim', width: 80 }, { header: 'Confidence', key: 'confidence', width: 14 },
+      { header: 'Claim', key: 'claim', width: 80 }, { header: 'URL', key: 'url', width: 90 }, { header: 'Source excerpt', key: 'excerpt', width: 90 }, { header: 'Confidence', key: 'confidence', width: 14 },
       { header: 'Value Type', key: 'valueType', width: 24 }, { header: 'Original Value', key: 'originalValue', width: 18 },
     ];
     evidence.addRows(analysis.evidence.map((item) => ({
@@ -977,3 +1017,4 @@ export default app;
 if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== 'test') {
   start();
 }
+

@@ -1,3 +1,4 @@
+import type { PricingScenario } from './domain/ptw/pricingScenario';
 import type { PtwStrategyResult } from './domain/ptw/strategy';
 
 export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
@@ -95,6 +96,9 @@ export interface EvidenceItem {
 export interface DataGap { question: string; impact: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; }
 
 export interface DealProfile {
+  documentStatus?: string;
+  eligibilityReason?: string;
+  eligibilitySource?: string;
   title: string;
   agency: string;
   solicitationNumber: string;
@@ -326,6 +330,7 @@ export interface ValidationRecord {
 }
 
 export interface OpportunityAnalysis {
+  pricingScenario?: PricingScenario;
   ptwStrategy?: PtwStrategyResult;
   storageVersion?: number;
   id: string;
@@ -364,3 +369,4 @@ export interface AiAnalysisDraft {
 }
 
 export type Opportunity = OpportunityAnalysis;
+

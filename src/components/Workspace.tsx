@@ -2,15 +2,17 @@ import { useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
+import PricingScenarioPanel from './decision/PricingScenarioPanel';
 import { requestPtwStrategy } from '../client/ptwStrategy';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
-type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'validation';
+type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'pricing' | 'validation';
 
 const tabs: [Tab, string][] = [
   ['decision-center', 'Decision'],
   ['deal', 'Opportunity'],
   ['market-evidence', 'Supporting Analysis'],
+  ['pricing', 'Price Scenarios'],
   ['validation', 'Validation']
 ];
 
@@ -101,6 +103,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
       </div>
       <div className="flex flex-wrap gap-2 print:hidden">
+        <button onClick={() => setTab('pricing')} className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-black text-blue-700">PRICE THE APPROACH</button>
         <button onClick={exportExcel} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black disabled:opacity-50"><Download className="h-4 w-4" /> {exporting === 'excel' ? 'BUILDING EXCEL' : 'DOWNLOAD EXCEL'}</button>
         <button onClick={exportPdf} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
           {exporting === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
@@ -116,6 +119,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
 
     <div className="mt-8">
       {tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />}
+      {tab === 'pricing' && <PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} />}
       {tab === 'deal' && <DealView analysis={analysis} />}
       {tab === 'market-evidence' && <div className="space-y-10"><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}

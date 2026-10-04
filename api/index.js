@@ -5,12 +5,71 @@ import path2 from "node:path";
 import express from "express";
 import multer from "multer";
 import ExcelJS from "exceljs";
+import mammoth from "mammoth";
+
+// src/domain/ptw/pricingScenario.ts
+import Decimal from "decimal.js";
+import { z } from "zod";
+var amount = z.number().finite().nonnegative().max(1e12);
+var pricingInputsSchema = z.object({
+  evaluationBasis: z.string().trim().min(10).max(2e3),
+  basisSource: z.string().trim().min(3).max(1e3),
+  completenessConfirmed: z.literal(true),
+  lines: z.array(z.object({
+    label: z.string().trim().min(1).max(200),
+    quantity: z.number().finite().positive().max(1e9),
+    lowUnitPrice: amount,
+    targetUnitPrice: amount,
+    highUnitPrice: amount,
+    source: z.string().trim().min(3).max(1e3)
+  }).strict().refine((v) => v.lowUnitPrice <= v.targetUnitPrice && v.targetUnitPrice <= v.highUnitPrice, "Unit prices must be ordered low \u2264 target \u2264 high.")).min(1).max(40)
+}).strict();
+function calculatePricingScenario(raw) {
+  const inputs = pricingInputsSchema.parse(raw);
+  const total = (key) => {
+    const value = inputs.lines.reduce((sum, row) => sum.plus(new Decimal(row.quantity).times(row[key])), new Decimal(0));
+    if (value.greaterThan(1e15)) throw new Error("Evaluated total exceeds the supported calculation limit.");
+    return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
+  };
+  return {
+    inputs,
+    low: total("lowUnitPrice"),
+    target: total("targetUnitPrice"),
+    high: total("highUnitPrice"),
+    formula: "Sum of evaluated quantity \xD7 offered unit price for every entered CLIN/period; rounded once to cents.",
+    status: "CONDITIONAL"
+  };
+}
+
+// src/server/eligibility.ts
+var IneligibleSolicitationError = class extends Error {
+};
+function assessEligibility(deal, now = /* @__PURE__ */ new Date()) {
+  const status = deal.documentStatus;
+  const cited = Boolean(deal.eligibilitySource?.trim());
+  const reasons = {
+    NON_SOLICITATION: "This package is not a federal solicitation.",
+    NONCOMPETITIVE: "This notice is explicitly noncompetitive or sole source.",
+    PRE_SOLICITATION: "This is an RFI, sources-sought notice, or draft. A final solicitation and price evaluation basis are needed.",
+    EXPIRED: "The package identifies a closed or superseded solicitation."
+  };
+  if (status && reasons[status] && cited) throw new IneligibleSolicitationError(`${reasons[status]} ${deal.eligibilityReason || ""} Source: ${deal.eligibilitySource} Upload the current competitive solicitation and amendments.`);
+  const deadline = deal.dueDate?.trim();
+  if (/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(deadline || "")) {
+    const date = /* @__PURE__ */ new Date(`${deadline.slice(0, 10)}T23:59:59.999Z`);
+    if (Number.isFinite(date.getTime()) && date < now) throw new IneligibleSolicitationError(`The extracted response deadline (${deadline}) has passed. Upload an amendment with the extended deadline or a current solicitation. Historical analysis is outside this live PTW pilot.`);
+  }
+  const warnings = [];
+  if (status !== "OPEN_COMPETITIVE" || !cited) warnings.push("Solicitation eligibility is unresolved. Confirm that this is the current, competitive package before using the recommendation.");
+  if (!deadline || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(deadline)) warnings.push("No unambiguous response deadline was extracted. Confirm the current deadline and latest amendments.");
+  return warnings;
+}
 
 // src/server/openaiIntelligence.ts
 function strictSchema(schema) {
   const type = schema.type.toLowerCase();
   if (type === "array") return { type, items: strictSchema(schema.items) };
-  if (type !== "object") return { type };
+  if (type !== "object") return { type, ...schema.enum ? { enum: schema.enum } : {} };
   const properties = Object.fromEntries(
     Object.entries(schema.properties || {}).map(([name, property]) => {
       const value = strictSchema(property);
@@ -279,48 +338,48 @@ var RecordStore = class {
 
 // src/server/ptwSynthesis.ts
 import { createHash } from "node:crypto";
-import { z as z2 } from "zod";
+import { z as z3 } from "zod";
 
 // src/domain/ptw/strategy.ts
-import { z } from "zod";
-var text = z.string().trim().min(1).max(1600);
-var statementSchema = z.object({
+import { z as z2 } from "zod";
+var text = z2.string().trim().min(1).max(1600);
+var statementSchema = z2.object({
   text,
-  kind: z.enum(["FACT", "INFERENCE", "ASSUMPTION"]),
-  evidenceIds: z.array(z.string().min(1)).max(12),
-  validationAction: z.string().max(600)
+  kind: z2.enum(["FACT", "INFERENCE", "ASSUMPTION"]),
+  evidenceIds: z2.array(z2.string().min(1)).max(12),
+  validationAction: z2.string().max(600)
 }).strict();
-var strategySchema = z.object({
-  buyingDecision: z.object({
+var strategySchema = z2.object({
+  buyingDecision: z2.object({
     evaluationMethod: statementSchema,
     priceTradeoff: statementSchema,
-    complianceGates: z.array(statementSchema).max(12)
+    complianceGates: z2.array(statementSchema).max(12)
   }).strict(),
-  competitors: z.array(z.object({
+  competitors: z2.array(z2.object({
     name: text,
-    bidIntent: z.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]),
+    bidIntent: z2.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]),
     intentBasis: statementSchema,
     likelyApproach: statementSchema,
     threat: statementSchema
   }).strict()).max(12),
-  options: z.array(z.object({
-    id: z.string().regex(/^[a-z0-9_-]{1,60}$/),
+  options: z2.array(z2.object({
+    id: z2.string().regex(/^[a-z0-9_-]{1,60}$/),
     name: text,
     winLogic: statementSchema,
     evaluationAdvantage: statementSchema,
-    deliveryChanges: z.array(statementSchema).min(1).max(6),
-    pricingLevers: z.array(statementSchema).min(1).max(6),
+    deliveryChanges: z2.array(statementSchema).min(1).max(6),
+    pricingLevers: z2.array(statementSchema).min(1).max(6),
     likelyRivalResponse: statementSchema,
     principalRisk: statementSchema
   }).strict()).min(2).max(4),
-  recommendation: z.object({
-    selectedOptionId: z.string(),
+  recommendation: z2.object({
+    selectedOptionId: z2.string(),
     rationale: statementSchema,
-    alternatives: z.array(z.object({ optionId: z.string(), reason: statementSchema }).strict()).min(1).max(3),
-    changeTriggers: z.array(statementSchema).min(1).max(6),
-    nextActions: z.array(statementSchema).min(1).max(8)
+    alternatives: z2.array(z2.object({ optionId: z2.string(), reason: statementSchema }).strict()).min(1).max(3),
+    changeTriggers: z2.array(statementSchema).min(1).max(6),
+    nextActions: z2.array(statementSchema).min(1).max(8)
   }).strict(),
-  missingInputs: z.array(text).max(12)
+  missingInputs: z2.array(text).max(12)
 }).strict();
 function strategyStatements(strategy) {
   const rows = [];
@@ -401,9 +460,9 @@ function validateStrategy(raw, analysis) {
   }
   return result;
 }
-var storedResultSchema = z2.discriminatedUnion("status", [
-  z2.object({ status: z2.literal("DRAFT"), version: z2.string(), inputHash: z2.string(), generatedAt: z2.string().datetime(), reviewStatus: z2.literal("UNREVIEWED"), strategy: strategySchema }).strict(),
-  z2.object({ status: z2.literal("UNAVAILABLE"), version: z2.string(), reason: z2.string().min(1).max(1e3) }).strict()
+var storedResultSchema = z3.discriminatedUnion("status", [
+  z3.object({ status: z3.literal("DRAFT"), version: z3.string(), inputHash: z3.string(), generatedAt: z3.string().datetime(), reviewStatus: z3.literal("UNREVIEWED"), strategy: strategySchema }).strict(),
+  z3.object({ status: z3.literal("UNAVAILABLE"), version: z3.string(), reason: z3.string().min(1).max(1e3) }).strict()
 ]);
 function preserveCurrentStrategy(analysis, value) {
   if (value == null) return void 0;
@@ -447,7 +506,7 @@ ${JSON.stringify(sourceInput(analysis))}`);
 }
 
 // src/adapters/sam.ts
-import { z as z3 } from "zod";
+import { z as z4 } from "zod";
 
 // src/adapters/http.ts
 var ConnectorError = class extends Error {
@@ -520,32 +579,32 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
 }
 
 // src/adapters/sam.ts
-var resourceLinkSchema = z3.object({
-  type: z3.string().nullish(),
-  name: z3.string().nullish(),
-  link: z3.string().nullish()
+var resourceLinkSchema = z4.object({
+  type: z4.string().nullish(),
+  name: z4.string().nullish(),
+  link: z4.string().nullish()
 }).passthrough();
-var opportunitySchema = z3.object({
-  noticeId: z3.string().nullish(),
-  title: z3.string().nullish(),
-  solicitationNumber: z3.string().nullish(),
-  fullParentPathName: z3.string().nullish(),
-  department: z3.string().nullish(),
-  subTier: z3.string().nullish(),
-  office: z3.string().nullish(),
-  postedDate: z3.string().nullish(),
-  responseDeadLine: z3.string().nullish(),
-  type: z3.string().nullish(),
-  typeOfSetAsideDescription: z3.string().nullish(),
-  naicsCode: z3.string().nullish(),
-  classificationCode: z3.string().nullish(),
-  description: z3.string().nullish(),
-  uiLink: z3.string().nullish(),
-  resourceLinks: z3.array(z3.union([resourceLinkSchema, z3.string()])).nullish()
+var opportunitySchema = z4.object({
+  noticeId: z4.string().nullish(),
+  title: z4.string().nullish(),
+  solicitationNumber: z4.string().nullish(),
+  fullParentPathName: z4.string().nullish(),
+  department: z4.string().nullish(),
+  subTier: z4.string().nullish(),
+  office: z4.string().nullish(),
+  postedDate: z4.string().nullish(),
+  responseDeadLine: z4.string().nullish(),
+  type: z4.string().nullish(),
+  typeOfSetAsideDescription: z4.string().nullish(),
+  naicsCode: z4.string().nullish(),
+  classificationCode: z4.string().nullish(),
+  description: z4.string().nullish(),
+  uiLink: z4.string().nullish(),
+  resourceLinks: z4.array(z4.union([resourceLinkSchema, z4.string()])).nullish()
 }).passthrough();
-var responseSchema = z3.object({
-  totalRecords: z3.number().default(0),
-  opportunitiesData: z3.array(opportunitySchema).default([])
+var responseSchema = z4.object({
+  totalRecords: z4.number().default(0),
+  opportunitiesData: z4.array(opportunitySchema).default([])
 }).passthrough();
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var mmddyyyy = (date) => `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}/${date.getUTCFullYear()}`;
@@ -942,7 +1001,7 @@ async function querySamGov(deal, uploadedFiles = []) {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z3.ZodError ? "SAM.gov returned an unexpected response shape." : error instanceof Error ? error.message : "SAM.gov request failed.",
+      message: error instanceof z4.ZodError ? "SAM.gov returned an unexpected response shape." : error instanceof Error ? error.message : "SAM.gov request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -952,25 +1011,25 @@ async function querySamGov(deal, uploadedFiles = []) {
 }
 
 // src/adapters/usaspending.ts
-import { z as z4 } from "zod";
-var awardSchema = z4.object({
-  "Award ID": z4.string().nullish(),
-  "Recipient Name": z4.string().nullish(),
-  "Award Amount": z4.union([z4.number(), z4.string()]).nullish(),
-  "Start Date": z4.string().nullish(),
-  "End Date": z4.string().nullish(),
-  "Awarding Agency": z4.string().nullish(),
-  "Awarding Sub Agency": z4.string().nullish(),
-  "Award Type": z4.string().nullish(),
-  "Description": z4.string().nullish(),
-  "NAICS Code": z4.union([z4.string(), z4.number()]).nullish(),
-  "Product or Service Code": z4.string().nullish(),
-  generated_internal_id: z4.string().nullish()
+import { z as z5 } from "zod";
+var awardSchema = z5.object({
+  "Award ID": z5.string().nullish(),
+  "Recipient Name": z5.string().nullish(),
+  "Award Amount": z5.union([z5.number(), z5.string()]).nullish(),
+  "Start Date": z5.string().nullish(),
+  "End Date": z5.string().nullish(),
+  "Awarding Agency": z5.string().nullish(),
+  "Awarding Sub Agency": z5.string().nullish(),
+  "Award Type": z5.string().nullish(),
+  "Description": z5.string().nullish(),
+  "NAICS Code": z5.union([z5.string(), z5.number()]).nullish(),
+  "Product or Service Code": z5.string().nullish(),
+  generated_internal_id: z5.string().nullish()
 }).passthrough();
-var responseSchema2 = z4.object({
-  results: z4.array(awardSchema).default([]),
-  page_metadata: z4.object({ page: z4.number().optional(), hasNext: z4.boolean().optional() }).passthrough().optional(),
-  messages: z4.array(z4.string()).optional()
+var responseSchema2 = z5.object({
+  results: z5.array(awardSchema).default([]),
+  page_metadata: z5.object({ page: z5.number().optional(), hasNext: z5.boolean().optional() }).passthrough().optional(),
+  messages: z5.array(z5.string()).optional()
 }).passthrough();
 var isoDate = (date) => date.toISOString().slice(0, 10);
 var validNaics = (value) => value?.match(/\b\d{6}\b/)?.[0];
@@ -1108,7 +1167,7 @@ async function queryUSASpending(deal) {
     ])).values()];
     const ranked = dedupedResults.map((award) => ({ award, relevance: awardRelevance(award, deal) })).filter(({ relevance }) => relevance >= 0.45).sort((a, b) => b.relevance - a.relevance).slice(0, 10);
     const evidence = ranked.map(({ award }, index) => {
-      const amount = Number(award["Award Amount"] ?? 0);
+      const amount2 = Number(award["Award Amount"] ?? 0);
       const awardId = award["Award ID"] || `record-${index + 1}`;
       const recipient = award["Recipient Name"] || "recipient not reported";
       const startDate = award["Start Date"] ? new Date(award["Start Date"]) : void 0;
@@ -1119,10 +1178,10 @@ async function queryUSASpending(deal) {
         type: "EXTERNAL_SOURCE",
         sourceLabel: "USAspending.gov API",
         sourceRecordId: award.generated_internal_id || awardId,
-        claim: `Historical contract award ${awardId} to ${recipient}${Number.isFinite(amount) && amount > 0 ? ` for ${amount.toLocaleString("en-US", { style: "currency", currency: "USD" })}` : ""}.`,
+        claim: `Historical contract award ${awardId} to ${recipient}${Number.isFinite(amount2) && amount2 > 0 ? ` for ${amount2.toLocaleString("en-US", { style: "currency", currency: "USD" })}` : ""}.`,
         confidence: 98,
-        numeric: Number.isFinite(amount) && amount > 0 ? {
-          originalValue: amount,
+        numeric: Number.isFinite(amount2) && amount2 > 0 ? {
+          originalValue: amount2,
           valueType: "CURRENT_AWARD_AMOUNT",
           currency: "USD",
           units: "TOTAL_USD",
@@ -1163,7 +1222,7 @@ async function queryUSASpending(deal) {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z4.ZodError ? "USAspending returned an unexpected response shape." : error instanceof Error ? error.message : "USAspending request failed.",
+      message: error instanceof z5.ZodError ? "USAspending returned an unexpected response shape." : error instanceof Error ? error.message : "USAspending request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -1173,23 +1232,23 @@ async function queryUSASpending(deal) {
 }
 
 // src/adapters/gsa.ts
-import { z as z5 } from "zod";
-var sourceSchema = z5.object({
-  id: z5.union([z5.string(), z5.number()]),
-  labor_category: z5.string(),
-  current_price: z5.union([z5.number(), z5.string()]),
-  next_year_price: z5.union([z5.number(), z5.string()]).nullish(),
-  vendor_name: z5.string().nullish(),
-  schedule: z5.string().nullish(),
-  education_level: z5.string().nullish(),
-  min_years_experience: z5.union([z5.number(), z5.string()]).nullish(),
-  worksite: z5.string().nullish(),
-  security_clearance: z5.boolean().nullish(),
-  idv_piid: z5.string().nullish()
+import { z as z6 } from "zod";
+var sourceSchema = z6.object({
+  id: z6.union([z6.string(), z6.number()]),
+  labor_category: z6.string(),
+  current_price: z6.union([z6.number(), z6.string()]),
+  next_year_price: z6.union([z6.number(), z6.string()]).nullish(),
+  vendor_name: z6.string().nullish(),
+  schedule: z6.string().nullish(),
+  education_level: z6.string().nullish(),
+  min_years_experience: z6.union([z6.number(), z6.string()]).nullish(),
+  worksite: z6.string().nullish(),
+  security_clearance: z6.boolean().nullish(),
+  idv_piid: z6.string().nullish()
 }).passthrough();
-var responseSchema3 = z5.object({
-  hits: z5.object({
-    hits: z5.array(z5.object({ _source: sourceSchema }).passthrough()).default([])
+var responseSchema3 = z6.object({
+  hits: z6.object({
+    hits: z6.array(z6.object({ _source: sourceSchema }).passthrough()).default([])
   }).passthrough()
 }).passthrough();
 var usefulTokens = (value) => value.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && ![
@@ -1302,7 +1361,7 @@ async function queryGsaCalc(laborSignals) {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z5.ZodError ? "GSA returned an unexpected response shape." : error instanceof Error ? error.message : "GSA request failed.",
+      message: error instanceof z6.ZodError ? "GSA returned an unexpected response shape." : error instanceof Error ? error.message : "GSA request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -1312,18 +1371,18 @@ async function queryGsaCalc(laborSignals) {
 }
 
 // src/adapters/bls.ts
-import { z as z6 } from "zod";
-var responseSchema4 = z6.object({
-  status: z6.string(),
-  message: z6.array(z6.string()).default([]),
-  Results: z6.object({
-    series: z6.array(z6.object({
-      seriesID: z6.string(),
-      data: z6.array(z6.object({
-        year: z6.string(),
-        period: z6.string(),
-        periodName: z6.string(),
-        value: z6.string()
+import { z as z7 } from "zod";
+var responseSchema4 = z7.object({
+  status: z7.string(),
+  message: z7.array(z7.string()).default([]),
+  Results: z7.object({
+    series: z7.array(z7.object({
+      seriesID: z7.string(),
+      data: z7.array(z7.object({
+        year: z7.string(),
+        period: z7.string(),
+        periodName: z7.string(),
+        value: z7.string()
       }).passthrough()).default([])
     }).passthrough()).default([])
   })
@@ -1388,7 +1447,7 @@ async function queryBls() {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z6.ZodError ? "BLS returned an unexpected response shape." : error instanceof Error ? error.message : "BLS request failed.",
+      message: error instanceof z7.ZodError ? "BLS returned an unexpected response shape." : error instanceof Error ? error.message : "BLS request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -1447,8 +1506,8 @@ function periodNumberValue(value) {
   return periodNumberWords[value] ?? Number(value);
 }
 function durationMonths(value, unit) {
-  const amount = periodNumberValue(value);
-  return /^y|^yr/.test(unit) ? amount * 12 : amount;
+  const amount2 = periodNumberValue(value);
+  return /^y|^yr/.test(unit) ? amount2 * 12 : amount2;
 }
 function extractPeriodMonths(value) {
   if (!value) return void 0;
@@ -2355,6 +2414,35 @@ function buildFirstPage(doc, analysis) {
     { width: contentWidth - 182, align: "right", lineBreak: false, ellipsis: true }
   );
 }
+function buildPricingPages(doc, analysis) {
+  const scenario = analysis.pricingScenario;
+  if (!scenario) return;
+  let y = margin;
+  const paragraph = (value, heading = false) => {
+    doc.font(heading ? boldFont : regularFont).fontSize(heading ? 12 : 9);
+    const text2 = clean(value);
+    const height = doc.heightOfString(text2, { width: contentWidth, lineGap: 3 });
+    if (y + height > 690) {
+      doc.addPage();
+      y = margin;
+    }
+    doc.fillColor(heading ? colors.navy : colors.ink).text(text2, margin, y, { width: contentWidth, lineGap: 3 });
+    y += height + 12;
+  };
+  paragraph("Conditional offer scenarios", true);
+  paragraph(analysis.deal.title, true);
+  paragraph(`Target offer: ${money(scenario.target)} | Lower offer: ${money(scenario.low)} | Upper offer: ${money(scenario.high)}`, true);
+  paragraph("Analyst-entered quantities and offered rates. These scenarios do not establish a winning price or probability. Confirm competitive evidence, compliance and execution feasibility before pricing use.");
+  paragraph(`Evaluation basis: ${scenario.inputs.evaluationBasis}`);
+  paragraph(`Evaluation source: ${scenario.inputs.basisSource}`);
+  paragraph(scenario.formula);
+  scenario.inputs.lines.forEach((line, index) => {
+    paragraph(`${index + 1}. ${line.label}`, true);
+    paragraph(`Evaluated quantity: ${line.quantity}. Offered unit prices - lower ${money(line.lowUnitPrice)}, target ${money(line.targetUnitPrice)}, upper ${money(line.highUnitPrice)}.`);
+    paragraph(`Sources and assumptions: ${line.source}`);
+  });
+  doc.addPage();
+}
 function buildStrategyPages(doc, analysis) {
   if (analysis.ptwStrategy?.status !== "DRAFT") return;
   const strategy = analysis.ptwStrategy.strategy;
@@ -2469,6 +2557,7 @@ function createExecutivePdf(analysis) {
     doc.on("data", (chunk) => chunks.push(chunk));
     doc.on("error", reject);
     doc.on("end", () => resolve(Buffer.concat(chunks)));
+    buildPricingPages(doc, analysis);
     buildStrategyPages(doc, analysis);
     buildFirstPage(doc, analysis);
     buildSecondPage(doc, analysis);
@@ -2674,6 +2763,9 @@ var baseSchema = {
       type: "OBJECT",
       properties: {
         title: { type: "STRING" },
+        documentStatus: { type: "STRING", enum: ["OPEN_COMPETITIVE", "NONCOMPETITIVE", "EXPIRED", "PRE_SOLICITATION", "NON_SOLICITATION", "UNKNOWN"] },
+        eligibilityReason: { type: "STRING" },
+        eligibilitySource: { type: "STRING" },
         agency: { type: "STRING" },
         solicitationNumber: { type: "STRING" },
         contractType: { type: "STRING" },
@@ -2741,6 +2833,9 @@ var baseSchema = {
         }
       },
       required: [
+        "documentStatus",
+        "eligibilityReason",
+        "eligibilitySource",
         "title",
         "agency",
         "solicitationNumber",
@@ -2884,6 +2979,7 @@ var baseSchema = {
 var analysisPrompt = `You are a federal capture and competitive-pricing analyst. Analyze the attached solicitation and return a concise evidence-led market assessment.
 
 NON-NEGOTIABLE AUTHORITY RULES
+- First identify documentStatus: OPEN_COMPETITIVE, NONCOMPETITIVE, EXPIRED, PRE_SOLICITATION, NON_SOLICITATION, or UNKNOWN. Cite the file and section in eligibilitySource and give a concise eligibilityReason. RFI/sources sought/draft notices are PRE_SOLICITATION. Sole-source or intent-to-sole-source is NONCOMPETITIVE only if explicitly stated. Resolve amendments by their effective version; do not classify a superseded original deadline as current. DueDate must be YYYY-MM-DD when unambiguous; otherwise Unknown. Do not infer eligibility merely from a title.
 - Do not calculate or recommend Aggressive, Expected, Conservative, low, target, high, or any other Market Position dollar value.
 - Do not put dollar values in the narrative. The deterministic engine owns every authoritative Market Position number.
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
@@ -3028,7 +3124,7 @@ async function normalizeSpreadsheet(file) {
 SHEET: ${worksheet.name}`);
     worksheet.eachRow({ includeEmpty: false }, (row) => {
       const values = Array.isArray(row.values) ? row.values.slice(1) : [];
-      const rendered = values.map((value) => {
+      const rendered = values.map((value, columnIndex) => {
         if (value == null) return "";
         if (typeof value === "object") {
           const record = value;
@@ -3040,7 +3136,7 @@ SHEET: ${worksheet.name}`);
             return String(value);
           }
         }
-        return String(value);
+        return `${worksheet.getCell(row.number, columnIndex + 1).address}: ${String(value)}`;
       }).join("	");
       if (rendered.trim()) lines.push(rendered);
     });
@@ -3049,7 +3145,17 @@ SHEET: ${worksheet.name}`);
   return { originalname: `${file.originalname}.txt`, mimetype: "text/plain", size: buffer.length, buffer };
 }
 async function normalizeAnalysisFiles(files) {
-  return Promise.all(files.map((file) => normalizeSpreadsheet(file)));
+  return Promise.all(files.map(async (file) => {
+    if (file.originalname.toLowerCase().endsWith(".docx")) {
+      const result = await mammoth.extractRawText({ buffer: file.buffer });
+      if (!result.value.trim()) throw new Error(`${file.originalname} has no readable text. Upload a readable PDF or TXT version.`);
+      const paragraphs = result.value.split(/\n\s*\n/).filter((v) => v.trim()).map((v, i) => `Paragraph ${i + 1}: ${v}`);
+      const buffer = Buffer.from(`SOURCE DOCUMENT: ${file.originalname}
+${paragraphs.join("\n\n")}`);
+      return { ...file, originalname: `${file.originalname}.txt`, mimetype: "text/plain", buffer, size: buffer.length };
+    }
+    return normalizeSpreadsheet(file);
+  }));
 }
 function mergeSamDealMetadata(analysis, metadata, naicsOverride) {
   analysis.deal = {
@@ -3103,21 +3209,26 @@ ${JSON.stringify(official)}`);
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 async function analyzeFiles(files) {
-  const client = new OpenAIIntelligence();
+  const client = new OpenAIIntelligence(void 0, void 0, fetch, 11e4);
   const draft = await client.extract(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);
   draft.gaps = draft.gaps || [];
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
-  const warnings = [];
+  const warnings = assessEligibility(draft.deal);
   let researchStatus = "SOLICITATION_ONLY";
   const connectors = [];
   const fileNames = files.map((f) => f.originalname);
   const connectorWork = runConnectorSet(draft.deal, void 0, false, fileNames);
-  const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== "false" ? client.research(`Research the public federal market for this opportunity using web search.
+  const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== "false" ? new OpenAIIntelligence(void 0, void 0, fetch, 9e4).research(`Research the public federal market for this opportunity using web search.
 Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
-Improve only qualitative claims supported by current public sources and preserve the existing shapes.
+Improve only qualitative claims supported by current public sources. Match these JSON shapes exactly:
+marketAssessment: {posture:string,summary:string,basis:string[],drivers:{name:string,assessment:string,evidenceIds:string[],inference:boolean}[]}
+competitors: {name:string,role:string,pricingPosture:string,rationale:string,differentiators:string[],risks:string[],sourceRefs:string[],confidence:number,evidenceType:string}[]
+incumbent: {name:string,status:string,strengths:string[],vulnerabilities:string[],transitionRisk:string,confidence:number,sourceRefs:string[]}
+narrative: {headline:string,rationale:string,decisionFactors:string[],guardrails:string[],nextActions:string[]}
+Confidence is an uncalibrated qualitative assessment from 0\u2013100, never a win probability. Empty arrays and unknowns are valid. Vehicle membership or past experience does not establish bid intent.
 Never return or revise an authoritative Market Position dollar value, numeric range, opportunity score, or probability of win.
 Do not put dollar values in narrative strings. Put source URLs in competitor and incumbent sourceRefs.
 Prefer official .gov/.mil records and first-party company sources. Do not rely on Wikipedia, social media, market-size aggregators, procurement aggregators, or search-result snippets.
@@ -3244,7 +3355,11 @@ function recalculateIncomingRun(raw) {
 }
 function normalizeIncomingRun(raw) {
   const analysis = recalculateIncomingRun(raw);
-  return { ...analysis, ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy) };
+  return {
+    ...analysis,
+    ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy),
+    pricingScenario: raw.pricingScenario ? calculatePricingScenario(raw.pricingScenario.inputs) : void 0
+  };
 }
 app.post("/api/ptw-strategy", async (req, res) => {
   try {
@@ -3301,9 +3416,15 @@ app.post("/api/analyze-solicitation", upload.array("files"), async (req, res) =>
       "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     ];
     for (const file of uploadedFiles) {
-      if (!allowed.includes(file.mimetype)) {
-        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, DOC, TXT, or XLSX file.` });
+      if (!allowed.includes(file.mimetype) || !/\.(pdf|docx?|txt|xlsx)$/i.test(file.originalname)) {
+        return res.status(415).json({ error: `File ${file.originalname} is not supported. Use a PDF, DOCX, TXT, or XLSX file.` });
       }
+    }
+    if (uploadedFiles.reduce((n, file) => n + file.size, 0) > 4 * 1024 * 1024) return res.status(413).json({ error: "Uploaded files must total 4 MB or less." });
+    for (const file of uploadedFiles) {
+      if (file.size === 0) return res.status(400).json({ error: `${file.originalname} is empty.` });
+      if (/\.doc$/i.test(file.originalname)) return res.status(415).json({ error: `Convert ${file.originalname} to DOCX or PDF before uploading.` });
+      if (/\.pdf$/i.test(file.originalname) && !file.buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) return res.status(415).json({ error: `${file.originalname} is not a readable PDF file.` });
     }
     let samPackage;
     let samFallbackWarning = "";
@@ -3322,6 +3443,7 @@ app.post("/api/analyze-solicitation", upload.array("files"), async (req, res) =>
     if (deduped.length === 0) return res.status(400).json({ error: "No analyzable solicitation documents were available." });
     const normalizedFiles = await normalizeAnalysisFiles(deduped);
     const analysis = await analyzeFiles(normalizedFiles);
+    analysis.meta.warnings.push(`Package snapshot: ${deduped.map((f) => `${f.originalname} [SHA-256 ${crypto2.createHash("sha256").update(f.buffer).digest("hex")}]`).join("; ")}. Keep these source files with the exported decision package.`);
     if (samFallbackWarning) analysis.meta.warnings.push(samFallbackWarning);
     if (samPackage) {
       mergeSamDealMetadata(analysis, samPackage.opportunity, naicsOverride);
@@ -3339,7 +3461,7 @@ app.post("/api/analyze-solicitation", upload.array("files"), async (req, res) =>
     res.json({ data: analysis });
   } catch (error) {
     console.error("Analysis failed", error);
-    res.status(500).json({ error: error instanceof Error ? error.message : "The analysis could not be completed." });
+    res.status(error instanceof IneligibleSolicitationError ? 422 : 500).json({ error: error instanceof Error ? error.message : "The analysis could not be completed." });
   }
 });
 app.post("/api/retry-connector", async (req, res) => {
@@ -3423,6 +3545,17 @@ app.post("/api/export-brief", async (req, res) => {
       { field: "Formula Version", value: analysis.marketPosition.formulaVersion },
       { field: "Calculation Basis", value: analysis.marketPosition.methodLabel }
     ]);
+    const priced = workbook.addWorksheet("Conditional Offer Scenarios");
+    priced.columns = [{ header: "CLIN / period", key: "label", width: 32 }, { header: "Evaluated quantity", key: "quantity", width: 22 }, { header: "Lower unit price", key: "lowUnitPrice", width: 22 }, { header: "Target unit price", key: "targetUnitPrice", width: 22 }, { header: "Upper unit price", key: "highUnitPrice", width: 22 }, { header: "Sources / assumptions", key: "source", width: 90 }];
+    if (analysis.pricingScenario) {
+      const scenario = analysis.pricingScenario;
+      priced.addRows(scenario.inputs.lines);
+      priced.addRow({ label: "EVALUATED TOTALS", lowUnitPrice: scenario.low, targetUnitPrice: scenario.target, highUnitPrice: scenario.high });
+      priced.addRow({ label: "Evaluation basis", source: scenario.inputs.evaluationBasis });
+      priced.addRow({ label: "Evaluation source", source: scenario.inputs.basisSource });
+      priced.addRow({ label: "Calculation", source: scenario.formula });
+      priced.addRow({ label: "Status", source: "CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price." });
+    } else priced.addRow({ label: "No priced scenario", source: "Enter explicit evaluated quantities and offered unit prices in the decision workspace." });
     const strategy = workbook.addWorksheet("PTW Strategy");
     strategy.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "assessment", width: 100 }, { header: "Claim type", key: "kind", width: 18 }, { header: "Evidence IDs", key: "evidence", width: 36 }, { header: "Validation action", key: "validation", width: 80 }];
     if (analysis.ptwStrategy?.status === "DRAFT") {
@@ -3511,6 +3644,8 @@ app.post("/api/export-brief", async (req, res) => {
       { header: "Source", key: "sourceLabel", width: 35 },
       { header: "Section", key: "section", width: 20 },
       { header: "Claim", key: "claim", width: 80 },
+      { header: "URL", key: "url", width: 90 },
+      { header: "Source excerpt", key: "excerpt", width: 90 },
       { header: "Confidence", key: "confidence", width: 14 },
       { header: "Value Type", key: "valueType", width: 24 },
       { header: "Original Value", key: "originalValue", width: 18 }
