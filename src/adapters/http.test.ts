@@ -32,3 +32,11 @@ test('retry policy classifies an exhausted timeout', async () => {
     );
   });
 });
+
+test('daily quota exhaustion does not trigger immediate futile retries',async()=>{
+  let calls=0;
+  await withMockFetch(async()=>{calls++;return new Response('{"description":"You have exceeded your quota","nextAccessTime":"2026-Oct-06 00:00:00+0000 UTC"}',{status:429});},async()=>{
+    await assert.rejects(()=>fetchJsonWithRetry('https://example.test',{}, {maxAttempts:3}),error=>error instanceof ConnectorError && error.status==='RATE_LIMITED' && error.attempts===1);
+    assert.equal(calls,1);
+  });
+});

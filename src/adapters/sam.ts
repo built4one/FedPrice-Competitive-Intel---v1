@@ -223,7 +223,34 @@ async function solicitationNumberFromSamPage(noticeId: string) {
   }
 }
 
-async function findOpportunity(referenceValue: string, apiKey: string) {
+type LookupResult = { opportunity?: SamOpportunity; durationMs: number; attempts: number };
+const opportunityCache = new Map<string,{expiresAt:number;result:LookupResult}>();
+const opportunityRequests = new Map<string,Promise<LookupResult>>();
+const opportunityCacheTtl = 15 * 60 * 1000;
+
+async function findOpportunity(referenceValue: string, apiKey: string): Promise<LookupResult> {
+  const ref = parseSamOpportunityReference(referenceValue);
+  const keyFor = (value: string) => `${apiKey}:${normalize(value)}`;
+  const key = keyFor(ref.noticeId || ref.solicitationNumber || '');
+  for (const [k,v] of opportunityCache) if (v.expiresAt <= Date.now()) opportunityCache.delete(k);
+  const cached = opportunityCache.get(key);
+  if (cached) return {...cached.result,attempts:0,durationMs:0};
+  const pending = opportunityRequests.get(key);
+  if (pending) return pending;
+  const request = findOpportunityUncached(referenceValue,apiKey).then(result => {
+    if (result.opportunity) {
+      const entry = {expiresAt:Date.now()+opportunityCacheTtl,result};
+      opportunityCache.set(key,entry);
+      for (const alias of [result.opportunity.noticeId,result.opportunity.solicitationNumber]) if (alias) opportunityCache.set(keyFor(alias),entry);
+      while (opportunityCache.size > 200) opportunityCache.delete(opportunityCache.keys().next().value!);
+    }
+    return result;
+  }).finally(()=>opportunityRequests.delete(key));
+  opportunityRequests.set(key,request);
+  return request;
+}
+
+async function findOpportunityUncached(referenceValue: string, apiKey: string) {
   const reference = parseSamOpportunityReference(referenceValue);
   if (!reference.noticeId && !reference.solicitationNumber) throw new Error('Enter a solicitation number or SAM.gov opportunity URL.');
 

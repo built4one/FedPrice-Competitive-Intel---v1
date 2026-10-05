@@ -69,7 +69,7 @@ test('SAM.gov handles error states honestly without crashing', async () => {
   await withMockFetch(async () => {
     return new Response(JSON.stringify({ error: 'Gateway timeout' }), { status: 504 });
   }, async () => {
-    const result = await querySamGov(mockDeal);
+    const result = await querySamGov({...mockDeal,solicitationNumber:'UNCACHED-TIMEOUT-TEST'});
     assert.equal(result.success, false);
     assert.equal(result.status, 'SOURCE_UNAVAILABLE');
     assert.equal(result.evidence.length, 0);

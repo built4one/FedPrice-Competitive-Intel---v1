@@ -582,7 +582,8 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
       const body = await response.text();
       if (!response.ok) {
         const status = classifyStatus(response.status);
-        if (retryableStatus(response.status) && attempt < maxAttempts) {
+        const dailyQuotaReached = response.status === 429 && /exceeded your quota|nextAccessTime/i.test(body);
+        if (retryableStatus(response.status) && !dailyQuotaReached && attempt < maxAttempts) {
           await wait(baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 100));
           continue;
         }
@@ -787,7 +788,31 @@ async function solicitationNumberFromSamPage(noticeId) {
     clearTimeout(timeout);
   }
 }
+var opportunityCache = /* @__PURE__ */ new Map();
+var opportunityRequests = /* @__PURE__ */ new Map();
+var opportunityCacheTtl = 15 * 60 * 1e3;
 async function findOpportunity(referenceValue, apiKey) {
+  const ref = parseSamOpportunityReference(referenceValue);
+  const keyFor = (value) => `${apiKey}:${normalize(value)}`;
+  const key = keyFor(ref.noticeId || ref.solicitationNumber || "");
+  for (const [k, v] of opportunityCache) if (v.expiresAt <= Date.now()) opportunityCache.delete(k);
+  const cached = opportunityCache.get(key);
+  if (cached) return { ...cached.result, attempts: 0, durationMs: 0 };
+  const pending = opportunityRequests.get(key);
+  if (pending) return pending;
+  const request = findOpportunityUncached(referenceValue, apiKey).then((result) => {
+    if (result.opportunity) {
+      const entry = { expiresAt: Date.now() + opportunityCacheTtl, result };
+      opportunityCache.set(key, entry);
+      for (const alias of [result.opportunity.noticeId, result.opportunity.solicitationNumber]) if (alias) opportunityCache.set(keyFor(alias), entry);
+      while (opportunityCache.size > 200) opportunityCache.delete(opportunityCache.keys().next().value);
+    }
+    return result;
+  }).finally(() => opportunityRequests.delete(key));
+  opportunityRequests.set(key, request);
+  return request;
+}
+async function findOpportunityUncached(referenceValue, apiKey) {
   const reference = parseSamOpportunityReference(referenceValue);
   if (!reference.noticeId && !reference.solicitationNumber) throw new Error("Enter a solicitation number or SAM.gov opportunity URL.");
   const direct = await searchOpportunityWindows(reference, apiKey);

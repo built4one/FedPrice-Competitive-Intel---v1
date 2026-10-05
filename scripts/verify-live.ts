@@ -1,6 +1,11 @@
 // Opt-in preview build check. Uses the deployment's server credentials in place;
 // never exports credentials, accesses saved user runs, or changes authentication.
-if (process.env.FMP_VERIFY_SOLICITATION) {
+if (process.env.FMP_VERIFY_SOLICITATION === 'WEB_RESEARCH') {
+  const {OpenAIIntelligence}=await import('../src/server/openaiIntelligence');
+  const result=await new OpenAIIntelligence(undefined,undefined,fetch,90_000).research<{summary:string}>('Using official GSA public documentation, explain in one sentence what CALC+ labor ceiling rates represent. Return JSON with one summary string. Do not research a specific solicitation or call the SAM API.');
+  if (!result.analysis.summary || !result.sources.length) throw new Error('Live web research did not return a summary with sources.');
+  console.log('FMP_LIVE_CHECK',JSON.stringify({stage:'web-research-passed',sources:result.sources.map(s=>s.url),summary:result.analysis.summary}));
+} else if (process.env.FMP_VERIFY_SOLICITATION) {
   const reference = process.env.FMP_VERIFY_SOLICITATION;
   const { resolveSamOpportunityPackage, lookupSamOpportunity } = await import('../src/adapters/sam');
   const { analyzeFiles, normalizeAnalysisFiles, samMetadataFile } = await import('../server');

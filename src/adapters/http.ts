@@ -56,7 +56,8 @@ export async function fetchJsonWithRetry<T>(
       const body = await response.text();
       if (!response.ok) {
         const status = classifyStatus(response.status);
-        if (retryableStatus(response.status) && attempt < maxAttempts) {
+        const dailyQuotaReached = response.status === 429 && /exceeded your quota|nextAccessTime/i.test(body);
+        if (retryableStatus(response.status) && !dailyQuotaReached && attempt < maxAttempts) {
           await wait(baseDelayMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100));
           continue;
         }

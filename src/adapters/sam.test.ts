@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildSamPostedDateWindows, parseSamOpportunityReference } from './sam';
+import { buildSamPostedDateWindows, parseSamOpportunityReference, lookupSamOpportunity } from './sam';
+
+test('reuses an exact notice across repeated number and URL lookups',async()=>{
+  const originalFetch=global.fetch; const originalKey=process.env.SAM_API_KEY;
+  process.env.SAM_API_KEY='cache-unit-test'; let calls=0;
+  global.fetch=async()=>{calls++;return new Response(JSON.stringify({totalRecords:1,opportunitiesData:[{noticeId:'cache-notice',solicitationNumber:'CACHE-TEST-001',title:'Cached notice'}]}),{status:200});};
+  try {
+    await Promise.all([lookupSamOpportunity('CACHE-TEST-001'),lookupSamOpportunity('CACHE-TEST-001')]);
+    const result=await lookupSamOpportunity('https://sam.gov/opp/cache-notice/view');
+    assert.equal(result.solicitationNumber,'CACHE-TEST-001');assert.equal(calls,1);
+  } finally {global.fetch=originalFetch;if(originalKey===undefined)delete process.env.SAM_API_KEY;else process.env.SAM_API_KEY=originalKey;}
+});
 
 test('parses a solicitation number as the primary SAM lookup key', () => {
   assert.deepEqual(parseSamOpportunityReference('80TECH24R0001'), { solicitationNumber: '80TECH24R0001' });
