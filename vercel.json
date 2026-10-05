@@ -3,6 +3,7 @@
   "alias": ["fed-price-comp-intel-v1.vercel.app"],
   "functions": {
     "api/index.js": {
+      "includeFiles": "node_modules/pdfjs-dist/legacy/build/**",
       "maxDuration": 300
     }
   },

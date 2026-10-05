@@ -22,6 +22,7 @@ import type {
 import { querySamGov, resolveSamOpportunityPackage, type SamOpportunityMetadata, type SamRetrievedFile } from './src/adapters/sam.js';
 import { assessmentIssues, normalizeGaps } from './src/domain/analysisQuality';
 import { laborCoverage, laborCoverageGaps } from './src/domain/laborCoverage';
+import { normalizePdfText } from './src/server/pdfText';
 import { queryUSASpending } from './src/adapters/usaspending.js';
 import { queryGsaCalc } from './src/adapters/gsa.js';
 import { queryBls } from './src/adapters/bls.js';
@@ -440,6 +441,7 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
 
 export async function normalizeAnalysisFiles(files: AnalysisFile[]) {
   return Promise.all(files.map(async file => {
+    if (/\.pdf$/i.test(file.originalname)) return normalizePdfText(file);
     if (file.originalname.toLowerCase().endsWith('.docx')) {
       const result = await mammoth.extractRawText({buffer:file.buffer});
       if (!result.value.trim()) throw new Error(`${file.originalname} has no readable text. Upload a readable PDF or TXT version.`);
@@ -506,7 +508,7 @@ ${JSON.stringify(official)}`);
 }
 
 export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
-  const client = new OpenAIIntelligence(undefined, undefined, fetch, 110_000);
+  const client = new OpenAIIntelligence(undefined, undefined, fetch, 170_000);
   const draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);

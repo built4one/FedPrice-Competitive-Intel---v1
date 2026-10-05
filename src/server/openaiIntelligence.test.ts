@@ -17,7 +17,8 @@ test('extract sends files and strict schema without retaining API response', asy
   ], { type: 'OBJECT', properties: { title: { type: 'STRING' }, optional: { type: 'STRING' } }, required: ['title'] });
   assert.deepEqual(result, { title: 'Notice' });
   assert.equal(request.store, false);
-  assert.equal(request.input[0].content[1].type, 'input_file');
+  assert.equal(request.input[0].content[1].type, 'input_text');
+  assert.match(request.input[0].content[1].text,/A solicitation/);
   assert.equal(request.text.format.schema.additionalProperties, false);
   assert.deepEqual(request.text.format.schema.required, ['title', 'optional']);
   assert.deepEqual(request.text.format.schema.properties.optional.anyOf[1], { type: 'null' });
