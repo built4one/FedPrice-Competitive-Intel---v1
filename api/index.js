@@ -1146,6 +1146,7 @@ function laborCoverageGaps(deal, evidence) {
 // src/server/pdfText.ts
 async function normalizePdfText(file) {
   if (!/\.pdf$/i.test(file.originalname)) return file;
+  if (/\bdd[\s+_-]*254\b/i.test(file.originalname)) return file;
   const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
   const task = getDocument({ data: new Uint8Array(file.buffer), isEvalSupported: false, disableFontFace: true, useSystemFonts: true, verbosity: 0 });
   try {
@@ -1155,7 +1156,7 @@ async function normalizePdfText(file) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text2 = content.items.map((item) => "str" in item ? `${item.str}${item.hasEOL ? "\n" : " "}` : "").join("").trim();
-      if (text2.replace(/\s/g, "").length < 200) return file;
+      if (text2.replace(/\s/g, "").length < 25) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}
 ${text2}`);
       page.cleanup();

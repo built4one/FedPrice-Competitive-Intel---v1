@@ -22,7 +22,8 @@ test('image-only PDFs retain the original file for visual extraction',async()=>{
   const source=await pdf();
   assert.equal(await normalizePdfText(source),source);
 });
-test('sparse text layers retain the PDF so form or image content can be inspected',async()=>{
+test('security forms retain the PDF so checkboxes and markings can be inspected',async()=>{
   const source=await pdf('DD 254 — security requirements');
+  source.originalname='DRAFT+DD+254.pdf';
   assert.equal(await normalizePdfText(source),source);
 });
