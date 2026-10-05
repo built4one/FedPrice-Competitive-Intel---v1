@@ -65,25 +65,35 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
   const evidence: EvidenceItem[] = [];
   const messages: string[] = [];
   for (const signal of signals) {
-    const result = successful.find(q => q.category === laborFamily(signal.title) && q.clearance === requiresClearance(signal.clearance));
+    const mappedFamily = laborFamily(signal.title);
+    const result = successful.find(q => q.category === mappedFamily && q.clearance === requiresClearance(signal.clearance));
     if (!result) { messages.push(`${signal.title}: rate search unavailable.`); continue; }
-    const matches = result.records.filter(r => laborRoleMatch(signal.title, r.labor_category) >= 0.8);
+    const exactMatches = result.records.filter(r => laborRoleMatch(signal.title, r.labor_category) >= 0.8);
+    const familyProxyAllowed = mappedFamily.toLowerCase() !== signal.title.trim().toLowerCase();
+    const familyMatches = familyProxyAllowed
+      ? result.records.filter(r => laborRoleMatch(mappedFamily, r.labor_category) >= 0.8)
+      : [];
+    const matches = exactMatches.length ? exactMatches : familyMatches;
+    const proxyUsed = exactMatches.length === 0 && familyMatches.length > 0;
     if (!matches.length) { messages.push(`${signal.title}: no rate matched the role and clearance filter.`); continue; }
     const rates = matches.map(r => Number(r.current_price)).sort((a,b) => a-b);
     const value = quantile(rates, 0.5);
     const id = createHash('sha256').update(`${signal.title}|${result.clearance}`).digest('hex').slice(0,12);
     evidence.push({
       id: `GSA-SAMPLE-${id}`, type: 'EXTERNAL_SOURCE', sourceLabel: 'GSA CALC+ API', sourceRecordId: id,
-      claim: `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`,
-      excerpt: `Search role: ${result.category}. Matched categories: ${[...new Set(matches.map(r => r.labor_category))].slice(0,16).join('; ')}. Record examples: ${matches.slice(0,8).map(r => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour`).join('; ')}`,
-      confidence: result.complete ? 90 : 70, retrievedAt, url: result.url,
+      claim: proxyUsed
+        ? `${signal.title}: provisional ${mappedFamily} family proxy with median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. Analyst must validate that the proxy is suitable before pricing use. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`
+        : `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`,
+      excerpt: `Search role: ${result.category}. ${proxyUsed ? `Solicitation title mapped to ${mappedFamily} as a provisional benchmark family. ` : ''}Matched categories: ${[...new Set(matches.map(r => r.labor_category))].slice(0,16).join('; ')}. Record examples: ${matches.slice(0,8).map(r => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour`).join('; ')}`,
+      confidence: proxyUsed ? (result.complete ? 75 : 60) : (result.complete ? 90 : 70), retrievedAt, url: result.url,
       numeric: { originalValue: value, valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', currency: 'USD',
         scopeText: signal.title, sourceDate: retrievedAt.slice(0,10), matchedLaborCategory: signal.title,
         lowerRate: quantile(rates,0.25), upperRate: quantile(rates,0.75), rateSampleSize: matches.length,
-        rateSampleComplete: result.complete, clearanceRequired: result.clearance, laborMatchScore: 0.85,
-        technologySecurityLocation: result.clearance ? 'Clearance required; exact level and worksite must be validated.' : 'Clearance and worksite not constrained.',
+        rateSampleComplete: result.complete, clearanceRequired: result.clearance, laborMatchScore: proxyUsed ? 0.60 : 0.85,
+        technologySecurityLocation: `${proxyUsed ? `Provisional ${mappedFamily} family mapping; validate qualifications. ` : ''}${result.clearance ? 'Clearance required; exact level and worksite must be validated.' : 'Clearance and worksite not constrained.'}`,
       },
     });
+    if (proxyUsed) messages.push(`${signal.title}: used a provisional ${mappedFamily} family proxy; analyst validation required.`);
     if (!result.complete) messages.push(`${signal.title}: sampled ${matches.length} matching records from ${result.total} search results.`);
   }
   if (signals.length < laborSignals.length) messages.push('The first 30 distinct labor roles were searched; remaining roles need review.');
