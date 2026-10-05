@@ -32,7 +32,7 @@ const agencyAliases: Array<[RegExp, { tier: 'toptier' | 'subtier'; name: string 
   [/Food and Drug|\bFDA\b/i, { tier: 'subtier', name: 'Food and Drug Administration' }],
   [/Air Force|\bAFRL\b/i, { tier: 'subtier', name: 'Department of the Air Force' }],
   [/\bArmy\b|ACC-/i, { tier: 'subtier', name: 'Department of the Army' }],
-  [/\bNavy\b|NAVSEA|NAVAIR/i, { tier: 'subtier', name: 'Department of the Navy' }],
+  [/\bNavy\b|\bNaval\b|NAVSEA|NAVAIR|NAVSUP|NNWC/i, { tier: 'subtier', name: 'Department of the Navy' }],
   [/Department of Defense|\bDoD\b/i, { tier: 'toptier', name: 'Department of Defense' }],
   [/Health and Human Services|\bHHS\b/i, { tier: 'toptier', name: 'Department of Health and Human Services' }],
 ];

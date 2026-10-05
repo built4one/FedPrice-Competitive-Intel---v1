@@ -2,6 +2,7 @@ import PDFDocument from 'pdfkit';
 import { regularFontData, boldFontData } from './fontData';
 import type { OpportunityAnalysis } from '../types';
 import { strategyStatements } from '../domain/ptw/strategy';
+import { assessmentIssues } from '../domain/analysisQuality';
 
 const colors = {
   navy: '#10243E',
@@ -145,6 +146,9 @@ function buildFirstPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis) 
   scenarioCard(doc, margin + cardWidth + gap, 176, cardWidth, 'Central reference', position.expected, true);
   scenarioCard(doc, margin + (cardWidth + gap) * 2, 176, cardWidth, 'Upper reference', position.conservative);
   doc.font(regularFont).fontSize(8).fillColor(colors.muted).text('Heuristic market references; strategy-specific bid scenarios require further modeling.', margin, 255, {width:contentWidth});
+  if (analysis.ptwStrategy?.status !== 'DRAFT') {
+    doc.font(boldFont).fontSize(8).fillColor(colors.amber).text('STRATEGY INCOMPLETE — see assessment issues and next actions.', margin, 162, { width: contentWidth, lineBreak: false });
+  }
 
   let y = sectionTitle(doc, 'Qualitative market assessment', 272);
   doc.font(boldFont).fontSize(12).fillColor(colors.navy).text(truncate(analysis.narrative.headline, 150), margin, y, { width: contentWidth, lineGap: 3 });
@@ -268,33 +272,22 @@ function buildSecondPage(doc: PDFKit.PDFDocument, analysis: OpportunityAnalysis)
     y += 10;
   }
 
-  const sourceStatuses = analysis.meta.connectors || [];
-  y = sectionTitle(doc, 'Source coverage', y);
-  const statusWidth = (contentWidth - 24) / 4;
-  sourceStatuses.slice(0, 4).forEach((connector, index) => {
-    const x = margin + index * (statusWidth + 8);
-    doc.roundedRect(x, y, statusWidth, 48, 6).fill(colors.panel);
-    label(doc, connector.name, x + 9, y + 9, statusWidth - 18);
-    doc.font(boldFont).fontSize(8.5).fillColor(colors.ink).text(clean(connector.status.replaceAll('_', ' ')), x + 9, y + 26, { width: statusWidth - 18, lineBreak: false, ellipsis: true });
-  });
-  y += 67;
-
-  y = sectionTitle(doc, 'Assumptions and constraints', y);
-  y = bulletList(doc, [...position.assumptions, ...position.constraints], margin, y, contentWidth, 5) + 7;
-
-  y = sectionTitle(doc, 'Critical gaps and sensitivities', y);
-  const gaps = [...new Set([
-    ...position.sensitivities,
-    ...analysis.gaps.filter((gap) => gap.priority === 'HIGH').map((gap) => `${gap.question} ${gap.impact}`),
-  ])];
-  bulletList(doc, gaps, margin, y, contentWidth, 5);
-
-  doc.font(regularFont).fontSize(7.5).fillColor(colors.muted).text(
-    `Method: ${clean(position.methodLabel)} | Engine: ${clean(position.formulaVersion)} | Status: ${clean(position.rangeStatus.replaceAll('_', ' '))}`,
-    margin,
-    704,
-    { width: contentWidth, align: 'left', lineBreak: false, ellipsis: true },
-  );
+  const paragraph = (text: string, heading = false) => {
+    doc.font(heading ? boldFont : regularFont).fontSize(heading ? 10 : 8.5);
+    const value = clean(text);
+    const height = doc.heightOfString(value, { width: contentWidth, lineGap: 3 });
+    if (y + height + (heading ? 40 : 0) > 690) { doc.addPage(); y = margin; }
+    doc.fillColor(heading ? colors.navy : colors.ink).text(value, margin, y, { width: contentWidth, lineGap: 3 });
+    y += height + 10;
+  };
+  paragraph('Source coverage', true);
+  (analysis.meta.connectors || []).forEach(c => paragraph(`${c.name}: ${c.status.replaceAll('_', ' ')}. ${c.recordsFound} evidence records. ${c.message || ''}`));
+  paragraph('Assumptions and constraints', true);
+  [...position.assumptions, ...position.constraints].forEach(value => paragraph(value));
+  paragraph('Critical gaps and assessment issues', true);
+  const issues = assessmentIssues(analysis);
+  (issues.length ? issues : ['No critical gaps were recorded in this assessment.']).forEach(value => paragraph(value));
+  paragraph(`Method: ${position.methodLabel} | Engine: ${position.formulaVersion} | Status: ${position.rangeStatus.replaceAll('_', ' ')}`);
 }
 
 function addFooters(doc: PDFKit.PDFDocument) {

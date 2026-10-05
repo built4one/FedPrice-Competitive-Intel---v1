@@ -1,124 +1,95 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { AdapterResult } from './types';
 import type { EvidenceItem, LaborSignal } from '../types';
 import { ConnectorError, fetchJsonWithRetry } from './http';
+import { laborFamily, laborRoleMatch, requiresClearance } from '../domain/laborMatching';
 
 const sourceSchema = z.object({
-  id: z.union([z.string(), z.number()]),
-  labor_category: z.string(),
-  current_price: z.union([z.number(), z.string()]),
-  next_year_price: z.union([z.number(), z.string()]).nullish(),
-  vendor_name: z.string().nullish(),
-  schedule: z.string().nullish(),
-  education_level: z.string().nullish(),
-  min_years_experience: z.union([z.number(), z.string()]).nullish(),
-  worksite: z.string().nullish(),
-  security_clearance: z.boolean().nullish(),
-  idv_piid: z.string().nullish(),
+  id: z.union([z.string(), z.number()]), labor_category: z.string(), current_price: z.union([z.number(), z.string()]),
+  vendor_name: z.string().nullish(), idv_piid: z.string().nullish(), worksite: z.string().nullish(),
+  security_clearance: z.union([z.boolean(), z.string()]).nullish(),
+  min_years_experience: z.union([z.number(), z.string()]).nullish(), education_level: z.string().nullish(),
+  contract_end: z.string().nullish(),
 }).passthrough();
-
-const responseSchema = z.object({
-  hits: z.object({
-    hits: z.array(z.object({ _source: sourceSchema }).passthrough()).default([]),
-  }).passthrough(),
-}).passthrough();
-
-const usefulTokens = (value: string) => value.toLowerCase().split(/[^a-z0-9]+/).filter((token) => token.length > 2 && ![
-  'the', 'and', 'for', 'senior', 'junior', 'level', 'personnel', 'key', 'lead', 'specialist',
-].includes(token));
-
-const canonicalRoles: Array<[RegExp, string]> = [
-  [/data scientist/i, 'Data Scientist'],
-  [/software|application developer|full.?stack/i, 'Software Engineer'],
-  [/cloud/i, 'Cloud Engineer'],
-  [/cyber|information security|security engineer/i, 'Cybersecurity Engineer'],
-  [/systems? engineer/i, 'Systems Engineer'],
-  [/program manager|project manager/i, 'Program Manager'],
-  [/business analyst/i, 'Business Analyst'],
-  [/subject matter expert|\bSME\b/i, 'Subject Matter Expert'],
-  [/data engineer/i, 'Data Engineer'],
-  [/solution architect|technical architect/i, 'Solution Architect'],
-];
-
-function normalizeLaborCategory(value: string) {
-  return canonicalRoles.find(([pattern]) => pattern.test(value))?.[1];
-}
+const responseSchema = z.object({ hits: z.object({
+  total: z.union([z.number(), z.object({ value: z.number(), relation: z.string().optional() })]).optional(),
+  hits: z.array(z.object({ _source: sourceSchema }).passthrough()).default([]),
+}).passthrough() }).passthrough();
+const endpoint = 'https://api.gsa.gov/acquisition/calc/v3/api/ceilingrates/';
+const pageSize = 1000;
+const cleared = (value: unknown) => value === true || /^(yes|true)$/i.test(String(value));
+const quantile = (values: number[], p: number) => {
+  const index = (values.length - 1) * p;
+  const low = Math.floor(index), high = Math.ceil(index);
+  return values[low] + (values[high] - values[low]) * (index - low);
+};
 
 export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<AdapterResult> {
   const retrievedAt = new Date().toISOString();
-  const categories = [...new Set((laborSignals || [])
-    .map((item) => item.title?.trim())
-    .filter((title): title is string => Boolean(title))
-    .map(normalizeLaborCategory)
-    .filter((title): title is string => Boolean(title)))]
-    .slice(0, 4);
-  const querySummary = categories.length ? `labor categories: ${categories.join(', ')}` : 'No sufficiently specific labor category extracted';
-  if (!categories.length) {
-    return {
-      name: 'GSA CALC+', success: true, status: 'ZERO_RESULTS', recordsFound: 0, evidence: [],
-      message: 'No labor category was available to search.', durationMs: 0, attempts: 0, retrievedAt, querySummary,
-    };
+  const signals = [...new Map((laborSignals || []).filter(s => s.title?.trim()).map(s => [s.title.toLowerCase(), s])).values()].slice(0, 30);
+  const queries = [...new Map(signals.map(s => {
+    const category = laborFamily(s.title), clearance = requiresClearance(s.clearance);
+    return [`${category}|${clearance}`, { category, clearance }];
+  })).values()];
+  const querySummary = queries.map(q => `${q.category}${q.clearance ? ' (cleared)' : ''}`).join(', ');
+  if (!queries.length) return { name: 'GSA CALC+', success: true, status: 'ZERO_RESULTS', recordsFound: 0, evidence: [], message: 'No specific labor categories were extracted.', durationMs: 0, attempts: 0, retrievedAt, querySummary };
+  const started = Date.now();
+  const results = [];
+  for (let offset = 0; offset < queries.length; offset += 5) {
+    results.push(...await Promise.allSettled(queries.slice(offset, offset + 5).map(async query => {
+      const urlFor = (page: number) => `${endpoint}?keyword=${encodeURIComponent(query.category)}&page=${page}&page_size=${pageSize}&ordering=vendor_name&sort=asc${query.clearance ? '&filter=security_clearance:yes' : ''}`;
+      const first = await fetchJsonWithRetry<unknown>(urlFor(1), { headers: { Accept: 'application/json' } }, { timeoutMs: 12_000, maxAttempts: 2 });
+      const parsed = responseSchema.parse(first.data);
+      const total = typeof parsed.hits.total === 'number' ? parsed.hits.total : parsed.hits.total?.value ?? parsed.hits.hits.length;
+      const pageCount = Math.ceil(total / pageSize);
+      // Large searches sample beginning, middle and end by vendor, never the cheapest first records.
+      const pages = pageCount <= 3 ? Array.from({length: Math.max(0,pageCount - 1)}, (_,i) => i + 2)
+        : [...new Set([Math.ceil(pageCount / 2), pageCount])];
+      const rest = await Promise.allSettled(pages.map(async page => {
+        const result = await fetchJsonWithRetry<unknown>(urlFor(page), {}, { timeoutMs: 12_000, maxAttempts: 1 });
+        return responseSchema.parse(result.data).hits.hits;
+      }));
+      const hits = [...parsed.hits.hits, ...rest.flatMap(r => r.status === 'fulfilled' ? r.value : [])];
+      const records = [...new Map(hits.map(h => {
+        const s = h._source;
+        const key = [s.vendor_name,s.idv_piid,s.labor_category,s.min_years_experience,s.education_level,s.worksite,s.security_clearance,s.current_price].join('|');
+        return [key, s];
+      })).values()].filter(s => Number.isFinite(Number(s.current_price)) && Number(s.current_price) > 0
+        && (!query.clearance || cleared(s.security_clearance))
+        && (!s.contract_end || Date.parse(s.contract_end) >= Date.parse(retrievedAt.slice(0,10))));
+      return { ...query, records, complete: hits.length >= total && !(typeof parsed.hits.total === 'object' && parsed.hits.total.relation === 'gte'), url: urlFor(1), total };
+    })));
   }
-
-  try {
-    const settled = await Promise.allSettled(categories.map(async (category) => {
-      const url = `https://api.gsa.gov/acquisition/calc/v3/api/ceilingrates/?keyword=${encodeURIComponent(category)}`;
-      const response = await fetchJsonWithRetry<unknown>(url, { headers: { Accept: 'application/json' } }, { timeoutMs: 12_000, maxAttempts: 2 });
-      const parsed = responseSchema.parse(response.data);
-      const tokens = usefulTokens(category);
-      const rates = parsed.hits.hits
-        .map((hit) => hit._source)
-        .filter((rate) => {
-          const normalized = rate.labor_category.toLowerCase();
-          const matches = tokens.filter((token) => normalized.includes(token)).length;
-          return tokens.length > 0 && matches / tokens.length >= 0.5;
-        })
-        .slice(0, 3);
-      return { response, rates };
-    }));
-    const successful = settled.flatMap((result) => result.status === 'fulfilled' ? [result.value] : []);
-    if (!successful.length) {
-      const firstFailure = settled.find((result) => result.status === 'rejected');
-      throw firstFailure && firstFailure.status === 'rejected' ? firstFailure.reason : new Error('GSA CALC+ searches failed.');
-    }
-    const comparable = successful.flatMap((result) => result.rates);
-
-    const evidence: EvidenceItem[] = comparable.map((rate) => {
-      const price = Number(rate.current_price);
-      return {
-        id: `GSA-${rate.id}`,
-        type: 'EXTERNAL_SOURCE', sourceLabel: 'GSA CALC+ API', sourceRecordId: String(rate.id),
-        claim: `${rate.labor_category} has a current GSA ceiling rate of ${price.toLocaleString('en-US', { style: 'currency', currency: 'USD' })}/hour${rate.vendor_name ? ` from ${rate.vendor_name}` : ''}${rate.schedule ? ` on ${rate.schedule}` : ''}.`,
-        confidence: 96,
-        numeric: Number.isFinite(price) && price > 0 ? {
-          originalValue: price,
-          valueType: 'HOURLY_CEILING_RATE' as const,
-          currency: 'USD' as const,
-          units: 'USD_PER_HOUR' as const,
-          scopeText: rate.labor_category,
-          contractType: rate.schedule || undefined,
-          technologySecurityLocation: [
-            rate.worksite,
-            rate.security_clearance ? 'security clearance required' : undefined,
-            rate.education_level,
-          ].filter(Boolean).join(' '),
-        } : undefined,
-        retrievedAt,
-        url: 'https://buy.gsa.gov/pricing/qr/mas?page=1&page_size=20',
-      };
+  const successful = results.flatMap(r => r.status === 'fulfilled' ? [r.value] : []);
+  const evidence: EvidenceItem[] = [];
+  const messages: string[] = [];
+  for (const signal of signals) {
+    const result = successful.find(q => q.category === laborFamily(signal.title) && q.clearance === requiresClearance(signal.clearance));
+    if (!result) { messages.push(`${signal.title}: rate search unavailable.`); continue; }
+    const matches = result.records.filter(r => laborRoleMatch(signal.title, r.labor_category) >= 0.8);
+    if (!matches.length) { messages.push(`${signal.title}: no rate matched the role and clearance filter.`); continue; }
+    const rates = matches.map(r => Number(r.current_price)).sort((a,b) => a-b);
+    const value = quantile(rates, 0.5);
+    const id = createHash('sha256').update(`${signal.title}|${result.clearance}`).digest('hex').slice(0,12);
+    evidence.push({
+      id: `GSA-SAMPLE-${id}`, type: 'EXTERNAL_SOURCE', sourceLabel: 'GSA CALC+ API', sourceRecordId: id,
+      claim: `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`,
+      excerpt: `Search role: ${result.category}. Matched categories: ${[...new Set(matches.map(r => r.labor_category))].slice(0,16).join('; ')}. Record examples: ${matches.slice(0,8).map(r => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour`).join('; ')}`,
+      confidence: result.complete ? 90 : 70, retrievedAt, url: result.url,
+      numeric: { originalValue: value, valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', currency: 'USD',
+        scopeText: signal.title, sourceDate: retrievedAt.slice(0,10), matchedLaborCategory: signal.title,
+        lowerRate: quantile(rates,0.25), upperRate: quantile(rates,0.75), rateSampleSize: matches.length,
+        rateSampleComplete: result.complete, clearanceRequired: result.clearance, laborMatchScore: 0.85,
+        technologySecurityLocation: result.clearance ? 'Clearance required; exact level and worksite must be validated.' : 'Clearance and worksite not constrained.',
+      },
     });
-    return {
-      name: 'GSA CALC+', success: true, status: evidence.length ? 'SUCCESS' : 'ZERO_RESULTS', recordsFound: evidence.length, evidence,
-      message: evidence.length ? undefined : 'GSA responded successfully but returned no sufficiently comparable labor categories.',
-      durationMs: Math.max(0, ...successful.map((result) => result.response.durationMs)),
-      attempts: successful.reduce((sum, result) => sum + result.response.attempts, 0), retrievedAt, querySummary,
-    };
-  } catch (error) {
-    const failure = error instanceof ConnectorError ? error : undefined;
-    return {
-      name: 'GSA CALC+', success: false, status: failure?.status || 'ERROR', recordsFound: 0, evidence: [],
-      message: error instanceof z.ZodError ? 'GSA returned an unexpected response shape.' : (error instanceof Error ? error.message : 'GSA request failed.'),
-      durationMs: failure?.durationMs || 0, attempts: failure?.attempts || 1, retrievedAt, querySummary,
-    };
+    if (!result.complete) messages.push(`${signal.title}: sampled ${matches.length} matching records from ${result.total} search results.`);
   }
+  if (signals.length < laborSignals.length) messages.push('The first 30 distinct labor roles were searched; remaining roles need review.');
+  const failure = results.find(r => r.status === 'rejected');
+  return { name: 'GSA CALC+', success: successful.length > 0,
+    status: evidence.length ? 'SUCCESS' : successful.length ? 'ZERO_RESULTS' : failure?.status === 'rejected' && failure.reason instanceof ConnectorError ? failure.reason.status : 'ERROR',
+    recordsFound: evidence.length, evidence, message: messages.join(' ') || (evidence.length ? 'Role-matched public ceiling-rate samples. These are not transaction prices or competitor bids.' : 'No comparable rate evidence returned.'),
+    durationMs: Date.now() - started, attempts: queries.length, retrievedAt, querySummary };
 }

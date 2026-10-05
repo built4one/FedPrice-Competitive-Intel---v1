@@ -45,7 +45,8 @@ export interface RequirementSignal {
   section?: string;
   confidence: number;
 }
-export interface LaborSignal { title: string; quantity?: number; annualHours?: number; location?: string; clearance?: string; section?: string; }
+export interface LaborPeriod { label: string; startMonth: number; months: number; quantity: number; annualHours?: number; section?: string; }
+export interface LaborSignal { title: string; quantity?: number; annualHours?: number; location?: string; clearance?: string; section?: string; periods?: LaborPeriod[]; }
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
 
 export interface NumericEvidence {
@@ -74,6 +75,13 @@ export interface NumericEvidence {
   valueBasis?: NumericValueBasis;
   rangeBound?: 'LOW' | 'HIGH';
   rangeId?: string;
+  matchedLaborCategory?: string;
+  lowerRate?: number;
+  upperRate?: number;
+  rateSampleSize?: number;
+  rateSampleComplete?: boolean;
+  clearanceRequired?: boolean;
+  laborMatchScore?: number;
 }
 
 export interface EvidenceItem {
@@ -105,6 +113,7 @@ export interface DealProfile {
   contractType: string;
   dueDate: string;
   periodOfPerformance: string;
+  performanceMonths?: number;
   naics: string;
   psc?: string;
   awardStructure: string;
@@ -113,6 +122,8 @@ export interface DealProfile {
   facts: DealFact[];
   requirements: RequirementSignal[];
   laborSignals: LaborSignal[];
+  laborModelComplete?: boolean;
+  laborModelSource?: string;
   pricingSignals: PricingSignal[];
 }
 
@@ -369,4 +380,3 @@ export interface AiAnalysisDraft {
 }
 
 export type Opportunity = OpportunityAnalysis;
-

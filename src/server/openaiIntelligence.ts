@@ -6,7 +6,7 @@ export interface IntelligenceFile {
   buffer: Buffer;
 }
 
-type LegacySchema = {
+export type LegacySchema = {
   type: string;
   properties?: Record<string, LegacySchema>;
   items?: LegacySchema;
@@ -100,10 +100,12 @@ export class OpenAIIntelligence {
     return this.parse<T>(result);
   }
 
-  async interpret<T>(prompt: string): Promise<T> {
+  async interpret<T>(prompt: string, schema?: LegacySchema): Promise<T> {
     const result = await this.respond({
       input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
-      text: { format: { type: 'json_object' } },
+      text: { format: schema
+        ? { type: 'json_schema', name: 'validated_interpretation', strict: true, schema: strictSchema(schema) }
+        : { type: 'json_object' } },
     });
     return this.parse<T>(result);
   }
@@ -136,4 +138,3 @@ export class OpenAIIntelligence {
     };
   }
 }
-

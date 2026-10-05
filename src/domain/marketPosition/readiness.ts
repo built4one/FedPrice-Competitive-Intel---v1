@@ -20,7 +20,7 @@ export function calculateEvidenceReadiness(
   const effectiveQuantity = Math.min(1, effectiveSampleSize(anchors) / 3);
   const sourceDiversity = Math.min(1, new Set(anchors.map((anchor) => anchor.sourceLabel)).size / 3);
   const consistency = anchors.length ? Math.max(0, 1 - dispersion / 0.5) : 0;
-  const highGaps = gaps.filter((gap) => gap.priority === 'HIGH').length;
+  const highGaps = gaps.filter((gap) => String(gap.priority).toUpperCase() === 'HIGH').length;
   const gapResolution = anchors.length === 0 && gaps.length === 0 ? 0 : 1 - Math.min(1, highGaps / 4);
   const comparability = weightedAverage(anchors, 'comparabilityScore');
   const evidenceQuality = weightedAverage(anchors, 'evidenceQuality');

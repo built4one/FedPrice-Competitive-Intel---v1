@@ -74,6 +74,24 @@ test('failed provider or invalid output preserves an unavailable strategy, never
   assert.ok(analysis.marketPosition.expected);
 });
 
+test('strategy repairs a validation failure once without accepting unsupported claims', async () => {
+  const {analysis,strategy} = ptwStrategyFixture();
+  let attempts = 0;
+  const result = await synthesizePtwStrategy(analysis, {interpret: async <T>(prompt: string, schema?: unknown) => {
+    attempts++;
+    assert.ok(schema);
+    if (attempts === 1) {
+      const invalid = structuredClone(strategy);
+      invalid.recommendation.rationale.evidenceIds = ['UNKNOWN-ID'];
+      return invalid as T;
+    }
+    assert.match(prompt,/unknown evidence ID/);
+    return strategy as T;
+  }});
+  assert.equal(attempts,2);
+  assert.equal(result.status,'DRAFT');
+});
+
 test('malformed saved strategy and forged approval cannot enter the decision brief', () => {
   const {analysis,strategy} = ptwStrategyFixture();
   for (const value of [

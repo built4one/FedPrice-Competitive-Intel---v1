@@ -6,6 +6,7 @@ import type {
   RecommendationDriver,
 } from '../../types';
 import { calculateDeterministicScenarios } from './scenarioEngine';
+import { normalizeGaps } from '../analysisQuality';
 import { MARKET_POSITION_ENGINE_VERSION } from './engineConfig';
 
 const currencyClaim = /(?:\$\s?\d[\d,.]*(?:\s?(?:million|billion|m|b))?|\bUSD\s+\d[\d,.]*|\b\d+(?:\.\d+)?\s*(?:million|billion)\b|\b\d{1,3}(?:,\d{3}){2,}\b)/gi;
@@ -126,6 +127,7 @@ export function createLegacyPosition(position: Partial<MarketPosition> = {}): Ma
 }
 
 export function enforceAuthoritativeAnalysis(analysis: OpportunityAnalysis): OpportunityAnalysis {
+  analysis = { ...analysis, gaps: normalizeGaps(analysis.gaps) };
   const analyzedAt = analysis.meta?.analyzedAt;
   if (!analyzedAt || Number.isNaN(Date.parse(analyzedAt))) {
     throw new Error('Analysis metadata must include a valid analyzedAt date.');

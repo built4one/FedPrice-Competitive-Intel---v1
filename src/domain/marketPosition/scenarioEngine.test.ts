@@ -255,6 +255,31 @@ test('does not manufacture a bottom-up total when staffing quantity is missing',
   assert.equal(result.expected, null);
 });
 
+test('staffing ramp and half-year extension use the quantities for each period', () => {
+  const model = draft([evidence('RATE',100,{valueType:'HOURLY_CEILING_RATE',units:'USD_PER_HOUR',periodMonths:undefined,scopeText:'Cloud Engineer',opportunitySpecific:false,matchedLaborCategory:'Cloud Engineer',lowerRate:80,upperRate:120})]);
+  model.deal = {...deal,performanceMonths:30,laborModelComplete:true,laborSignals:[{title:'Cloud Engineer',annualHours:2000,periods:[
+    {label:'Year I',startMonth:0,months:12,quantity:10,section:'I!A1'},
+    {label:'Year II',startMonth:12,months:12,quantity:20,section:'I!A2'},
+    {label:'Extension',startMonth:24,months:6,quantity:20,section:'I!A3'},
+  ]}]};
+  const result = calculateDeterministicScenarios(model,{asOfDate});
+  assert.equal(result.expected,8_000_000);
+  assert.equal(result.aggressive,6_400_000);
+  assert.equal(result.conservative,9_600_000);
+  assert.match(result.verifiedInputs.join(' '),/Extension/);
+  model.deal.laborSignals[0].periods![1].startMonth=11;
+  assert.equal(calculateDeterministicScenarios(model,{asOfDate}).expected,null);
+});
+
+test('unmatched clearance and explicitly incomplete staffing cannot produce a labor total', () => {
+  const model = draft([evidence('RATE',100,{valueType:'HOURLY_CEILING_RATE',units:'USD_PER_HOUR',scopeText:'Cloud Engineer',opportunitySpecific:false})]);
+  model.deal = {...deal,laborSignals:[{title:'Cloud Engineer',quantity:10,annualHours:2000,clearance:'Top Secret'}]};
+  assert.equal(calculateDeterministicScenarios(model,{asOfDate}).expected,null);
+  model.evidence[0].numeric!.clearanceRequired=true;
+  model.deal.laborModelComplete=false;
+  assert.equal(calculateDeterministicScenarios(model,{asOfDate}).expected,null);
+});
+
 test('excludes order limits and past-performance thresholds from Market Position', () => {
   const result = calculateDeterministicScenarios(draft([
     evidence('ORDER', 25_000_000, { valueType: 'CONTRACT_CEILING', opportunitySpecific: true, valueBasis: 'ORDER_LIMIT' }, { type: 'SOLICITATION_FACT' }),

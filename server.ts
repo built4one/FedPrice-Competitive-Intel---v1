@@ -20,6 +20,8 @@ import type {
   OpportunityAnalysis,
 } from './src/types.js';
 import { querySamGov, resolveSamOpportunityPackage, type SamOpportunityMetadata, type SamRetrievedFile } from './src/adapters/sam.js';
+import { assessmentIssues, normalizeGaps } from './src/domain/analysisQuality';
+import { laborCoverage, laborCoverageGaps } from './src/domain/laborCoverage';
 import { queryUSASpending } from './src/adapters/usaspending.js';
 import { queryGsaCalc } from './src/adapters/gsa.js';
 import { queryBls } from './src/adapters/bls.js';
@@ -125,6 +127,9 @@ const baseSchema = {
         contractType: { type: 'STRING' },
         dueDate: { type: 'STRING' },
         periodOfPerformance: { type: 'STRING' },
+        performanceMonths: { type: 'NUMBER' },
+        laborModelComplete: { type: 'BOOLEAN' },
+        laborModelSource: { type: 'STRING' },
         naics: { type: 'STRING' },
         psc: { type: 'STRING' },
         awardStructure: { type: 'STRING' },
@@ -158,8 +163,11 @@ const baseSchema = {
             properties: {
               title: { type: 'STRING' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' },
               location: { type: 'STRING' }, clearance: { type: 'STRING' }, section: { type: 'STRING' },
+              periods: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
+                label: { type: 'STRING' }, startMonth: { type: 'NUMBER' }, months: { type: 'NUMBER' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' }, section: { type: 'STRING' },
+              }, required: ['label', 'startMonth', 'months', 'quantity', 'section'] } },
             },
-            required: ['title'],
+            required: ['title', 'section'],
           },
         },
         pricingSignals: {
@@ -176,7 +184,7 @@ const baseSchema = {
       required: [
         'documentStatus', 'eligibilityReason', 'eligibilitySource', 'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
         'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements',
-        'laborSignals', 'pricingSignals',
+        'laborSignals', 'pricingSignals', 'laborModelComplete', 'laborModelSource',
       ],
     },
     marketAssessment: {
@@ -229,7 +237,7 @@ const baseSchema = {
       items: {
         type: 'OBJECT',
         properties: {
-          question: { type: 'STRING' }, impact: { type: 'STRING' }, priority: { type: 'STRING' },
+          question: { type: 'STRING' }, impact: { type: 'STRING' }, priority: { type: 'STRING', enum: ['HIGH', 'MEDIUM', 'LOW'] },
         },
         required: ['question', 'impact', 'priority'],
       },
@@ -288,6 +296,8 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
+- For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), annualHours only when documented, and sheet/cell locator. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
+- Set performanceMonths to the total evaluated labor duration supported by the schedule. Set laborModelComplete true only when every priced labor row and every evaluated period is accounted for with locators. Otherwise false, with the specific missing rows/periods in laborModelSource and gaps. A blank offered-rate column is normal in an unpriced solicitation: source external rate benchmarks; do not demand that the analyst supply a completed bid to perform market research.
 - Preserve predecessor contract numbers, incumbent names, program names, acronyms, task-order identifiers, and vehicle identifiers as deal facts so official award searches can use them.
 - Do not create numeric evidence for dates, page numbers, proposal-validity days, or periods of performance. Keep those as deal facts.
 - SOLICITATION_FACT requires a document citation. Label deductions ANALYST_INFERENCE.
@@ -375,7 +385,7 @@ function mergeEvidence(existing: EvidenceItem[] = [], incoming: EvidenceItem[] =
   return [...merged.values()];
 }
 
-function samMetadataFile(metadata: SamOpportunityMetadata, naicsOverride?: string): AnalysisFile {
+export function samMetadataFile(metadata: SamOpportunityMetadata, naicsOverride?: string): AnalysisFile {
   const content = [
     'OFFICIAL SAM.GOV OPPORTUNITY METADATA',
     `Notice ID: ${metadata.noticeId || ''}`,
@@ -428,7 +438,7 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
   return { originalname: `${file.originalname}.txt`, mimetype: 'text/plain', size: buffer.length, buffer };
 }
 
-async function normalizeAnalysisFiles(files: AnalysisFile[]) {
+export async function normalizeAnalysisFiles(files: AnalysisFile[]) {
   return Promise.all(files.map(async file => {
     if (file.originalname.toLowerCase().endsWith('.docx')) {
       const result = await mammoth.extractRawText({buffer:file.buffer});
@@ -495,12 +505,12 @@ ${JSON.stringify(official)}`);
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 
-async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
+export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
   const client = new OpenAIIntelligence(undefined, undefined, fetch, 110_000);
   const draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);
-  draft.gaps = draft.gaps || [];
+  draft.gaps = normalizeGaps(draft.gaps);
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
   const warnings: string[] = assessEligibility(draft.deal);
@@ -592,6 +602,7 @@ Do not infer company-specific costs, staffing, or bids.`)
     }
   }
 
+  draft.gaps = normalizeGaps([...draft.gaps, ...laborCoverageGaps(draft.deal, draft.evidence)]);
   const analyzedAt = new Date().toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
   const { marketAssessment: _marketAssessment, ...analysisFields } = draft;
@@ -609,6 +620,7 @@ app.get('/api/health', (_req, res) => res.json({
   aiConfigured: openAIConfigured(),
   privateAccessConfigured: authConfigured(),
   storageConfigured: runStore.durable,
+  samConfigured: Boolean(process.env.SAM_API_KEY),
   model,
   calculationEngine: MARKET_POSITION_ENGINE_VERSION,
 }));
@@ -856,7 +868,21 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Evidence Readiness', value: `${analysis.marketPosition.evidenceReadiness.score}/100` },
       { field: 'Formula Version', value: analysis.marketPosition.formulaVersion },
       { field: 'Calculation Basis', value: analysis.marketPosition.methodLabel },
+      { field: 'Strategy Status', value: analysis.ptwStrategy?.status || 'NOT_GENERATED' },
+      { field: 'Strategy limitation', value: analysis.ptwStrategy?.status === 'DRAFT' ? 'Draft — analyst review required.' : analysis.ptwStrategy?.reason || 'Strategic assessment has not been generated.' },
     ]);
+
+    const diagnostics = workbook.addWorksheet('Assessment Issues');
+    diagnostics.columns = [{ header: 'Issue / action', key: 'issue', width: 110 }];
+    diagnostics.addRows(assessmentIssues(analysis).map(issue => ({ issue })));
+    (analysis.meta.connectors || []).forEach(c => diagnostics.addRow({ issue: `${c.name}: ${c.status}; ${c.recordsFound} evidence records. ${c.message || ''}` }));
+
+    const labor = workbook.addWorksheet('Labor Benchmarks');
+    labor.columns = [{header:'Labor category',key:'title',width:40},{header:'Period',key:'period',width:25},{header:'FTE',key:'quantity',width:12},{header:'Annual hours',key:'hours',width:18},{header:'Months',key:'months',width:12},{header:'Lower rate / hr',key:'low',width:20},{header:'Median rate / hr',key:'median',width:20},{header:'Upper rate / hr',key:'high',width:20},{header:'Rate records',key:'sample',width:15},{header:'Evidence IDs',key:'ids',width:32},{header:'Source / limitation',key:'source',width:100}];
+    laborCoverage(analysis.deal,analysis.evidence).forEach(row => {
+      const periods = row.signal.periods?.length ? row.signal.periods : [{label:'Period not itemized',quantity:row.signal.quantity,annualHours:row.signal.annualHours,months:analysis.deal.performanceMonths,section:row.signal.section}];
+      periods.forEach(period => labor.addRow({title:row.signal.title,period:period.label,quantity:period.quantity,hours:period.annualHours || row.signal.annualHours || '2080 planning assumption',months:period.months,low:row.lowerRate,median:row.medianRate,high:row.upperRate,sample:row.sampleSize,ids:row.evidenceIds.join(', '),source:`${period.section || row.signal.section || ''}. ${row.limitation}`}));
+    });
 
     const priced = workbook.addWorksheet('Conditional Offer Scenarios');
     priced.columns = [{header:'CLIN / period',key:'label',width:32},{header:'Evaluated quantity',key:'quantity',width:22},{header:'Lower unit price',key:'lowUnitPrice',width:22},{header:'Target unit price',key:'targetUnitPrice',width:22},{header:'Upper unit price',key:'highUnitPrice',width:22},{header:'Sources / assumptions',key:'source',width:90}];
@@ -1017,4 +1043,3 @@ export default app;
 if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== 'test') {
   start();
 }
-

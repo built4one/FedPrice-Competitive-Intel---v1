@@ -215,3 +215,22 @@ test('GSA CALC+ reads the official Elasticsearch response shape and filters rele
     assert.match(result.evidence[0].claim, /ceiling rate/);
   });
 });
+
+test('GSA rate samples use all matching records, deduplicate contract rows, and reject uncleared rates', async () => {
+  await withMockFetch(async url => {
+    const address = String(url);
+    assert.match(address,/page=1&page_size=1000/);
+    assert.match(address,/ordering=vendor_name/);
+    assert.match(address,/security_clearance:yes/);
+    const make = (id:number,price:number,clearance=true) => ({_source:{id,labor_category:'Cloud Engineer',current_price:price,vendor_name:`V${id}`,idv_piid:`C${id}`,security_clearance:clearance}});
+    const rows=[make(1,20,false),make(2,100),make(3,200),make(4,300),make(5,400),{_source:{...make(3,200)._source,id:99}}];
+    return new Response(JSON.stringify({hits:{total:{value:rows.length,relation:'eq'},hits:rows}}),{status:200});
+  },async()=>{
+    const result=await queryGsaCalc([{title:'Cloud Engineer',clearance:'Top Secret'}]);
+    assert.equal(result.recordsFound,1);
+    assert.equal(result.evidence[0].numeric?.originalValue,250);
+    assert.equal(result.evidence[0].numeric?.rateSampleSize,4);
+    assert.equal(result.evidence[0].numeric?.lowerRate,175);
+    assert.equal(result.evidence[0].numeric?.upperRate,325);
+  });
+});

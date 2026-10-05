@@ -6,6 +6,7 @@ import type {
 } from '../../types';
 import { COMPARABILITY_WEIGHTS } from './engineConfig';
 import { extractPeriodMonths } from './valueNormalization';
+import { laborRoleMatch, requiresClearance } from '../laborMatching';
 
 const STOP_WORDS = new Set(['and', 'the', 'for', 'with', 'from', 'this', 'that', 'services', 'service', 'support', 'contract']);
 
@@ -100,6 +101,17 @@ export function scoreComparability(
       naicsPsc: 1, laborIntensity: 1, recency: 1, technologySecurityLocation: 1, coverage: 1,
     };
     return { score: 1, breakdown };
+  }
+
+  if (numeric.valueType === 'HOURLY_CEILING_RATE') {
+    const matches = deal.laborSignals.filter(signal => !numeric.matchedLaborCategory || numeric.matchedLaborCategory === signal.title);
+    const scope = Math.max(0, ...matches.map(signal => laborRoleMatch(signal.title, numeric.scopeText || evidence.claim)));
+    const security = matches.some(signal => requiresClearance(signal.clearance)) ? (numeric.clearanceRequired ? 0.7 : 0) : null;
+    const recency = recencyScore(numeric.sourceDate, asOfDate);
+    const relevant = [[0.7,scope],[0.2,security],[0.1,recency]].filter((pair): pair is [number,number] => pair[1] !== null);
+    const score = relevant.reduce((sum,[weight,value])=>sum+weight*value,0)/relevant.reduce((sum,[weight])=>sum+weight,0);
+    return { score, breakdown: { scope, scale:null, acquisition:null, customer:null, period:null, naicsPsc:null,
+      laborIntensity:null, recency, technologySecurityLocation:security, coverage:relevant.reduce((sum,[weight])=>sum+weight,0) } };
   }
 
   const dealTechContext = [

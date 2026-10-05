@@ -363,6 +363,13 @@ async function retrieveDescription(opportunity: SamOpportunity, apiKey: string, 
   }
 }
 
+export async function lookupSamOpportunity(referenceValue: string): Promise<SamOpportunityMetadata> {
+  if (!process.env.SAM_API_KEY) throw new Error('SAM_API_KEY is not configured for this deployment.');
+  const found = await findOpportunity(referenceValue, process.env.SAM_API_KEY);
+  if (!found.opportunity) throw new Error('No exact SAM.gov opportunity matched that solicitation number or URL.');
+  return metadataFromOpportunity(found.opportunity);
+}
+
 export async function resolveSamOpportunityPackage(referenceValue: string, uploadedFiles: string[] = []): Promise<SamOpportunityPackage> {
   const apiKey = process.env.SAM_API_KEY;
   if (!apiKey) throw new Error('SAM_API_KEY is not configured for this deployment.');
@@ -381,12 +388,18 @@ export async function resolveSamOpportunityPackage(referenceValue: string, uploa
   }
 
   const links = (found.opportunity.resourceLinks || []).slice(0, maxAutoFiles);
-  for (const link of links) {
-    const retrieved = await downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes);
-    documents.push(retrieved.document);
-    if (retrieved.file) {
-      files.push(retrieved.file);
-      usedBytes += retrieved.file.size;
+  for (let offset = 0; offset < links.length; offset += 4) {
+    const batch = await Promise.all(links.slice(offset, offset + 4).map(link => downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes)));
+    for (const retrieved of batch) {
+      if (retrieved.file && usedBytes + retrieved.file.size > maxAutoPackageBytes) {
+        documents.push({ ...retrieved.document, retrievalStatus: 'TOO_LARGE', message: 'Document exceeds the remaining automatic package budget.' });
+        continue;
+      }
+      documents.push(retrieved.document);
+      if (retrieved.file) {
+        files.push(retrieved.file);
+        usedBytes += retrieved.file.size;
+      }
     }
   }
   if ((found.opportunity.resourceLinks || []).length > links.length) {

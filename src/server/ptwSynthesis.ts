@@ -3,8 +3,9 @@ import { z } from 'zod';
 import type { OpportunityAnalysis } from '../types';
 import { strategySchema, strategyStatements, type PtwStrategy, type PtwStrategyResult } from '../domain/ptw/strategy';
 import { OpenAIIntelligence } from './openaiIntelligence';
+import { strategyResponseSchema } from './strategyResponseSchema';
 
-export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.1.0';
+export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.2.0';
 type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta'>;
 
 function sourceInput(analysis: StrategyInput) {
@@ -81,9 +82,12 @@ export function preserveCurrentStrategy(analysis: StrategyInput, value?: unknown
 
 export async function synthesizePtwStrategy(
   analysis: StrategyInput,
-  client: Pick<OpenAIIntelligence, 'interpret'> = new OpenAIIntelligence(undefined, undefined, fetch, 45_000),
+  client: Pick<OpenAIIntelligence, 'interpret'> = new OpenAIIntelligence(undefined, undefined, fetch, 110_000),
 ): Promise<PtwStrategyResult> {
   const inputHash = strategyInputHash(analysis);
+  let correction = '';
+  let reason = '';
+  for (let attempt = 0; attempt < 2; attempt++) {
   try {
     const raw = await client.interpret<unknown>(`Act as the strategic synthesis lead in a Federal PTW department.
 Develop a decision brief answering: what should the bidder do, why could it win under THIS solicitation's evaluation, how might rivals react, and what evidence would change the decision?
@@ -105,10 +109,20 @@ Select one option conditionally and explain why EACH other option was not select
 Do not output dollars, percentage adjustments, quantitative win probabilities, or a numeric corridor. Cite numeric evidence IDs. The current marketPosition range is a heuristic benchmark, not a proposed bid, an optimization objective, or proof of competitor willingness to bid. Later deterministic strategy models must calculate the cost/price effects of explicit, approved scenario inputs.
 Keep each statement under 1600 characters, validation actions under 600, and the whole response concise.
 INPUT JSON:
-${JSON.stringify(sourceInput(analysis))}`);
+${JSON.stringify(sourceInput(analysis))}
+${correction}`, strategyResponseSchema);
     return {status: 'DRAFT', version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: new Date().toISOString(), reviewStatus: 'UNREVIEWED', strategy: validateStrategy(raw, analysis)};
-  } catch {
-    // Never substitute the benchmark midpoint for failed strategic synthesis.
-    return {status: 'UNAVAILABLE', version: PTW_SYNTHESIS_VERSION, reason: 'Strategic synthesis could not be completed and validated. Source evidence and benchmark calculations remain available. Retry the strategy assessment.'};
+  } catch (error) {
+    const detail = error instanceof z.ZodError
+      ? error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ').slice(0, 1800)
+      : error instanceof Error ? error.message : 'Unknown provider failure';
+    const providerFailure = /OpenAI|timeout|timed out|fetch|abort|Provider failed/i.test(detail);
+    reason = providerFailure
+      ? 'The strategy service did not finish after two attempts. Retry the strategy assessment; the evidence run is preserved.'
+      : 'The strategy response failed evidence or structure validation after two attempts. Retry the strategy assessment; no unvalidated recommendation was published.';
+    console.warn('PTW strategy attempt failed', { attempt: attempt + 1, category: providerFailure ? 'PROVIDER' : 'VALIDATION', detail: providerFailure ? 'Provider request did not complete.' : detail });
+    correction = `RETRY CORRECTION: The previous response failed validation: ${providerFailure ? 'The response did not complete; produce a concise complete answer.' : detail}. Return a fresh, complete object. Preserve evidence rules. Use 2 options, at most 3 competitors, and concise statements. Never invent citations or replace missing evidence with certainty.`;
   }
+  }
+  return {status: 'UNAVAILABLE', version: PTW_SYNTHESIS_VERSION, reason};
 }
