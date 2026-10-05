@@ -1,6 +1,11 @@
 // Role mappings are search aids, not proof of interchangeable qualifications.
+// The fallback families below intentionally favor a defensible adjacent public
+// benchmark over failing the entire bottom-up model when the solicitation uses
+// a bespoke labor title. The GSA adapter preserves the original solicitation
+// title and exposes the mapped search family so the analyst can review it.
 const roles: Array<[RegExp, string]> = [
-  [/e.?discovery/i, 'eDiscovery Administrator'],
+  [/conditional access|identity.*(?:entitlement|access)|(?:entitlement|access).*identity/i, 'Cybersecurity Engineer'],
+  [/e.?discovery/i, 'Systems Administrator'],
   [/cloud.*(?:admin|analyst)|tenant.*admin/i, 'Cloud Administrator'],
   [/cloud.*architect|solution.*architect/i, 'Cloud Architect'],
   [/cloud/i, 'Cloud Engineer'],
@@ -9,7 +14,7 @@ const roles: Array<[RegExp, string]> = [
   [/network.*admin/i, 'Network Administrator'],
   [/system.*admin|endpoint|desktop/i, 'Systems Administrator'],
   [/system.*engineer/i, 'Systems Engineer'],
-  [/information.*security|cyber|security.*engineer|\bISSO\b|\bISSM\b/i, 'Cybersecurity Engineer'],
+  [/information.*security|infrastructure.*security|security.*specialist|cyber|security.*engineer|\bISSO\b|\bISSM\b/i, 'Cybersecurity Engineer'],
   [/software|application developer|full.?stack/i, 'Software Engineer'],
   [/data scientist/i, 'Data Scientist'], [/data engineer/i, 'Data Engineer'],
   [/database/i, 'Database Administrator'], [/technical writer/i, 'Technical Writer'],
