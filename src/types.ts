@@ -45,7 +45,7 @@ export interface RequirementSignal {
   section?: string;
   confidence: number;
 }
-export interface LaborPeriod { label: string; startMonth: number; months: number; quantity: number; annualHours?: number; section?: string; }
+export interface LaborPeriod { label: string; startMonth: number; months: number; quantity: number; annualHours?: number; totalHours?: number; section?: string; }
 export interface LaborSignal { title: string; quantity?: number; annualHours?: number; location?: string; clearance?: string; section?: string; periods?: LaborPeriod[]; }
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
 

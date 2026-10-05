@@ -13,12 +13,16 @@ async function pdf(text?: string) {
   return {originalname:'source.pdf',mimetype:'application/pdf',size:bytes.length,buffer:bytes};
 }
 test('digital PDF normalization preserves source and page locators',async()=>{
-  const result=await normalizePdfText(await pdf('Top Secret facility clearance is required at proposal submission.'));
+  const result=await normalizePdfText(await pdf('Top Secret facility clearance is required at proposal submission. The contractor must provide the complete staffing schedule and all evaluated option years. Each labor category must include documented productive hours, headcount, period of performance, and the applicable security requirements.'));
   assert.equal(result.mimetype,'text/plain');
   assert.match(result.buffer.toString(),/PAGE 1/);
   assert.match(result.buffer.toString(),/Top Secret facility clearance/);
 });
 test('image-only PDFs retain the original file for visual extraction',async()=>{
   const source=await pdf();
+  assert.equal(await normalizePdfText(source),source);
+});
+test('sparse text layers retain the PDF so form or image content can be inspected',async()=>{
+  const source=await pdf('DD 254 — security requirements');
   assert.equal(await normalizePdfText(source),source);
 });

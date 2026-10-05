@@ -241,7 +241,7 @@ function bottomUpCandidate(
   // solicitation provides headcount but omits productive hours.
   if (labor.some(signal => !signal.periods?.length && (!signal.quantity || signal.quantity <= 0))) return null;
   const assumedAnnualHours = labor.filter(signal => signal.periods?.length
-    ? signal.periods.some(p => !p.annualHours && !signal.annualHours) : !signal.annualHours);
+    ? signal.periods.some(p => p.totalHours == null && !p.annualHours && !signal.annualHours) : !signal.annualHours);
 
   const rates = draft.evidence.filter((item) =>
     item.numeric?.valueType === 'HOURLY_CEILING_RATE' &&
@@ -272,9 +272,12 @@ function bottomUpCandidate(
       covered += period.months;
       const documentedHours = period.annualHours || signal.annualHours;
       const annualHours = documentedHours && documentedHours > 0 ? documentedHours : 2_080;
-      const hours = period.quantity * annualHours;
+      const totalHours = 'totalHours' in period ? period.totalHours : undefined;
+      if (documentedHours && documentedHours > 8784) return null;
+      if (totalHours != null && (!Number.isFinite(totalHours) || totalHours < 0 || (period.quantity > 0 && totalHours === 0))) return null;
+      const hours = totalHours != null ? totalHours * 12 / period.months : period.quantity * annualHours;
       components.push({
-        label: `${signal.title} / ${period.label}: ${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? '' : ' (planning assumption)'} x ${period.months}/12 years x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || 'Extracted schedule'}; rates ${matches.map(item => item.id).join(', ')}.`,
+        label: `${signal.title} / ${period.label}: ${totalHours != null ? `${totalHours} total row hours (${period.quantity} FTE; no additional quantity or duration multiplication)` : `${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? '' : ' (planning assumption)'} x ${period.months}/12 years`} x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || 'Extracted schedule'}; rates ${matches.map(item => item.id).join(', ')}.`,
         annualCost: hours * hourlyRate, lowCost: hours * lowerRate, highCost: hours * upperRate,
         startMonth: period.startMonth, months: period.months, evidenceIds: matches.map(item => item.id),
       });
@@ -357,7 +360,7 @@ function bottomUpCandidate(
       ...(rates.some(r => r.numeric?.lowerRate != null) ? ['Lower and upper references use the matched sample lower and upper quartiles; they are not confidence intervals or competitor bids.'] : []),
       assumedAnnualHours.length
         ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(', ')}; 2,080 hours per FTE-year is used only as a visible planning assumption.`
-        : 'The extracted staffing quantities and annual hours represent the complete priced labor model.',
+        : 'The extracted staffing quantities and documented hours represent the complete priced labor model.',
       'Matched GSA CALC+ values are treated as loaded public ceiling-rate proxies, not company-specific rates.',
       escalationEvidence ? `BLS escalation evidence (${escalationEvidence.id}) was applied by performance year.` : 'No escalation was applied because a suitable cited series was unavailable.',
       'Travel, materials, ODCs, subcontractor premiums, fee, and unpriced CLINs are excluded unless embedded in the cited rates.',

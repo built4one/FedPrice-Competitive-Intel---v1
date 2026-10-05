@@ -13,7 +13,7 @@ export async function normalizePdfText<T extends IntelligenceFile & {size:number
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text = content.items.map(item => 'str' in item ? `${item.str}${item.hasEOL ? '\n' : ' '}` : '').join('').trim();
-      if (text.replace(/\s/g,'').length < 25) return file;
+      if (text.replace(/\s/g,'').length < 200) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}\n${text}`);
       page.cleanup();
     }

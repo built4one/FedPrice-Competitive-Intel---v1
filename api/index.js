@@ -117,7 +117,7 @@ var OpenAIIntelligence = class {
     const text2 = response.output?.flatMap((item) => item.type === "message" ? (item.content || []).filter((part) => part.type === "output_text").map((part) => part.text || "") : []).join("") || "";
     if (!text2) throw new Error("OpenAI returned no analysis text.");
     try {
-      return omitNulls(JSON.parse(text2));
+      return omitNulls(JSON.parse(text2.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "")));
     } catch {
       throw new Error("OpenAI returned an invalid analysis object.");
     }
@@ -152,7 +152,8 @@ ${file.buffer.toString("utf8")}`
   }
   async research(prompt) {
     const result = await this.respond({
-      input: [{ role: "user", content: [{ type: "input_text", text: prompt }] }],
+      input: [{ role: "user", content: [{ type: "input_text", text: `${prompt}
+Return only a valid JSON object, without Markdown fences or prose outside the object. Put source URLs inside the JSON fields.` }] }],
       tools: [{ type: "web_search", filters: { blocked_domains: [
         "facebook.com",
         "wikipedia.org",
@@ -166,7 +167,7 @@ ${file.buffer.toString("utf8")}`
       ] } }],
       tool_choice: "required",
       include: ["web_search_call.action.sources"],
-      text: { format: { type: "json_object" } }
+      text: { verbosity: "low" }
     });
     const searched = result.output?.some((item) => item.type === "web_search_call");
     if (!searched) throw new Error("OpenAI did not perform public web research.");
@@ -460,8 +461,9 @@ function validateStrategy(raw, analysis) {
   const alternatives = result.recommendation.alternatives.map((a) => a.optionId);
   const expected = ids.filter((id) => id !== result.recommendation.selectedOptionId).sort();
   if (JSON.stringify([...alternatives].sort()) !== JSON.stringify(expected)) throw new Error("Every unselected option must have an explicit rejection rationale.");
-  if (/(?:\$\s*\d|\bUSD\s*\d|\d[\d,.]*\s*(?:%|percent|million|billion|dollars|usd)\b|\d[\d,.]*%)/i.test(JSON.stringify(result))) {
-    throw new Error("Strategic prose cannot invent a price, adjustment, or win probability. Reference numeric evidence by ID.");
+  const numericClaim = JSON.stringify(result).match(/(?:\$\s*\d[\d,.]*|\bUSD\s*\d[\d,.]*|\d[\d,.]*\s*(?:%|percent|million|billion|dollars|usd)\b|\d[\d,.]*%)/i)?.[0];
+  if (numericClaim) {
+    throw new Error(`Strategic prose cannot invent a price, adjustment, or win probability. Replace the literal "${numericClaim}" with its numeric evidence ID.`);
   }
   for (const { statement: statement2 } of strategyStatements(result)) {
     if (statement2.evidenceIds.some((id) => !evidence.has(id))) throw new Error("Strategy cites an unknown evidence ID.");
@@ -1153,7 +1155,7 @@ async function normalizePdfText(file) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text2 = content.items.map((item) => "str" in item ? `${item.str}${item.hasEOL ? "\n" : " "}` : "").join("").trim();
-      if (text2.replace(/\s/g, "").length < 25) return file;
+      if (text2.replace(/\s/g, "").length < 200) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}
 ${text2}`);
       page.cleanup();
@@ -2123,7 +2125,7 @@ function bottomUpCandidate(draft) {
   const labor = (draft.deal.laborSignals || []).filter((signal) => signal.title?.trim());
   if (!months || !labor.length || draft.deal.laborModelComplete === false) return null;
   if (labor.some((signal) => !signal.periods?.length && (!signal.quantity || signal.quantity <= 0))) return null;
-  const assumedAnnualHours = labor.filter((signal) => signal.periods?.length ? signal.periods.some((p) => !p.annualHours && !signal.annualHours) : !signal.annualHours);
+  const assumedAnnualHours = labor.filter((signal) => signal.periods?.length ? signal.periods.some((p) => p.totalHours == null && !p.annualHours && !signal.annualHours) : !signal.annualHours);
   const rates = draft.evidence.filter(
     (item) => item.numeric?.valueType === "HOURLY_CEILING_RATE" && item.numeric.units === "USD_PER_HOUR" && item.numeric.currency === "USD" && item.numeric.originalValue > 0
   );
@@ -2147,9 +2149,12 @@ function bottomUpCandidate(draft) {
       covered += period.months;
       const documentedHours = period.annualHours || signal.annualHours;
       const annualHours = documentedHours && documentedHours > 0 ? documentedHours : 2080;
-      const hours = period.quantity * annualHours;
+      const totalHours = "totalHours" in period ? period.totalHours : void 0;
+      if (documentedHours && documentedHours > 8784) return null;
+      if (totalHours != null && (!Number.isFinite(totalHours) || totalHours < 0 || period.quantity > 0 && totalHours === 0)) return null;
+      const hours = totalHours != null ? totalHours * 12 / period.months : period.quantity * annualHours;
       components.push({
-        label: `${signal.title} / ${period.label}: ${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? "" : " (planning assumption)"} x ${period.months}/12 years x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || "Extracted schedule"}; rates ${matches2.map((item) => item.id).join(", ")}.`,
+        label: `${signal.title} / ${period.label}: ${totalHours != null ? `${totalHours} total row hours (${period.quantity} FTE; no additional quantity or duration multiplication)` : `${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? "" : " (planning assumption)"} x ${period.months}/12 years`} x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || "Extracted schedule"}; rates ${matches2.map((item) => item.id).join(", ")}.`,
         annualCost: hours * hourlyRate,
         lowCost: hours * lowerRate,
         highCost: hours * upperRate,
@@ -2233,7 +2238,7 @@ function bottomUpCandidate(draft) {
     assumptions: [
       "This is a labor-only public ceiling-rate benchmark, not a predicted winning bid or guaranteed task-order revenue. Rate matches require analyst validation of qualifications, exact clearance level, and worksite.",
       ...rates.some((r) => r.numeric?.lowerRate != null) ? ["Lower and upper references use the matched sample lower and upper quartiles; they are not confidence intervals or competitor bids."] : [],
-      assumedAnnualHours.length ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(", ")}; 2,080 hours per FTE-year is used only as a visible planning assumption.` : "The extracted staffing quantities and annual hours represent the complete priced labor model.",
+      assumedAnnualHours.length ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(", ")}; 2,080 hours per FTE-year is used only as a visible planning assumption.` : "The extracted staffing quantities and documented hours represent the complete priced labor model.",
       "Matched GSA CALC+ values are treated as loaded public ceiling-rate proxies, not company-specific rates.",
       escalationEvidence ? `BLS escalation evidence (${escalationEvidence.id}) was applied by performance year.` : "No escalation was applied because a suitable cited series was unavailable.",
       "Travel, materials, ODCs, subcontractor premiums, fee, and unpriced CLINs are excluded unless embedded in the cited rates."
@@ -2997,7 +3002,7 @@ var baseSchema = {
                 startMonth: { type: "NUMBER" },
                 months: { type: "NUMBER" },
                 quantity: { type: "NUMBER" },
-                annualHours: { type: "NUMBER" },
+                totalHours: { type: "NUMBER" },
                 section: { type: "STRING" }
               }, required: ["label", "startMonth", "months", "quantity", "section"] } }
             },
@@ -3183,7 +3188,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
-- For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), annualHours only when documented, and sheet/cell locator. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
+- For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
 - Set performanceMonths to the total evaluated labor duration supported by the schedule. Set laborModelComplete true only when every priced labor row and every evaluated period is accounted for with locators. Otherwise false, with the specific missing rows/periods in laborModelSource and gaps. A blank offered-rate column is normal in an unpriced solicitation: source external rate benchmarks; do not demand that the analyst supply a completed bid to perform market research.
 - Preserve predecessor contract numbers, incumbent names, program names, acronyms, task-order identifiers, and vehicle identifiers as deal facts so official award searches can use them.
 - Do not create numeric evidence for dates, page numbers, proposal-validity days, or periods of performance. Keep those as deal facts.
@@ -3745,10 +3750,13 @@ app.post("/api/export-brief", async (req, res) => {
     diagnostics.addRows(assessmentIssues(analysis).map((issue) => ({ issue })));
     (analysis.meta.connectors || []).forEach((c) => diagnostics.addRow({ issue: `${c.name}: ${c.status}; ${c.recordsFound} evidence records. ${c.message || ""}` }));
     const labor = workbook.addWorksheet("Labor Benchmarks");
-    labor.columns = [{ header: "Labor category", key: "title", width: 40 }, { header: "Period", key: "period", width: 25 }, { header: "FTE", key: "quantity", width: 12 }, { header: "Annual hours", key: "hours", width: 18 }, { header: "Months", key: "months", width: 12 }, { header: "Lower rate / hr", key: "low", width: 20 }, { header: "Median rate / hr", key: "median", width: 20 }, { header: "Upper rate / hr", key: "high", width: 20 }, { header: "Rate records", key: "sample", width: 15 }, { header: "Evidence IDs", key: "ids", width: 32 }, { header: "Source / limitation", key: "source", width: 100 }];
+    labor.columns = [{ header: "Labor category", key: "title", width: 40 }, { header: "Period", key: "period", width: 25 }, { header: "FTE", key: "quantity", width: 12 }, { header: "Total row hours", key: "totalHours", width: 20 }, { header: "Annual hours / FTE", key: "hours", width: 26 }, { header: "Months", key: "months", width: 12 }, { header: "Lower rate / hr", key: "low", width: 20 }, { header: "Median rate / hr", key: "median", width: 20 }, { header: "Upper rate / hr", key: "high", width: 20 }, { header: "Rate records", key: "sample", width: 15 }, { header: "Evidence IDs", key: "ids", width: 32 }, { header: "Source / limitation", key: "source", width: 100 }];
     laborCoverage(analysis.deal, analysis.evidence).forEach((row) => {
       const periods = row.signal.periods?.length ? row.signal.periods : [{ label: "Period not itemized", quantity: row.signal.quantity, annualHours: row.signal.annualHours, months: analysis.deal.performanceMonths, section: row.signal.section }];
-      periods.forEach((period) => labor.addRow({ title: row.signal.title, period: period.label, quantity: period.quantity, hours: period.annualHours || row.signal.annualHours || "2080 planning assumption", months: period.months, low: row.lowerRate, median: row.medianRate, high: row.upperRate, sample: row.sampleSize, ids: row.evidenceIds.join(", "), source: `${period.section || row.signal.section || ""}. ${row.limitation}` }));
+      periods.forEach((period) => {
+        const totalHours = "totalHours" in period ? period.totalHours : void 0;
+        labor.addRow({ title: row.signal.title, period: period.label, quantity: period.quantity, totalHours, hours: period.annualHours || row.signal.annualHours || (totalHours == null ? "2080 planning assumption" : void 0), months: period.months, low: row.lowerRate, median: row.medianRate, high: row.upperRate, sample: row.sampleSize, ids: row.evidenceIds.join(", "), source: `${period.section || row.signal.section || ""}. ${row.limitation}` });
+      });
     });
     const priced = workbook.addWorksheet("Conditional Offer Scenarios");
     priced.columns = [{ header: "CLIN / period", key: "label", width: 32 }, { header: "Evaluated quantity", key: "quantity", width: 22 }, { header: "Lower unit price", key: "lowUnitPrice", width: 22 }, { header: "Target unit price", key: "targetUnitPrice", width: 22 }, { header: "Upper unit price", key: "highUnitPrice", width: 22 }, { header: "Sources / assumptions", key: "source", width: 90 }];

@@ -165,7 +165,7 @@ const baseSchema = {
               title: { type: 'STRING' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' },
               location: { type: 'STRING' }, clearance: { type: 'STRING' }, section: { type: 'STRING' },
               periods: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
-                label: { type: 'STRING' }, startMonth: { type: 'NUMBER' }, months: { type: 'NUMBER' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' }, section: { type: 'STRING' },
+                label: { type: 'STRING' }, startMonth: { type: 'NUMBER' }, months: { type: 'NUMBER' }, quantity: { type: 'NUMBER' }, totalHours: { type: 'NUMBER' }, section: { type: 'STRING' },
               }, required: ['label', 'startMonth', 'months', 'quantity', 'section'] } },
             },
             required: ['title', 'section'],
@@ -297,7 +297,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
-- For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), annualHours only when documented, and sheet/cell locator. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
+- For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
 - Set performanceMonths to the total evaluated labor duration supported by the schedule. Set laborModelComplete true only when every priced labor row and every evaluated period is accounted for with locators. Otherwise false, with the specific missing rows/periods in laborModelSource and gaps. A blank offered-rate column is normal in an unpriced solicitation: source external rate benchmarks; do not demand that the analyst supply a completed bid to perform market research.
 - Preserve predecessor contract numbers, incumbent names, program names, acronyms, task-order identifiers, and vehicle identifiers as deal facts so official award searches can use them.
 - Do not create numeric evidence for dates, page numbers, proposal-validity days, or periods of performance. Keep those as deal facts.
@@ -880,10 +880,13 @@ app.post('/api/export-brief', async (req, res) => {
     (analysis.meta.connectors || []).forEach(c => diagnostics.addRow({ issue: `${c.name}: ${c.status}; ${c.recordsFound} evidence records. ${c.message || ''}` }));
 
     const labor = workbook.addWorksheet('Labor Benchmarks');
-    labor.columns = [{header:'Labor category',key:'title',width:40},{header:'Period',key:'period',width:25},{header:'FTE',key:'quantity',width:12},{header:'Annual hours',key:'hours',width:18},{header:'Months',key:'months',width:12},{header:'Lower rate / hr',key:'low',width:20},{header:'Median rate / hr',key:'median',width:20},{header:'Upper rate / hr',key:'high',width:20},{header:'Rate records',key:'sample',width:15},{header:'Evidence IDs',key:'ids',width:32},{header:'Source / limitation',key:'source',width:100}];
+    labor.columns = [{header:'Labor category',key:'title',width:40},{header:'Period',key:'period',width:25},{header:'FTE',key:'quantity',width:12},{header:'Total row hours',key:'totalHours',width:20},{header:'Annual hours / FTE',key:'hours',width:26},{header:'Months',key:'months',width:12},{header:'Lower rate / hr',key:'low',width:20},{header:'Median rate / hr',key:'median',width:20},{header:'Upper rate / hr',key:'high',width:20},{header:'Rate records',key:'sample',width:15},{header:'Evidence IDs',key:'ids',width:32},{header:'Source / limitation',key:'source',width:100}];
     laborCoverage(analysis.deal,analysis.evidence).forEach(row => {
       const periods = row.signal.periods?.length ? row.signal.periods : [{label:'Period not itemized',quantity:row.signal.quantity,annualHours:row.signal.annualHours,months:analysis.deal.performanceMonths,section:row.signal.section}];
-      periods.forEach(period => labor.addRow({title:row.signal.title,period:period.label,quantity:period.quantity,hours:period.annualHours || row.signal.annualHours || '2080 planning assumption',months:period.months,low:row.lowerRate,median:row.medianRate,high:row.upperRate,sample:row.sampleSize,ids:row.evidenceIds.join(', '),source:`${period.section || row.signal.section || ''}. ${row.limitation}`}));
+      periods.forEach(period => {
+        const totalHours = 'totalHours' in period ? period.totalHours : undefined;
+        labor.addRow({title:row.signal.title,period:period.label,quantity:period.quantity,totalHours,hours:period.annualHours || row.signal.annualHours || (totalHours == null ? '2080 planning assumption' : undefined),months:period.months,low:row.lowerRate,median:row.medianRate,high:row.upperRate,sample:row.sampleSize,ids:row.evidenceIds.join(', '),source:`${period.section || row.signal.section || ''}. ${row.limitation}`});
+      });
     });
 
     const priced = workbook.addWorksheet('Conditional Offer Scenarios');

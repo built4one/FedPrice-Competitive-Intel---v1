@@ -80,7 +80,7 @@ export class OpenAIIntelligence {
       ? (item.content || []).filter((part) => part.type === 'output_text').map((part) => part.text || '')
       : []).join('') || '';
     if (!text) throw new Error('OpenAI returned no analysis text.');
-    try { return omitNulls(JSON.parse(text)) as T; }
+    try { return omitNulls(JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''))) as T; }
     catch { throw new Error('OpenAI returned an invalid analysis object.'); }
   }
 
@@ -114,14 +114,14 @@ export class OpenAIIntelligence {
 
   async research<T>(prompt: string): Promise<{ analysis: T; sources: Array<{ url: string; title: string }> }> {
     const result = await this.respond({
-      input: [{ role: 'user', content: [{ type: 'input_text', text: prompt }] }],
+      input: [{ role: 'user', content: [{ type: 'input_text', text: `${prompt}\nReturn only a valid JSON object, without Markdown fences or prose outside the object. Put source URLs inside the JSON fields.` }] }],
       tools: [{ type: 'web_search', filters: { blocked_domains: [
         'facebook.com', 'wikipedia.org', 'fool.com', 'marketsandmarkets.com',
         'mordorintelligence.com', 'govtribe.com', 'highergov.com', 'govoppintel.com', 'orangeslices.ai',
       ] } }],
       tool_choice: 'required',
       include: ['web_search_call.action.sources'],
-      text: { format: { type: 'json_object' } },
+      text: { verbosity: 'low' },
     });
     const searched = result.output?.some((item) => item.type === 'web_search_call');
     if (!searched) throw new Error('OpenAI did not perform public web research.');

@@ -271,6 +271,26 @@ test('staffing ramp and half-year extension use the quantities for each period',
   assert.equal(calculateDeterministicScenarios(model,{asOfDate}).expected,null);
 });
 
+test('documented row hours are not multiplied by FTE or prorated twice for extensions', () => {
+  const model = draft([evidence('RATE',100,{valueType:'HOURLY_CEILING_RATE',units:'USD_PER_HOUR',periodMonths:undefined,scopeText:'Cloud Engineer',opportunitySpecific:false,matchedLaborCategory:'Cloud Engineer',lowerRate:80,upperRate:120})]);
+  model.deal = {...deal,performanceMonths:30,laborModelComplete:true,laborSignals:[{title:'Cloud Engineer',periods:[
+    {label:'Not yet staffed',startMonth:0,months:12,quantity:0,totalHours:0},
+    {label:'Full year',startMonth:12,months:12,quantity:2,totalHours:3840},
+    {label:'Extension',startMonth:24,months:6,quantity:2,totalHours:1920},
+  ]}]};
+  const result = calculateDeterministicScenarios(model,{asOfDate});
+  assert.equal(result.expected,576_000);
+  assert.equal(result.aggressive,460_800);
+  assert.equal(result.conservative,691_200);
+  assert.doesNotMatch(result.assumptions.join(' '),/2,080/);
+});
+
+test('aggregate hours mislabeled as per-person annual hours cannot produce a total', () => {
+  const model = draft([evidence('RATE',100,{valueType:'HOURLY_CEILING_RATE',units:'USD_PER_HOUR',periodMonths:undefined,scopeText:'Cloud Engineer',opportunitySpecific:false})]);
+  model.deal = {...deal,performanceMonths:12,laborModelComplete:true,laborSignals:[{title:'Cloud Engineer',quantity:12,annualHours:23040}]};
+  assert.equal(calculateDeterministicScenarios(model,{asOfDate}).expected,null);
+});
+
 test('unmatched clearance and explicitly incomplete staffing cannot produce a labor total', () => {
   const model = draft([evidence('RATE',100,{valueType:'HOURLY_CEILING_RATE',units:'USD_PER_HOUR',scopeText:'Cloud Engineer',opportunitySpecific:false})]);
   model.deal = {...deal,laborSignals:[{title:'Cloud Engineer',quantity:10,annualHours:2000,clearance:'Top Secret'}]};

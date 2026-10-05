@@ -20,7 +20,7 @@ if (process.env.FMP_VERIFY_SOLICITATION) {
   const analysis = await analyzeFiles(files);
   log('analysis', {method:analysis.marketPosition.estimationMethod,range:[analysis.marketPosition.aggressive,analysis.marketPosition.expected,analysis.marketPosition.conservative],
     staffingComplete:analysis.deal.laborModelComplete,staffingSource:analysis.deal.laborModelSource,months:analysis.deal.performanceMonths,
-    laborRoles:analysis.deal.laborSignals.length, connectors:analysis.meta.connectors?.map(c=>({name:c.name,status:c.status,records:c.recordsFound})),warnings:analysis.meta.warnings});
+    laborRoles:analysis.deal.laborSignals.length,researchStatus:analysis.meta.researchStatus, connectors:analysis.meta.connectors?.map(c=>({name:c.name,status:c.status,records:c.recordsFound})),warnings:analysis.meta.warnings});
   analysis.deal.laborSignals.forEach(s=>log('labor-role',{title:s.title,quantity:s.quantity,clearance:s.clearance,periods:s.periods}));
   analysis.gaps.forEach(g=>log('gap',g));
   analysis.evidence.filter(e=>e.id.startsWith('GSA-')).forEach(e=>log('rate-match',{id:e.id,claim:e.claim,numeric:e.numeric}));
@@ -29,6 +29,7 @@ if (process.env.FMP_VERIFY_SOLICITATION) {
   const pdf = await createExecutivePdf(analysis);
   log('exports', {pdfBytes:pdf.length,assessmentIssues:assessmentIssues(analysis).length});
   if (analysis.ptwStrategy.status !== 'DRAFT') throw new Error('Live check: strategy did not validate.');
+  if (analysis.meta.researchStatus !== 'GROUNDED') throw new Error('Live check: public web research did not return grounded sources.');
   if (!analysis.marketPosition.expected && !analysis.gaps.some(g=>g.priority==='HIGH')) throw new Error('Live check: missing numeric basis was not explained by actionable gaps.');
   log('passed', {number:analysis.deal.solicitationNumber,engine:analysis.marketPosition.formulaVersion});
 }

@@ -35,8 +35,9 @@ export function validateStrategy(raw: unknown, analysis: StrategyInput): PtwStra
   const alternatives = result.recommendation.alternatives.map(a => a.optionId);
   const expected = ids.filter(id => id !== result.recommendation.selectedOptionId).sort();
   if (JSON.stringify([...alternatives].sort()) !== JSON.stringify(expected)) throw new Error('Every unselected option must have an explicit rejection rationale.');
-  if (/(?:\$\s*\d|\bUSD\s*\d|\d[\d,.]*\s*(?:%|percent|million|billion|dollars|usd)\b|\d[\d,.]*%)/i.test(JSON.stringify(result))) {
-    throw new Error('Strategic prose cannot invent a price, adjustment, or win probability. Reference numeric evidence by ID.');
+  const numericClaim = JSON.stringify(result).match(/(?:\$\s*\d[\d,.]*|\bUSD\s*\d[\d,.]*|\d[\d,.]*\s*(?:%|percent|million|billion|dollars|usd)\b|\d[\d,.]*%)/i)?.[0];
+  if (numericClaim) {
+    throw new Error(`Strategic prose cannot invent a price, adjustment, or win probability. Replace the literal "${numericClaim}" with its numeric evidence ID.`);
   }
   for (const {statement} of strategyStatements(result)) {
     if (statement.evidenceIds.some(id => !evidence.has(id))) throw new Error('Strategy cites an unknown evidence ID.');
