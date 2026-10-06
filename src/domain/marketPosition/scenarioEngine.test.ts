@@ -221,7 +221,7 @@ test('uses a complete staffing-and-hours model when no total-value anchor is ava
   assert.equal(result.rangeStatus, 'DIRECTIONAL');
   assert.equal(result.expected, 7_714_000);
   assert.ok(result.anchors.some((anchor) => anchor.evidenceId === 'MODEL-BOTTOM-UP' && anchor.included));
-  assert.equal(result.publicBenchmark.status, 'NOT_SUPPORTED');
+  assert.equal(result.publicBenchmark.status, 'DIRECTIONAL');
 });
 
 test('returns a provisional bottom-up estimate when headcount is known but annual hours are missing', () => {

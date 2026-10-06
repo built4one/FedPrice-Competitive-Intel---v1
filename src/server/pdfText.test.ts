@@ -27,3 +27,7 @@ test('security forms retain the PDF so checkboxes and markings can be inspected'
   source.originalname='DRAFT+DD+254.pdf';
   assert.equal(await normalizePdfText(source),source);
 });
+test('SF1449 retains visual set-aside boxes instead of flattening every printed option into text',async()=>{
+  const source=await pdf('STANDARD FORM 1449. SOLICITATION/CONTRACT/ORDER FOR COMMERCIAL PRODUCTS. SET-ASIDE SMALL BUSINESS WOSB WOMEN-OWNED SMALL BUSINESS. NAICS 518210. Selected boxes determine the eligibility.');
+  assert.equal(await normalizePdfText(source),source);
+});

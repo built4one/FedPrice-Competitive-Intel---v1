@@ -41,6 +41,529 @@ function calculatePricingScenario(raw) {
   };
 }
 
+// src/domain/laborMatching.ts
+var roles = [
+  [/personnel.*security|background.*investigation|security.*(?:clearance|processing|adjudication)/i, "Personnel Security Specialist"],
+  [/conditional access|identity.*(?:entitlement|access)|(?:entitlement|access).*identity/i, "Cybersecurity Engineer"],
+  [/e.?discovery/i, "Systems Administrator"],
+  [/cloud.*(?:admin|analyst)|tenant.*admin/i, "Cloud Administrator"],
+  [/cloud.*architect|solution.*architect/i, "Cloud Architect"],
+  [/cloud/i, "Cloud Engineer"],
+  [/program manager|project manager/i, "Program Manager"],
+  [/network.*(?:engineer|architect)|sd.?wan/i, "Network Engineer"],
+  [/network.*admin/i, "Network Administrator"],
+  [/network.*analyst/i, "Network Analyst"],
+  [/system.*admin|endpoint|desktop/i, "Systems Administrator"],
+  [/system.*engineer/i, "Systems Engineer"],
+  [/information.*security|infrastructure.*security|security.*specialist|cyber|security.*engineer|\bISSO\b|\bISSM\b/i, "Cybersecurity Engineer"],
+  [/software|application developer|full.?stack/i, "Software Engineer"],
+  [/data scientist/i, "Data Scientist"],
+  [/data engineer/i, "Data Engineer"],
+  [/database/i, "Database Administrator"],
+  [/technical writer/i, "Technical Writer"],
+  [/financial|budget analyst/i, "Financial Analyst"],
+  [/business analyst/i, "Business Analyst"],
+  [/records|record management/i, "Records Manager"],
+  [/service desk|help desk|helpdesk/i, "Help Desk"],
+  [/subject matter expert|\bSME\b/i, "Subject Matter Expert"]
+];
+function laborFamily(value) {
+  return roles.find(([pattern]) => pattern.test(value))?.[1] || value.trim();
+}
+function requiresClearance(value) {
+  return Boolean(value && !/\b(?:none|no|not required|unclassified|public trust)\b/i.test(value) && /secret|\bTS\b|\bSCI\b|cleared/i.test(value));
+}
+function grade(value) {
+  if (/\bsenior\b|\bsr\b|\bprincipal\b|\blead\b|\bSME\b/i.test(value)) return "senior";
+  if (/\bjunior\b|\bjr\b|\bentry\b/i.test(value)) return "junior";
+  return void 0;
+}
+function laborRoleMatch(requested, candidate) {
+  if (/network/i.test(requested) && /target digital|target network|intelligence|SIGINT/i.test(candidate) && !/target digital|intelligence|SIGINT/i.test(requested)) return 0;
+  const a = laborFamily(requested).toLowerCase(), b = laborFamily(candidate).toLowerCase();
+  const targetGrade = grade(requested), sourceGrade = grade(candidate);
+  if (targetGrade && sourceGrade && targetGrade !== sourceGrade) return 0;
+  if (a !== b) {
+    const tokens2 = a.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
+    if (!tokens2.length || !tokens2.every((t) => candidate.toLowerCase().includes(t))) return 0;
+  }
+  return targetGrade && !sourceGrade ? 0.65 : 0.85;
+}
+function benchmarkRole(signal) {
+  if (/background investigations?|personnel security|clearance processing|security adjudication/i.test(signal.duties || "") && !/financial|budget/i.test(signal.title)) return "Personnel Security Specialist";
+  return signal.pwsTitle || signal.title;
+}
+function qualificationMatch(signal, record) {
+  const years = Number(record.min_years_experience);
+  if (signal.minExperienceYears != null && record.min_years_experience != null && Number.isFinite(years) && years < signal.minExperienceYears) return false;
+  const location = signal.location || "";
+  if (/government|customer|on.?site/i.test(location) && /contractor|off.?site/i.test(record.worksite || "")) return false;
+  if (/contractor|off.?site/i.test(location) && /government|customer|on.?site/i.test(record.worksite || "")) return false;
+  const education = signal.education || "", offeredEducation = record.education_level || "";
+  if (/master|\bM\.?S\.?\b/i.test(education) && /bachelor|associate|high school/i.test(offeredEducation) && !/master|doctor|ph\.?d/i.test(offeredEducation)) return false;
+  if (/bachelor|\bB\.?S\.?\b/i.test(education) && /associate|high school/i.test(offeredEducation) && !/bachelor|master|doctor|ph\.?d/i.test(offeredEducation)) return false;
+  return true;
+}
+
+// src/domain/laborCoverage.ts
+function laborCoverage(deal, evidence) {
+  const rates = evidence.filter((e) => e.numeric?.valueType === "HOURLY_CEILING_RATE" && e.numeric.units === "USD_PER_HOUR" && e.numeric.originalValue > 0);
+  return (deal.laborSignals || []).map((signal) => {
+    const matches2 = rates.filter((e) => {
+      const n = e.numeric;
+      return (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title) && (!requiresClearance(signal.clearance) || n.clearanceRequired) && laborRoleMatch(benchmarkRole(signal), n.benchmarkFamily || n.scopeText || e.claim) >= 0.8 && (!signal.titleConflict || Boolean(n.benchmarkFamily && laborFamily(benchmarkRole(signal)) === n.benchmarkFamily));
+    });
+    const values = matches2.map((e) => e.numeric.originalValue).sort((a, b) => a - b);
+    const center = values.length ? (values[Math.floor((values.length - 1) / 2)] + values[Math.ceil((values.length - 1) / 2)]) / 2 : null;
+    const proxyMapped = matches2.some((e) => (e.numeric?.laborMatchScore ?? 1) < 0.8);
+    return {
+      signal,
+      evidenceIds: matches2.map((e) => e.id),
+      medianRate: center,
+      sampleSize: matches2.reduce((sum, e) => sum + (e.numeric.rateSampleSize || 1), 0),
+      lowerRate: median(matches2.map((e) => e.numeric.lowerRate ?? e.numeric.originalValue)),
+      upperRate: median(matches2.map((e) => e.numeric.upperRate ?? e.numeric.originalValue)),
+      proxyMapped,
+      limitation: matches2.length ? proxyMapped ? "Provisional role-family ceiling-rate proxy; validate the mapped family, qualifications, clearance level, and worksite before final pricing use." : "Public ceiling-rate proxy; verify exact qualifications, clearance level, and worksite." : "No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping."
+    };
+  });
+}
+var median = (values) => {
+  const v = [...values].sort((a, b) => a - b);
+  return v.length ? (v[Math.floor((v.length - 1) / 2)] + v[Math.ceil((v.length - 1) / 2)]) / 2 : null;
+};
+function laborCoverageGaps(deal, evidence) {
+  const gaps = [];
+  if (deal.laborModelComplete === false) gaps.push({ question: "Complete the documented staffing schedule.", impact: deal.laborModelSource || "Not all labor rows and performance periods were extracted.", priority: "HIGH" });
+  for (const row of laborCoverage(deal, evidence)) {
+    if (row.medianRate == null) gaps.push({ question: `Validate a rate benchmark for ${row.signal.title}.`, impact: row.limitation, priority: "HIGH" });
+    else if (row.proxyMapped) gaps.push({ question: `Validate the provisional role-family mapping for ${row.signal.title}.`, impact: row.limitation, priority: "MEDIUM" });
+    if (!row.signal.periods?.length && !row.signal.quantity) gaps.push({ question: `Confirm staffing quantity for ${row.signal.title}.`, impact: "This labor category cannot be extended into a total without a documented quantity.", priority: "HIGH" });
+  }
+  return gaps;
+}
+
+// src/domain/marketPosition/valueNormalization.ts
+var CENTRAL_VALUE_TYPES = /* @__PURE__ */ new Set([
+  "EVALUATED_PRICE",
+  "ESTIMATED_VALUE",
+  "TOTAL_AWARD_VALUE",
+  "EVENTUAL_SPEND"
+]);
+var periodNumberWords = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10
+};
+var periodNumber = "(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)";
+var periodUnit = "(year|years|yr|yrs|month|months|mo|mos)";
+function periodNumberValue(value) {
+  return periodNumberWords[value] ?? Number(value);
+}
+function durationMonths(value, unit) {
+  const amount2 = periodNumberValue(value);
+  return /^y|^yr/.test(unit) ? amount2 * 12 : amount2;
+}
+function extractPeriodMonths(value) {
+  if (!value) return void 0;
+  const normalized = value.toLowerCase().replace(/,/g, "").replace(/[–—]/g, "-");
+  const basePatterns = [
+    new RegExp(`${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+(?:base|base\\s+period)`),
+    new RegExp(`base(?:\\s+period)?(?:\\s+of|\\s*[:=-])?\\s*${periodNumber}\\s*[- ]?\\s*${periodUnit}`)
+  ];
+  const baseMatch = basePatterns.map((pattern) => normalized.match(pattern)).find(Boolean);
+  const optionDuration = normalized.match(new RegExp(`${periodNumber}\\s+${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+option`));
+  const optionUnits = normalized.match(new RegExp(`${periodNumber}\\s+option(?:al)?\\s+${periodUnit}`));
+  if (baseMatch && (optionDuration || optionUnits)) {
+    const baseMonths = durationMonths(baseMatch[1], baseMatch[2]);
+    const optionMonths = optionDuration ? periodNumberValue(optionDuration[1]) * durationMonths(optionDuration[2], optionDuration[3]) : periodNumberValue(optionUnits[1]) * durationMonths("1", optionUnits[2]);
+    const total = baseMonths + optionMonths;
+    if (Number.isFinite(total) && total > 0) return total;
+  }
+  const months = normalized.match(/(\d+(?:\.\d+)?)\s*(?:month|months|mo\b)/);
+  if (months) return Number(months[1]);
+  const years = normalized.match(/(\d+(?:\.\d+)?)\s*(?:year|years|yr\b)/);
+  if (years) return Number(years[1]) * 12;
+  return void 0;
+}
+function determineCalculationRole(numeric, asOfDate) {
+  if (!Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) return "EXCLUDED";
+  if (numeric.currency !== "USD" && numeric.units !== "PERCENT") return "EXCLUDED";
+  if (numeric.sharedAcrossAwards) return "EXCLUDED";
+  if (numeric.valueBasis === "PAST_PERFORMANCE_THRESHOLD") return "EXCLUDED";
+  if (numeric.valueBasis === "ORDER_LIMIT") return "CONTEXT";
+  if (["PROGRAM_TOTAL", "MULTIPLE_AWARD_POOL", "BUDGET"].includes(numeric.valueBasis || "")) return "CONTEXT";
+  if (CENTRAL_VALUE_TYPES.has(numeric.valueType)) return numeric.units === "TOTAL_USD" ? "CENTRAL_ANCHOR" : "EXCLUDED";
+  if (numeric.valueType === "CURRENT_AWARD_AMOUNT") {
+    const completed = numeric.endDate && Date.parse(numeric.endDate) <= Date.parse(asOfDate);
+    return completed && numeric.units === "TOTAL_USD" ? "CENTRAL_ANCHOR" : "CONTEXT";
+  }
+  if (numeric.valueType === "CONTRACT_CEILING") {
+    const compatibleBasis = numeric.valueBasis === "OPPORTUNITY_TOTAL" || numeric.valueBasis === "INDIVIDUAL_AWARD";
+    return numeric.units === "TOTAL_USD" && numeric.opportunitySpecific && compatibleBasis ? "CONSTRAINT" : "CONTEXT";
+  }
+  if (numeric.valueType === "HOURLY_CEILING_RATE") return "COMPONENT";
+  if (numeric.valueType === "ESCALATION_RATE") return "MODIFIER";
+  if (["INITIAL_OBLIGATION", "CURRENT_OBLIGATIONS", "BUDGET_CONTEXT"].includes(numeric.valueType)) return "CONTEXT";
+  return "EXCLUDED";
+}
+function normalizeNumericEvidence(evidence, deal, allEvidence, asOfDate) {
+  const numeric = evidence.numeric;
+  if (!numeric || !Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) {
+    return { normalizedValue: null, confidence: 0, steps: [], notes: ["Numeric value is missing or invalid."] };
+  }
+  if (numeric.units !== "TOTAL_USD" || numeric.currency !== "USD") {
+    return {
+      normalizedValue: numeric.originalValue,
+      confidence: 1,
+      steps: [],
+      notes: ["Retained in its native units and barred from total-value weighting."]
+    };
+  }
+  let value = numeric.originalValue;
+  let confidence = numeric.opportunitySpecific ? 1 : 0.95;
+  const steps = [];
+  const notes = [];
+  const targetMonths = extractPeriodMonths(deal.periodOfPerformance);
+  if (numeric.periodMonths && targetMonths && numeric.periodMonths !== targetMonths) {
+    if (numeric.recurringService) {
+      const factor = targetMonths / numeric.periodMonths;
+      value *= factor;
+      confidence *= 0.95;
+      steps.push({
+        type: "PERIOD",
+        factor,
+        rationale: `Recurring service value normalized from ${numeric.periodMonths} to ${targetMonths} months.`,
+        evidenceIds: [evidence.id]
+      });
+    } else {
+      confidence *= 0.72;
+      notes.push("Period differs from the target and could not be normalized without assuming steady-state services.");
+    }
+  } else if (!numeric.opportunitySpecific && (!numeric.periodMonths || !targetMonths)) {
+    confidence *= 0.85;
+    notes.push("Period normalization was not possible because one period was unavailable.");
+  }
+  if (numeric.quantity && numeric.targetQuantity && numeric.quantity !== numeric.targetQuantity) {
+    if (numeric.scalableByQuantity) {
+      const factor = numeric.targetQuantity / numeric.quantity;
+      value *= factor;
+      confidence *= 0.95;
+      steps.push({
+        type: "QUANTITY",
+        factor,
+        rationale: `Value normalized from quantity ${numeric.quantity} to ${numeric.targetQuantity}.`,
+        evidenceIds: [evidence.id]
+      });
+    } else {
+      confidence *= 0.75;
+      notes.push("Scale differs from the target and no evidence supports linear quantity scaling.");
+    }
+  }
+  const targetYear = new Date(asOfDate).getUTCFullYear();
+  if (numeric.baseYear && numeric.baseYear < targetYear) {
+    const yearDifference = targetYear - numeric.baseYear;
+    const escalation = allEvidence.find(
+      (item) => item.numeric?.valueType === "ESCALATION_RATE" && item.numeric.units === "PERCENT" && item.numeric.originalValue > 0 && item.numeric.originalValue < 20
+    );
+    if (escalation?.numeric && yearDifference <= 3) {
+      const factor = (1 + escalation.numeric.originalValue / 100) ** yearDifference;
+      value *= factor;
+      confidence *= 0.93;
+      steps.push({
+        type: "ESCALATION",
+        factor,
+        rationale: `Escalated ${yearDifference} year${yearDifference === 1 ? "" : "s"} using the cited BLS change rate.`,
+        evidenceIds: [evidence.id, escalation.id]
+      });
+    } else if (yearDifference > 1) {
+      confidence *= 0.8;
+      notes.push("The value year differs from the analysis year and no sufficiently applicable escalation series was available.");
+    }
+  }
+  return {
+    normalizedValue: Number.isFinite(value) ? value : null,
+    confidence: Math.max(0, Math.min(1, confidence)),
+    steps,
+    notes
+  };
+}
+
+// src/domain/ptw/laborModel.ts
+var dollars = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
+var positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
+function buildLaborModel(deal, evidence) {
+  const rows = [], missing = [], assumptions = [];
+  const months = deal.performanceMonths || extractPeriodMonths(deal.periodOfPerformance);
+  const escalationSource = evidence.find((e) => e.numeric?.valueType === "ESCALATION_RATE" && e.numeric.units === "PERCENT" && Number.isFinite(e.numeric.originalValue) && e.numeric.originalValue >= 0 && e.numeric.originalValue < 20);
+  const escalationPct = escalationSource?.numeric?.originalValue || 0;
+  const startFacts = deal.facts.filter((f) => /ordering period|performance (?:start|period)|start date/i.test(f.label)).map((f) => f.value).join(" ");
+  const openingYear = Number((startFacts || deal.periodOfPerformance).match(/\b20\d{2}\b/)?.[0]);
+  const baseYear = deal.evaluationPricing?.rateBaseYear;
+  const openingExponent = baseYear != null && Number.isFinite(openingYear) && openingYear > 0 ? Math.max(0, openingYear - baseYear) : 0;
+  if (baseYear != null && !openingYear) missing.push("Confirm the opening performance year to reconcile the explicit labor rate base year.");
+  if (openingExponent) assumptions.push(`The opening performance year ${openingYear} follows the stated rate base year ${baseYear}; apply ${openingExponent} opening-year escalation step(s).`);
+  if (!months || !positive(months)) missing.push("Confirm the complete evaluated performance period.");
+  if (!deal.laborSignals?.length) missing.push("No quantified labor schedule is available.");
+  if (deal.laborModelComplete === false) missing.push(deal.laborModelSource || "The extracted labor schedule is incomplete.");
+  const rateBase = "Retrieved public rates are treated as opening-period planning proxies, unless the schedule explicitly identifies a different rate basis. Historical escalation is a forward planning assumption, not a forecast.";
+  assumptions.push(rateBase);
+  assumptions.push(escalationSource ? `Apply ${escalationPct}% annual planning escalation from ${escalationSource.id}; validate its relevance and future application.` : "Use zero escalation provisionally because no cited escalation series is available.");
+  for (const coverage of laborCoverage(deal, evidence)) {
+    const s = coverage.signal;
+    if (!positive(coverage.medianRate) || !positive(coverage.lowerRate) || !positive(coverage.upperRate)) {
+      missing.push(`${s.title}: a relevant duty/qualification rate proxy is required.`);
+      continue;
+    }
+    if (coverage.lowerRate > coverage.medianRate || coverage.medianRate > coverage.upperRate) {
+      missing.push(`${s.title}: rate statistics are inconsistent.`);
+      continue;
+    }
+    const periods = s.periods?.length ? [...s.periods].sort((a, b) => a.startMonth - b.startMonth) : months && positive(s.quantity) ? [{ label: "Full performance period", startMonth: 0, months, quantity: s.quantity, annualHours: s.annualHours, section: s.section }] : [];
+    if (!periods.length) {
+      missing.push(`${s.title}: no documented quantity/period basis.`);
+      continue;
+    }
+    let end = 0;
+    for (const [index, p] of periods.entries()) {
+      if (!Number.isFinite(p.startMonth) || p.startMonth < 0 || Math.abs(p.startMonth - end) > 0.01 || !positive(p.months) || !Number.isFinite(p.quantity) || p.quantity < 0 || months && p.startMonth + p.months > months + 0.01) {
+        missing.push(`${s.title} / ${p.label}: period coverage or quantity is invalid.`);
+        continue;
+      }
+      end = p.startMonth + p.months;
+      const annualHours = p.annualHours || s.annualHours;
+      const assumedHours = p.totalHours == null && !positive(annualHours);
+      const hours = p.totalHours ?? p.quantity * (annualHours || 2080) * p.months / 12;
+      if (!Number.isFinite(hours) || hours < 0 || p.quantity > 0 && hours === 0 || annualHours != null && annualHours > 8784) {
+        missing.push(`${s.title} / ${p.label}: invalid evaluated hours.`);
+        continue;
+      }
+      const extension = /extension|52\.217.?8|six.month|6.month/i.test(p.label);
+      const finalOption = extension && deal.evaluationPricing?.extensionRateRule === "FINAL_OPTION_RATES";
+      const rateStart = finalOption ? Math.max(0, p.startMonth - 1) : p.startMonth;
+      let factor = 0;
+      const weights = /* @__PURE__ */ new Map();
+      for (let offset = 0; offset < p.months; offset++) {
+        const exponent = openingExponent + Math.floor((finalOption ? rateStart : p.startMonth + offset) / 12);
+        const weight = Math.min(1, p.months - offset) / p.months;
+        factor += weight * (1 + escalationPct / 100) ** exponent;
+        weights.set(exponent, (weights.get(exponent) || 0) + weight);
+      }
+      if (extension && (!deal.evaluationPricing || deal.evaluationPricing.extensionRateRule === "UNKNOWN"))
+        assumptions.push("Extension rate language remains unconfirmed: the planning case continues annual escalation; compare with final-option rates before relying on total evaluated price.");
+      if (finalOption) assumptions.push(`Extension uses final-option rates without another annual uplift. Source: ${deal.evaluationPricing?.extensionSource || deal.evaluationPricing?.source}.`);
+      rows.push({
+        id: `LAB-${rows.length + 1}`,
+        title: s.title,
+        period: p.label,
+        hours,
+        fte: p.quantity,
+        months: p.months,
+        lowRate: coverage.lowerRate,
+        medianRate: coverage.medianRate,
+        highRate: coverage.upperRate,
+        exponent: openingExponent + Math.floor(rateStart / 12),
+        factor,
+        source: p.section || s.section || "Extracted schedule; locator needs validation",
+        evidenceIds: coverage.evidenceIds,
+        assumedHours,
+        proxy: coverage.proxyMapped,
+        qualification: [s.duties, s.minExperienceYears != null ? `${s.minExperienceYears} years minimum experience` : "", s.education, s.certifications?.join(", "), s.clearance, s.location, s.titleConflict].filter(Boolean).join("; "),
+        rateLimitation: coverage.limitation,
+        sampleSize: coverage.sampleSize,
+        rateYearWeights: [...weights].map(([year, weight]) => ({ year, weight }))
+      });
+      if (assumedHours) assumptions.push(`${s.title} / ${p.label}: use 2,080 hours per FTE-year as a provisional assumption.`);
+    }
+    if (months && Math.abs(end - months) > 0.01) missing.push(`${s.title}: the schedule does not cover all ${months} evaluated months.`);
+  }
+  return {
+    rows,
+    missing: [...new Set(missing)],
+    assumptions: [...new Set(assumptions)],
+    escalationPct,
+    escalationEvidenceId: escalationSource?.id,
+    totalHours: rows.reduce((a, r) => a + r.hours, 0),
+    complete: rows.length > 0 && !missing.length
+  };
+}
+function laborTotal(rows, basis) {
+  return dollars(rows.reduce((a, r) => a + r.hours * r[basis] * r.factor, 0));
+}
+
+// src/domain/ptw/competitivePosition.ts
+var COMPETITIVE_POSITION_VERSION = "competitive-position-1.0.0";
+function isPriceOrdered(analysis) {
+  const evaluationText = [
+    analysis.deal.evaluationMethod,
+    ...analysis.deal.requirements.filter((r) => r.category === "EVALUATION").map((r) => r.detail),
+    ...analysis.evidence.filter((e) => e.type === "SOLICITATION_FACT" && /evaluat|section m/i.test(`${e.claim} ${e.section}`)).map((e) => `${e.claim} ${e.excerpt || ""}`)
+  ].join(" ");
+  const affirmativeText = evaluationText.replace(/\b(?:not|non)[\s-]+LPTA\b/gi, "");
+  return /\bLPTA\b|lowest.price technically acceptable|rank(?:ed|ing)?[^.]{0,80}(?:price|lowest)|price.ordered|lowest.price first|price ranking.*first/i.test(affirmativeText);
+}
+function protectRole(analysis, row) {
+  const s = analysis.deal.laborSignals.find((s2) => s2.title === row.title);
+  const specialization = [s.pwsTitle || s.title, s.duties || "", s.certifications?.join(" ") || ""].join(" ");
+  if (s.titleConflict) return "Protect median economics while the source-role conflict is resolved; test alternative mappings.";
+  if ((s.minExperienceYears ?? 0) >= 5 || /\bsenior\b|\bprincipal\b|\blead\b|project manager|program manager|architect|e.discovery|conditional access|information assurance|cloud application|configuration manager|network (?:engineer|analyst)|virtual desktop/i.test(specialization))
+    return "Protect the public median as a planning assumption for documented seniority, specialist responsibilities or operational bottlenecks; recruiting economics remain unvalidated.";
+  if (row.proxy || row.sampleSize < 5) return "Protect median economics because the proxy mapping or small sample is weak; do not presume the lowest public rates are executable.";
+  return "";
+}
+function calculateCompetitivePosition(analysis) {
+  const model2 = buildLaborModel(analysis.deal, analysis.evidence);
+  const priceOrderFirst = isPriceOrdered(analysis);
+  const missing = [...model2.missing];
+  if (model2.rows.some((r) => r.assumedHours)) missing.push("Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.");
+  analysis.deal.sourceConflicts?.forEach((c) => missing.push(`Resolve ${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution}`));
+  const assumptions = [
+    ...model2.assumptions,
+    "All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.",
+    "No public lower-quartile rate establishes an executable staffing floor or a competitor bid.",
+    "No dollar premium, productivity saving, teaming saving or probability of win is inferred from qualitative strategy prose."
+  ];
+  const pricing = analysis.deal.evaluationPricing;
+  if (!pricing) missing.push("Re-extract the complete evaluated-price basket, travel/ODCs and extension instructions from the source package.");
+  else if (pricing.completeness !== "COMPLETE") missing.push("Confirm every evaluated non-labor line and period; the extracted evaluation basket is partial.");
+  if (pricing?.extensionRateRule === "UNKNOWN" && model2.rows.some((r) => /extension|52\.217.?8|six.month|6.month/i.test(r.period)))
+    missing.push("Confirm the extension-rate clause; the provisional model continues annual escalation until final-option rate treatment is established.");
+  const components = [];
+  const componentIds = /* @__PURE__ */ new Set();
+  for (const c of pricing?.components || []) {
+    if (componentIds.has(c.id)) {
+      missing.push(`Duplicate evaluated component ${c.id}; confirm whether totals overlap.`);
+      continue;
+    }
+    componentIds.add(c.id);
+    const idsKnown = c.evidenceIds.length && c.evidenceIds.every((id) => analysis.evidence.some((e) => e.id === id && e.type === "SOLICITATION_FACT" && Boolean(e.section)));
+    if (c.amount == null || !Number.isFinite(c.amount) || c.amount < 0 || !c.source.trim() || !idsKnown) {
+      missing.push(`${c.label}: confirm the specified amount with a solicitation evidence ID and locator.`);
+      continue;
+    }
+    let indirect = 0, assumption = "";
+    if (c.indirectTreatment === "KNOWN" && c.indirectPct != null && Number.isFinite(c.indirectPct) && c.indirectPct >= 0 && c.indirectPct <= 100) indirect = c.indirectPct;
+    else if (c.indirectTreatment !== "NOT_ALLOWED") {
+      assumption = `${c.label}: applicable indirect costs are unknown; assume zero solely for provisional market planning.`;
+      assumptions.push(assumption);
+      missing.push(`${c.label}: validate applicable indirect costs; the total currently assumes zero.`);
+    }
+    if (c.feeAllowed) {
+      assumption += `${assumption ? " " : ""}No additional fee assumed; validate the offered component price.`;
+      assumptions.push(`${c.label}: no additional component fee is assumed; validate any allowed fee.`);
+    }
+    components.push({ ...c, includedAmount: dollars(c.amount * (1 + indirect / 100)), assumption });
+  }
+  const rows = model2.rows.map((r) => {
+    const protectionReason = priceOrderFirst ? protectRole(analysis, r) : "Use the median public rate provisionally; no quantified evaluated advantage establishes a premium or a lower competitive position.";
+    const recommendedRate = protectionReason ? r.medianRate : r.lowRate;
+    return {
+      ...r,
+      recommendedRate,
+      protectionReason: protectionReason || "Apply lower-quartile public-rate economics as a price-led planning assumption; validate duties, qualifications and cleared labor availability.",
+      low: dollars(r.hours * r.lowRate * r.factor),
+      target: dollars(r.hours * recommendedRate * r.factor),
+      high: dollars(r.hours * r.highRate * r.factor)
+    };
+  });
+  const nonLabor = dollars(components.reduce((a, c) => a + c.includedAmount, 0));
+  const aggressive = laborTotal(rows, "lowRate"), defensive = laborTotal(rows, "highRate");
+  const central = dollars(rows.reduce((a, r) => a + r.hours * r.recommendedRate * r.factor, 0));
+  const hasBasis = model2.complete;
+  const evaluationComplete = hasBasis && pricing?.completeness === "COMPLETE" && !missing.length;
+  const target = hasBasis ? dollars(central + nonLabor) : null;
+  const scenarios = rows.length ? [
+    { id: "AGGRESSIVE", label: "Aggressive", labor: aggressive, nonLabor, total: dollars(aggressive + nonLabor), selected: false, rationale: "Lower-quartile role rates test the lowest public-rate planning posture.", condition: "Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor." },
+    { id: "RECOMMENDED", label: "Recommended", labor: central, nonLabor, total: dollars(central + nonLabor), selected: true, rationale: priceOrderFirst ? "Apply lower-quartile pressure to better-supported roles; protect senior, specialist and weakly mapped roles at median rates." : "Use median role economics until quantified source-selection benefits or competitor evidence supports another position.", condition: "Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target." },
+    { id: "DEFENSIVE", label: "Defensive stress case", labor: defensive, nonLabor, total: dollars(defensive + nonLabor), selected: false, rationale: "Upper-quartile role rates test higher labor-price exposure.", condition: priceOrderFirst ? "Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves." : "A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay." }
+  ] : [];
+  const shift = dollars(rows.reduce((a, r) => a + r.hours * r.factor, 0));
+  const byRole = [...new Set(rows.map((r) => r.title))].map((title) => ({ title, delta: dollars(rows.filter((r) => r.title === title).reduce((a, r) => a + r.hours * r.factor * 10, 0)) })).sort((a, b) => b.delta - a.delta);
+  const escalationUp = dollars(rows.reduce((a, r) => a + r.hours * r.recommendedRate * (r.rateYearWeights.reduce((sum, w) => sum + w.weight * (1 + (model2.escalationPct + 1) / 100) ** w.year, 0) - r.factor), 0));
+  const sensitivities = rows.length ? [
+    { label: "All starting labor rates", change: "+$1/hour", delta: shift, rationale: "Sum of evaluated hours times the documented escalation factors; fixed components remain unchanged." },
+    ...byRole.slice(0, 3).map((r) => ({ label: r.title, change: "+$10/hour", delta: r.delta, rationale: "Isolated role-rate change; no change to staffing quantities or other roles." })),
+    { label: "Annual escalation", change: "+1 percentage point", delta: escalationUp, rationale: "Planning sensitivity; preserve the extension convention and compare annual rate assumptions." },
+    { label: "Recommended labor economics", change: "+5% loaded labor rates", delta: dollars(central * 0.05), rationale: "No additional burden or profit is added to the loaded proxies." },
+    { label: "Role protection choices", change: "Protect every role at the median", delta: dollars(laborTotal(rows, "medianRate") - central), rationale: "Tests the effect of the selected role-level percentile assumptions." }
+  ] : [];
+  const ceiling = analysis.evidence.find((e) => e.type === "SOLICITATION_FACT" && e.numeric?.valueType === "CONTRACT_CEILING");
+  const ceilingExplanation = ceiling ? `The ${ceiling.id} contract/program ceiling is a spending constraint, not the evaluated labor-and-other-component basket. It does not set PTW or justify clipping the recommendation. Validate the solicitation's distinct ceiling and evaluation language (${ceiling.section || "locator needed"}).` : "No program ceiling is used to set the PTW target.";
+  const actions = [
+    { owner: "Pricing analyst", action: "Validate the highest-dollar role mappings against duties, seniority, certifications, clearance and worksite.", consequence: "Replace unsuitable proxies and recalculate all three strategies." },
+    { owner: "Contracts / pricing", action: missing.length ? missing.slice(0, 4).join(" ") : "Confirm the complete evaluated basket, travel indirect costs, option periods and extension-rate language.", consequence: "Resolve total-price completeness before bid use." },
+    { owner: "Capture lead", action: "Establish an eligible pursuit-specific competitor field and the scored clearance/past-performance thresholds.", consequence: "Reassess competitive pressure; do not assume staffing readiness earns separate evaluation credit." },
+    { owner: "Pricing director", action: "Review the provisional target and its assumptions; validate company execution economics separately in Phase 2.", consequence: "Authorize a market planning position; company bid approval remains a separate decision." }
+  ];
+  return {
+    version: COMPETITIVE_POSITION_VERSION,
+    status: hasBasis ? "PROVISIONAL" : rows.length ? "PARTIAL_MODEL" : "NOT_SUPPORTED",
+    priceOrderFirst,
+    evaluationComplete,
+    target,
+    rangeLow: hasBasis ? dollars(aggressive + nonLabor) : null,
+    rangeHigh: hasBasis ? dollars(defensive + nonLabor) : null,
+    rangeMeaning: "Planning scenario envelope, not a statistical confidence interval, verified competitor-price corridor or approved offer band. Unresolved mapping and component risks may extend beyond these endpoints.",
+    rationale: priceOrderFirst ? "Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage." : "Recommend a provisional market-aligned position. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.",
+    decisionRequest: target == null ? "Resolve the missing quantity/rate basis; use the priced rows as partial working material." : "Adopt the selected provisional market planning target, subject to the listed validation actions. This is not company bid approval or a prediction of the winning price.",
+    rows,
+    components,
+    scenarios,
+    missing: [...new Set(missing)],
+    assumptions: [...new Set(assumptions)],
+    confidence: { quantities: model2.complete && rows.every((r) => !r.assumedHours && !r.source.includes("needs validation")) ? "HIGH" : "LOW", rateRelevance: rows.some((r) => r.proxy || r.sampleSize < 5 || !r.qualification || r.evidenceIds.some((id) => analysis.evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "LOW" : "MEDIUM", competition: "LOW", execution: "NOT_ASSESSED", overall: "LOW" },
+    sensitivities,
+    actions,
+    ceilingExplanation
+  };
+}
+
+// src/domain/sourceConsistency.ts
+function resolvedGap(question, deal) {
+  if (!/missing|illegible|not legible|not (?:stated|provided|found)|confirm|provide|need|obtain/i.test(question)) return false;
+  if (/NAICS/i.test(question) && /^\d{6}$/.test(deal.naics)) return true;
+  if (/evaluated (?:quantities|hours)|staffing (?:quantities|schedule)|labor (?:quantities|hours)/i.test(question) && deal.laborModelComplete && deal.laborSignals.length && deal.laborSignals.every((s) => s.periods?.length && s.periods.every((p) => p.totalHours != null))) return true;
+  return false;
+}
+function supportedCompetitors(competitors, evidence, deal) {
+  const keys = [deal.solicitationNumber, ...deal.facts.filter((f) => /incumbent|predecessor|current contract|program name/i.test(f.label)).map((f) => f.value)].filter((k) => k && k.length >= 5);
+  return (competitors || []).filter((c) => c.sourceRefs?.some((ref) => evidence.some((e) => {
+    if (e.type === "ANALYST_INFERENCE" || e.type === "DATA_GAP" || !(e.section || e.url || e.sourceRecordId)) return false;
+    if (e.id !== ref && e.url !== ref) return false;
+    const text2 = `${e.claim} ${e.excerpt || ""}`.toLowerCase();
+    return text2.includes(c.name.toLowerCase()) && keys.some((k) => text2.includes(k.toLowerCase()));
+  })));
+}
+function reconcileSourceFacts(input) {
+  const deal = { ...input.deal, facts: [...input.deal.facts || []], sourceConflicts: [...input.deal.sourceConflicts || []] };
+  const naicsFacts = [
+    ...deal.facts.filter((f) => /NAICS/i.test(f.label) && f.section).map((f) => f.value.match(/\b\d{6}\b/)?.[0]),
+    ...input.evidence.filter((e) => e.type === "SOLICITATION_FACT" && e.section).map((e) => `${e.claim} ${e.excerpt || ""}`.match(/\bNAICS(?:\s+(?:code|is))?\s*[:#-]?\s*(\d{6})\b/i)?.[1])
+  ].filter((v) => Boolean(v));
+  const codes = [...new Set(naicsFacts)];
+  if (codes.length === 1) deal.naics = codes[0];
+  else if (codes.length > 1 && !deal.sourceConflicts.some((c) => c.topic === "NAICS")) deal.sourceConflicts.push({ topic: "NAICS", descriptions: codes, sources: ["Extracted source ledger"], resolution: "Resolve the controlling solicitation/amendment before defining the eligible field." });
+  const gaps = (input.gaps || []).filter((g) => !resolvedGap(g.question, deal));
+  for (const conflict of deal.sourceConflicts) if (!gaps.some((g) => g.question === `Resolve source conflict: ${conflict.topic}.`)) gaps.push({ question: `Resolve source conflict: ${conflict.topic}.`, impact: `${conflict.descriptions.join(" versus ")} ${conflict.resolution}`, priority: "HIGH" });
+  const competitors = supportedCompetitors(input.competitors, input.evidence, deal);
+  const incumbentSupported = input.incumbent.name && supportedCompetitors([{ name: input.incumbent.name, sourceRefs: input.incumbent.sourceRefs }], input.evidence, deal).length;
+  return {
+    ...input,
+    deal,
+    gaps,
+    competitors,
+    incumbent: incumbentSupported ? input.incumbent : { ...input.incumbent, name: "", status: "UNKNOWN", confidence: 0, sourceRefs: [] },
+    narrative: { ...input.narrative, nextActions: (input.narrative.nextActions || []).filter((a) => !resolvedGap(a, deal)), guardrails: (input.narrative.guardrails || []).filter((a) => !resolvedGap(a, deal)) }
+  };
+}
+
 // src/server/eligibility.ts
 var IneligibleSolicitationError = class extends Error {
 };
@@ -433,16 +956,22 @@ var strategyResponseSchema = object({
 });
 
 // src/server/ptwSynthesis.ts
-var PTW_SYNTHESIS_VERSION = "ptw-strategy-0.2.0";
-function sourceInput(analysis) {
+var PTW_SYNTHESIS_VERSION = "ptw-strategy-0.3.0";
+function sourceInput(analysis, compact2 = false) {
+  const position = calculateCompetitivePosition(analysis);
   return {
-    deal: analysis.deal,
-    evidence: analysis.evidence,
+    deal: { ...analysis.deal, sourceConflicts: analysis.deal.sourceConflicts || [] },
+    evidence: compact2 ? analysis.evidence.map((e) => {
+      if (!e.numeric) return e;
+      const { rateDistribution: _distribution, rateRecords: _records, ...numeric } = e.numeric;
+      return { ...e, numeric };
+    }) : analysis.evidence,
     competitors: analysis.competitors,
     incumbent: analysis.incumbent,
     gaps: analysis.gaps,
     marketPosition: analysis.marketPosition,
-    analyzedAt: analysis.meta.analyzedAt
+    analyzedAt: analysis.meta.analyzedAt,
+    competitivePosition: compact2 ? { ...position, rows: [...new Map(position.rows.map((r) => [r.title, { title: r.title, recommendedRate: r.recommendedRate, protectionReason: r.protectionReason, evidenceIds: r.evidenceIds }])).values()] } : position
   };
 }
 function canonical(value) {
@@ -475,6 +1004,8 @@ function validateStrategy(raw, analysis) {
     })) throw new Error("A fact needs a specific source claim and locator, not a generic source listing or inference.");
   }
   for (const rival of result.competitors) {
+    const support = supportedCompetitors([{ name: rival.name, sourceRefs: rival.intentBasis.evidenceIds }], analysis.evidence, analysis.deal);
+    if (!support.length) throw new Error("A named competitor requires a claim-specific source linking that company to this pursuit or documented predecessor.");
     if (rival.bidIntent === "CONFIRMED") {
       const explicitIntent = rival.intentBasis.evidenceIds.some((id) => {
         const item = evidence.get(id);
@@ -484,6 +1015,9 @@ function validateStrategy(raw, analysis) {
       if (rival.intentBasis.kind !== "FACT" || !explicitIntent) throw new Error("Confirmed bid intent requires an explicit, sourced statement naming the bidder.");
     }
   }
+  result.missingInputs = result.missingInputs.filter((v) => !resolvedGap(v, analysis.deal));
+  if (analysis.deal.setAside && !/WOSB|women.owned/i.test(analysis.deal.setAside) && /WOSB|women.owned/i.test(JSON.stringify(result)))
+    throw new Error("Strategic eligibility contradicts the controlling extracted set-aside.");
   return result;
 }
 var storedResultSchema = z3.discriminatedUnion("status", [
@@ -523,11 +1057,13 @@ Produce 2\u20134 genuinely different delivery/competitive approaches, not low/me
 FACT and INFERENCE require evidence IDs. A generic list of web URLs is not proof of a specific fact. ASSUMPTION may have no citations but must name what is assumed and how to test it. Every inference needs validation. Source presence is not verification; all output remains unreviewed.
 Do not infer bid intent from agency history, capability, or vehicle membership. Use CONFIRMED only for an explicit documented intent-to-bid fact; otherwise POSSIBLE or UNKNOWN. Leave the competitor array empty if no specific company has source support.
 Respect LPTA versus tradeoff evaluation: a premium requires an evidenced, evaluable benefit and an explicit assumption about willingness to pay; it is never automatically justified. Identify compliance gates before recommending efficiencies. For expired/sole-source/noncompetitive opportunities, make applicability a prominent qualification and frame alternatives as validation/negotiation actions, not live competitive PTW.
+Use the authoritative setAside and NAICS fields; never infer eligibility from printed unchecked form choices. If the solicitation uses price-ordered evaluation with fallback branches, preserve the specific qualifying past-performance/clearance ratings and stopping rules. Staffing readiness is an execution condition; do not claim standalone evaluation credit unless it is a scored factor.
+The competitivePosition contains deterministic provisional priced strategies. Explain how the selected delivery approach supports or challenges its explicit rate protections. Do not demand quantities or hours already supplied, or company confidential costs before an independent market planning recommendation. Qualitative alternatives with unquantified savings remain unpriced delivery hypotheses; never imply their effects are already included in the numeric cases.
 Select one option conditionally and explain why EACH other option was not selected. Give concrete change triggers and named validation tasks. Do not claim IBM capabilities, approved costs, historical wins, or a delivery model absent from evidence.
-Do not output dollars, percentage adjustments, quantitative win probabilities, or a numeric corridor. Cite numeric evidence IDs. The current marketPosition range is a heuristic benchmark, not a proposed bid, an optimization objective, or proof of competitor willingness to bid. Later deterministic strategy models must calculate the cost/price effects of explicit, approved scenario inputs.
+Do not output dollars, percentage adjustments, quantitative win probabilities, or a numeric corridor. Cite numeric evidence IDs. The marketPosition range is a supporting benchmark; the separate competitivePosition owns the provisional numerical recommendation. No productivity, teaming or premium dollars are included without explicit numerical inputs. Named competitors require claim-specific evidence tying them to this pursuit or documented predecessor; generic source URLs are insufficient.
 Keep each statement under 1600 characters, validation actions under 600, and the whole response concise.
 INPUT JSON:
-${JSON.stringify(sourceInput(analysis))}
+${JSON.stringify(sourceInput(analysis, true))}
 ${correction}`, strategyResponseSchema);
       return { status: "DRAFT", version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), reviewStatus: "UNREVIEWED", strategy: validateStrategy(raw, analysis) };
     } catch (error) {
@@ -566,8 +1102,8 @@ function classifyStatus(status) {
   return "ERROR";
 }
 function safeMessage(body, status) {
-  const compact = body.replace(/\s+/g, " ").trim().slice(0, 240);
-  return compact ? `HTTP ${status}: ${compact}` : `HTTP ${status}`;
+  const compact2 = body.replace(/\s+/g, " ").trim().slice(0, 240);
+  return compact2 ? `HTTP ${status}: ${compact2}` : `HTTP ${status}`;
 }
 async function fetchJsonWithRetry(url, init = {}, options = {}) {
   const timeoutMs = options.timeoutMs ?? 12e3;
@@ -1092,95 +1628,85 @@ function assessmentIssues(analysis) {
   ])];
 }
 
-// src/domain/laborMatching.ts
-var roles = [
-  [/e.?discovery/i, "eDiscovery Administrator"],
-  [/cloud.*(?:admin|analyst)|tenant.*admin/i, "Cloud Administrator"],
-  [/cloud.*architect|solution.*architect/i, "Cloud Architect"],
-  [/cloud/i, "Cloud Engineer"],
-  [/program manager|project manager/i, "Program Manager"],
-  [/network.*(?:engineer|architect)|sd.?wan/i, "Network Engineer"],
-  [/network.*admin/i, "Network Administrator"],
-  [/system.*admin|endpoint|desktop/i, "Systems Administrator"],
-  [/system.*engineer/i, "Systems Engineer"],
-  [/information.*security|cyber|security.*engineer|\bISSO\b|\bISSM\b/i, "Cybersecurity Engineer"],
-  [/software|application developer|full.?stack/i, "Software Engineer"],
-  [/data scientist/i, "Data Scientist"],
-  [/data engineer/i, "Data Engineer"],
-  [/database/i, "Database Administrator"],
-  [/technical writer/i, "Technical Writer"],
-  [/financial|budget analyst/i, "Financial Analyst"],
-  [/business analyst/i, "Business Analyst"],
-  [/records|record management/i, "Records Manager"],
-  [/service desk|help desk|helpdesk/i, "Help Desk"],
-  [/subject matter expert|\bSME\b/i, "Subject Matter Expert"]
-];
-function laborFamily(value) {
-  return roles.find(([pattern]) => pattern.test(value))?.[1] || value.trim();
-}
-function requiresClearance(value) {
-  return Boolean(value && !/\b(?:none|no|not required|unclassified|public trust)\b/i.test(value) && /secret|\bTS\b|\bSCI\b|cleared/i.test(value));
-}
-function grade(value) {
-  if (/\bsenior\b|\bsr\b|\bprincipal\b|\blead\b|\bSME\b/i.test(value)) return "senior";
-  if (/\bjunior\b|\bjr\b|\bentry\b/i.test(value)) return "junior";
-  return void 0;
-}
-function laborRoleMatch(requested, candidate) {
-  const a = laborFamily(requested).toLowerCase(), b = laborFamily(candidate).toLowerCase();
-  const targetGrade = grade(requested), sourceGrade = grade(candidate);
-  if (targetGrade && sourceGrade && targetGrade !== sourceGrade) return 0;
-  if (a !== b) {
-    const tokens2 = a.split(/[^a-z0-9]+/).filter((t) => t.length > 2);
-    if (!tokens2.length || !tokens2.every((t) => candidate.toLowerCase().includes(t))) return 0;
-  }
-  return targetGrade && !sourceGrade ? 0.65 : 0.85;
-}
-
-// src/domain/laborCoverage.ts
-function laborCoverage(deal, evidence) {
-  const rates = evidence.filter((e) => e.numeric?.valueType === "HOURLY_CEILING_RATE" && e.numeric.units === "USD_PER_HOUR" && e.numeric.originalValue > 0);
-  return (deal.laborSignals || []).map((signal) => {
-    const matches2 = rates.filter((e) => {
-      const n = e.numeric;
-      return (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title) && (!requiresClearance(signal.clearance) || n.clearanceRequired) && laborRoleMatch(signal.title, n.scopeText || e.claim) >= 0.8;
-    });
-    const values = matches2.map((e) => e.numeric.originalValue).sort((a, b) => a - b);
-    const center = values.length ? (values[Math.floor((values.length - 1) / 2)] + values[Math.ceil((values.length - 1) / 2)]) / 2 : null;
-    return {
-      signal,
-      evidenceIds: matches2.map((e) => e.id),
-      medianRate: center,
-      sampleSize: matches2.reduce((sum, e) => sum + (e.numeric.rateSampleSize || 1), 0),
-      lowerRate: matches2[0]?.numeric?.lowerRate ?? center,
-      upperRate: matches2[0]?.numeric?.upperRate ?? center,
-      limitation: matches2.length ? "Public ceiling-rate proxy; verify exact qualifications, clearance level, and worksite." : "No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping."
-    };
-  });
-}
-function laborCoverageGaps(deal, evidence) {
-  const gaps = [];
-  if (deal.laborModelComplete === false) gaps.push({ question: "Complete the documented staffing schedule.", impact: deal.laborModelSource || "Not all labor rows and performance periods were extracted.", priority: "HIGH" });
-  for (const row of laborCoverage(deal, evidence)) {
-    if (row.medianRate == null) gaps.push({ question: `Validate a rate benchmark for ${row.signal.title}.`, impact: row.limitation, priority: "HIGH" });
-    if (!row.signal.periods?.length && !row.signal.quantity) gaps.push({ question: `Confirm staffing quantity for ${row.signal.title}.`, impact: "This labor category cannot be extended into a total without a documented quantity.", priority: "HIGH" });
-  }
-  return gaps;
-}
-
 // src/server/pdfText.ts
+function installPdfTextGlobals() {
+  const g = globalThis;
+  if (!g.DOMMatrix) {
+    g.DOMMatrix = class DOMMatrix {
+      constructor(init) {
+        this.a = 1;
+        this.b = 0;
+        this.c = 0;
+        this.d = 1;
+        this.e = 0;
+        this.f = 0;
+        this.is2D = true;
+        if (init && typeof init !== "string" && init.length >= 6) {
+          [this.a, this.b, this.c, this.d, this.e, this.f] = Array.from(init).slice(0, 6).map(Number);
+        }
+      }
+      multiplySelf(other) {
+        const { a, b, c, d, e, f } = this;
+        this.a = a * other.a + c * other.b;
+        this.b = b * other.a + d * other.b;
+        this.c = a * other.c + c * other.d;
+        this.d = b * other.c + d * other.d;
+        this.e = a * other.e + c * other.f + e;
+        this.f = b * other.e + d * other.f + f;
+        return this;
+      }
+      preMultiplySelf(other) {
+        const current = new g.DOMMatrix([this.a, this.b, this.c, this.d, this.e, this.f]);
+        this.a = other.a;
+        this.b = other.b;
+        this.c = other.c;
+        this.d = other.d;
+        this.e = other.e;
+        this.f = other.f;
+        return this.multiplySelf(current);
+      }
+      translateSelf(tx = 0, ty = 0) {
+        return this.multiplySelf(new g.DOMMatrix([1, 0, 0, 1, tx, ty]));
+      }
+      scaleSelf(sx = 1, sy = sx) {
+        return this.multiplySelf(new g.DOMMatrix([sx, 0, 0, sy, 0, 0]));
+      }
+      rotateSelf(angle = 0) {
+        const r = angle * Math.PI / 180, cos = Math.cos(r), sin = Math.sin(r);
+        return this.multiplySelf(new g.DOMMatrix([cos, sin, -sin, cos, 0, 0]));
+      }
+      transformPoint(point = {}) {
+        const x = Number(point.x ?? 0), y = Number(point.y ?? 0);
+        return { x: this.a * x + this.c * y + this.e, y: this.b * x + this.d * y + this.f, z: point.z ?? 0, w: point.w ?? 1 };
+      }
+    };
+  }
+  if (!g.ImageData) g.ImageData = class ImageData {
+  };
+  if (!g.Path2D) g.Path2D = class Path2D {
+  };
+}
 async function normalizePdfText(file) {
   if (!/\.pdf$/i.test(file.originalname)) return file;
   if (/\bdd[\s+_-]*254\b/i.test(file.originalname)) return file;
-  const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  const task = getDocument({ data: new Uint8Array(file.buffer), isEvalSupported: false, disableFontFace: true, useSystemFonts: true, verbosity: 0 });
+  let task;
   try {
+    installPdfTextGlobals();
+    const { getDocument } = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    task = getDocument({
+      data: new Uint8Array(file.buffer),
+      isEvalSupported: false,
+      disableFontFace: true,
+      useSystemFonts: true,
+      verbosity: 0
+    });
     const pdf = await task.promise;
     const pages = [];
     for (let i = 1; i <= pdf.numPages; i++) {
       const page = await pdf.getPage(i);
       const content = await page.getTextContent();
       const text2 = content.items.map((item) => "str" in item ? `${item.str}${item.hasEOL ? "\n" : " "}` : "").join("").trim();
+      if (i === 1 && /SOLICITATION\/CONTRACT\/ORDER FOR COMMERCIAL|STANDARD FORM\s*1449|SF\s*1449/i.test(text2) && /SET.?ASIDE|WOSB|WOMEN.OWNED|SMALL BUSINESS/i.test(text2)) return file;
       if (text2.replace(/\s/g, "").length < 25) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}
 ${text2}`);
@@ -1188,10 +1714,14 @@ ${text2}`);
     }
     const buffer = Buffer.from(pages.join("\n\n"), "utf8");
     return { ...file, originalname: `${file.originalname}.txt`, mimetype: "text/plain", buffer, size: buffer.length };
-  } catch {
+  } catch (error) {
+    console.warn(`PDF text normalization skipped for ${file.originalname}:`, error);
     return file;
   } finally {
-    await task.destroy();
+    try {
+      await task?.destroy?.();
+    } catch {
+    }
   }
 }
 
@@ -1447,7 +1977,7 @@ async function queryGsaCalc(laborSignals) {
   const retrievedAt = (/* @__PURE__ */ new Date()).toISOString();
   const signals = [...new Map((laborSignals || []).filter((s) => s.title?.trim()).map((s) => [s.title.toLowerCase(), s])).values()].slice(0, 30);
   const queries = [...new Map(signals.map((s) => {
-    const category = laborFamily(s.title), clearance = requiresClearance(s.clearance);
+    const category = laborFamily(benchmarkRole(s)), clearance = requiresClearance(s.clearance);
     return [`${category}|${clearance}`, { category, clearance }];
   })).values()];
   const querySummary = queries.map((q) => `${q.category}${q.clearance ? " (cleared)" : ""}`).join(", ");
@@ -1479,12 +2009,18 @@ async function queryGsaCalc(laborSignals) {
   const evidence = [];
   const messages = [];
   for (const signal of signals) {
-    const result = successful.find((q) => q.category === laborFamily(signal.title) && q.clearance === requiresClearance(signal.clearance));
+    const requestedRole = benchmarkRole(signal);
+    const mappedFamily = laborFamily(requestedRole);
+    const result = successful.find((q) => q.category === mappedFamily && q.clearance === requiresClearance(signal.clearance));
     if (!result) {
       messages.push(`${signal.title}: rate search unavailable.`);
       continue;
     }
-    const matches2 = result.records.filter((r) => laborRoleMatch(signal.title, r.labor_category) >= 0.8);
+    const relevant = result.records.filter((r) => laborRoleMatch(requestedRole, r.labor_category) >= 0.8 && qualificationMatch(signal, r));
+    const exactMatches2 = relevant.filter((r) => r.labor_category.trim().toLowerCase() === requestedRole.trim().toLowerCase());
+    const familyMatches = relevant;
+    const matches2 = exactMatches2.length ? exactMatches2 : familyMatches;
+    const proxyUsed = exactMatches2.length === 0 && familyMatches.length > 0;
     if (!matches2.length) {
       messages.push(`${signal.title}: no rate matched the role and clearance filter.`);
       continue;
@@ -1497,9 +2033,9 @@ async function queryGsaCalc(laborSignals) {
       type: "EXTERNAL_SOURCE",
       sourceLabel: "GSA CALC+ API",
       sourceRecordId: id,
-      claim: `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches2.length} matched contract/category records. ${result.clearance ? "Records require clearance; exact clearance level is not verified." : "No clearance filter applied."} ${result.complete ? "Complete retrieved search population." : "Bounded sample of the search population; provisional benchmark."}`,
-      excerpt: `Search role: ${result.category}. Matched categories: ${[...new Set(matches2.map((r) => r.labor_category))].slice(0, 16).join("; ")}. Record examples: ${matches2.slice(0, 8).map((r) => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour`).join("; ")}`,
-      confidence: result.complete ? 90 : 70,
+      claim: proxyUsed ? `${signal.title}: provisional ${mappedFamily} family proxy with median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches2.length} matched contract/category records. Analyst must validate that the proxy is suitable before pricing use. ${result.clearance ? "Records require clearance; exact clearance level is not verified." : "No clearance filter applied."} ${result.complete ? "Complete retrieved search population." : "Bounded sample of the search population; provisional benchmark."}` : `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches2.length} matched contract/category records. ${result.clearance ? "Records require clearance; exact clearance level is not verified." : "No clearance filter applied."} ${result.complete ? "Complete retrieved search population." : "Bounded sample of the search population; provisional benchmark."}`,
+      excerpt: `Search role: ${result.category}. ${signal.titleConflict ? `Source conflict: ${signal.titleConflict}. Duties/PWS role used: ${requestedRole}. ` : ""}${proxyUsed ? `Solicitation title mapped to ${mappedFamily} as a provisional benchmark family. ` : ""}Matched categories: ${[...new Set(matches2.map((r) => r.labor_category))].slice(0, 16).join("; ")}. Record examples: ${matches2.slice(0, 8).map((r) => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour; experience ${r.min_years_experience ?? "unknown"}; education ${r.education_level || "unknown"}; worksite ${r.worksite || "unknown"}`).join("; ")}`,
+      confidence: proxyUsed ? result.complete ? 75 : 60 : result.complete ? 90 : 70,
       retrievedAt,
       url: result.url,
       numeric: {
@@ -1515,10 +2051,16 @@ async function queryGsaCalc(laborSignals) {
         rateSampleSize: matches2.length,
         rateSampleComplete: result.complete,
         clearanceRequired: result.clearance,
-        laborMatchScore: 0.85,
-        technologySecurityLocation: result.clearance ? "Clearance required; exact level and worksite must be validated." : "Clearance and worksite not constrained."
+        laborMatchScore: proxyUsed ? 0.6 : 0.85,
+        benchmarkFamily: mappedFamily,
+        qualificationFit: "UNVALIDATED",
+        rateDistribution: rates,
+        rateSampleFingerprint: createHash2("sha256").update(JSON.stringify(matches2)).digest("hex"),
+        rateRecords: matches2.slice(0, 40).map((r) => ({ id: String(r.id), category: r.labor_category, vendor: r.vendor_name || "", contract: r.idv_piid || "", rate: Number(r.current_price), experience: r.min_years_experience == null ? void 0 : Number(r.min_years_experience), education: r.education_level || void 0, worksite: r.worksite || void 0, clearance: String(r.security_clearance ?? "unknown") })),
+        technologySecurityLocation: `${proxyUsed ? `Provisional ${mappedFamily} family mapping; validate qualifications. ` : ""}${result.clearance ? "Clearance required; exact level and worksite must be validated." : "Clearance and worksite not constrained."}`
       }
     });
+    if (proxyUsed) messages.push(`${signal.title}: used a provisional ${mappedFamily} family proxy; analyst validation required.`);
     if (!result.complete) messages.push(`${signal.title}: sampled ${matches2.length} matching records from ${result.total} search results.`);
   }
   if (signals.length < laborSignals.length) messages.push("The first 30 distinct labor roles were searched; remaining roles need review.");
@@ -1624,7 +2166,7 @@ async function queryBls() {
 }
 
 // src/domain/marketPosition/engineConfig.ts
-var MARKET_POSITION_ENGINE_VERSION = "market-position-v3.1.0";
+var MARKET_POSITION_ENGINE_VERSION = "market-position-v3.2.0";
 var COMPARABILITY_WEIGHTS = {
   scope: 0.25,
   scale: 0.15,
@@ -1647,159 +2189,6 @@ var ENGINE_THRESHOLDS = {
   oneAnchorMinimumRangeWidth: 0.2,
   twoAnchorMinimumRangeWidth: 0.12
 };
-
-// src/domain/marketPosition/valueNormalization.ts
-var CENTRAL_VALUE_TYPES = /* @__PURE__ */ new Set([
-  "EVALUATED_PRICE",
-  "ESTIMATED_VALUE",
-  "TOTAL_AWARD_VALUE",
-  "EVENTUAL_SPEND"
-]);
-var periodNumberWords = {
-  one: 1,
-  two: 2,
-  three: 3,
-  four: 4,
-  five: 5,
-  six: 6,
-  seven: 7,
-  eight: 8,
-  nine: 9,
-  ten: 10
-};
-var periodNumber = "(\\d+(?:\\.\\d+)?|one|two|three|four|five|six|seven|eight|nine|ten)";
-var periodUnit = "(year|years|yr|yrs|month|months|mo|mos)";
-function periodNumberValue(value) {
-  return periodNumberWords[value] ?? Number(value);
-}
-function durationMonths(value, unit) {
-  const amount2 = periodNumberValue(value);
-  return /^y|^yr/.test(unit) ? amount2 * 12 : amount2;
-}
-function extractPeriodMonths(value) {
-  if (!value) return void 0;
-  const normalized = value.toLowerCase().replace(/,/g, "").replace(/[–—]/g, "-");
-  const basePatterns = [
-    new RegExp(`${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+(?:base|base\\s+period)`),
-    new RegExp(`base(?:\\s+period)?(?:\\s+of|\\s*[:=-])?\\s*${periodNumber}\\s*[- ]?\\s*${periodUnit}`)
-  ];
-  const baseMatch = basePatterns.map((pattern) => normalized.match(pattern)).find(Boolean);
-  const optionDuration = normalized.match(new RegExp(`${periodNumber}\\s+${periodNumber}\\s*[- ]?\\s*${periodUnit}\\s+option`));
-  const optionUnits = normalized.match(new RegExp(`${periodNumber}\\s+option(?:al)?\\s+${periodUnit}`));
-  if (baseMatch && (optionDuration || optionUnits)) {
-    const baseMonths = durationMonths(baseMatch[1], baseMatch[2]);
-    const optionMonths = optionDuration ? periodNumberValue(optionDuration[1]) * durationMonths(optionDuration[2], optionDuration[3]) : periodNumberValue(optionUnits[1]) * durationMonths("1", optionUnits[2]);
-    const total = baseMonths + optionMonths;
-    if (Number.isFinite(total) && total > 0) return total;
-  }
-  const months = normalized.match(/(\d+(?:\.\d+)?)\s*(?:month|months|mo\b)/);
-  if (months) return Number(months[1]);
-  const years = normalized.match(/(\d+(?:\.\d+)?)\s*(?:year|years|yr\b)/);
-  if (years) return Number(years[1]) * 12;
-  return void 0;
-}
-function determineCalculationRole(numeric, asOfDate) {
-  if (!Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) return "EXCLUDED";
-  if (numeric.currency !== "USD" && numeric.units !== "PERCENT") return "EXCLUDED";
-  if (numeric.sharedAcrossAwards) return "EXCLUDED";
-  if (numeric.valueBasis === "PAST_PERFORMANCE_THRESHOLD") return "EXCLUDED";
-  if (numeric.valueBasis === "ORDER_LIMIT") return "CONTEXT";
-  if (["PROGRAM_TOTAL", "MULTIPLE_AWARD_POOL", "BUDGET"].includes(numeric.valueBasis || "")) return "CONTEXT";
-  if (CENTRAL_VALUE_TYPES.has(numeric.valueType)) return numeric.units === "TOTAL_USD" ? "CENTRAL_ANCHOR" : "EXCLUDED";
-  if (numeric.valueType === "CURRENT_AWARD_AMOUNT") {
-    const completed = numeric.endDate && Date.parse(numeric.endDate) <= Date.parse(asOfDate);
-    return completed && numeric.units === "TOTAL_USD" ? "CENTRAL_ANCHOR" : "CONTEXT";
-  }
-  if (numeric.valueType === "CONTRACT_CEILING") {
-    const compatibleBasis = numeric.valueBasis === "OPPORTUNITY_TOTAL" || numeric.valueBasis === "INDIVIDUAL_AWARD";
-    return numeric.units === "TOTAL_USD" && numeric.opportunitySpecific && compatibleBasis ? "CONSTRAINT" : "CONTEXT";
-  }
-  if (numeric.valueType === "HOURLY_CEILING_RATE") return "COMPONENT";
-  if (numeric.valueType === "ESCALATION_RATE") return "MODIFIER";
-  if (["INITIAL_OBLIGATION", "CURRENT_OBLIGATIONS", "BUDGET_CONTEXT"].includes(numeric.valueType)) return "CONTEXT";
-  return "EXCLUDED";
-}
-function normalizeNumericEvidence(evidence, deal, allEvidence, asOfDate) {
-  const numeric = evidence.numeric;
-  if (!numeric || !Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) {
-    return { normalizedValue: null, confidence: 0, steps: [], notes: ["Numeric value is missing or invalid."] };
-  }
-  if (numeric.units !== "TOTAL_USD" || numeric.currency !== "USD") {
-    return {
-      normalizedValue: numeric.originalValue,
-      confidence: 1,
-      steps: [],
-      notes: ["Retained in its native units and barred from total-value weighting."]
-    };
-  }
-  let value = numeric.originalValue;
-  let confidence = numeric.opportunitySpecific ? 1 : 0.95;
-  const steps = [];
-  const notes = [];
-  const targetMonths = extractPeriodMonths(deal.periodOfPerformance);
-  if (numeric.periodMonths && targetMonths && numeric.periodMonths !== targetMonths) {
-    if (numeric.recurringService) {
-      const factor = targetMonths / numeric.periodMonths;
-      value *= factor;
-      confidence *= 0.95;
-      steps.push({
-        type: "PERIOD",
-        factor,
-        rationale: `Recurring service value normalized from ${numeric.periodMonths} to ${targetMonths} months.`,
-        evidenceIds: [evidence.id]
-      });
-    } else {
-      confidence *= 0.72;
-      notes.push("Period differs from the target and could not be normalized without assuming steady-state services.");
-    }
-  } else if (!numeric.opportunitySpecific && (!numeric.periodMonths || !targetMonths)) {
-    confidence *= 0.85;
-    notes.push("Period normalization was not possible because one period was unavailable.");
-  }
-  if (numeric.quantity && numeric.targetQuantity && numeric.quantity !== numeric.targetQuantity) {
-    if (numeric.scalableByQuantity) {
-      const factor = numeric.targetQuantity / numeric.quantity;
-      value *= factor;
-      confidence *= 0.95;
-      steps.push({
-        type: "QUANTITY",
-        factor,
-        rationale: `Value normalized from quantity ${numeric.quantity} to ${numeric.targetQuantity}.`,
-        evidenceIds: [evidence.id]
-      });
-    } else {
-      confidence *= 0.75;
-      notes.push("Scale differs from the target and no evidence supports linear quantity scaling.");
-    }
-  }
-  const targetYear = new Date(asOfDate).getUTCFullYear();
-  if (numeric.baseYear && numeric.baseYear < targetYear) {
-    const yearDifference = targetYear - numeric.baseYear;
-    const escalation = allEvidence.find(
-      (item) => item.numeric?.valueType === "ESCALATION_RATE" && item.numeric.units === "PERCENT" && item.numeric.originalValue > 0 && item.numeric.originalValue < 20
-    );
-    if (escalation?.numeric && yearDifference <= 3) {
-      const factor = (1 + escalation.numeric.originalValue / 100) ** yearDifference;
-      value *= factor;
-      confidence *= 0.93;
-      steps.push({
-        type: "ESCALATION",
-        factor,
-        rationale: `Escalated ${yearDifference} year${yearDifference === 1 ? "" : "s"} using the cited BLS change rate.`,
-        evidenceIds: [evidence.id, escalation.id]
-      });
-    } else if (yearDifference > 1) {
-      confidence *= 0.8;
-      notes.push("The value year differs from the analysis year and no sufficiently applicable escalation series was available.");
-    }
-  }
-  return {
-    normalizedValue: Number.isFinite(value) ? value : null,
-    confidence: Math.max(0, Math.min(1, confidence)),
-    steps,
-    notes
-  };
-}
 
 // src/domain/marketPosition/comparability.ts
 var STOP_WORDS = /* @__PURE__ */ new Set(["and", "the", "for", "with", "from", "this", "that", "services", "service", "support", "contract"]);
@@ -2141,73 +2530,13 @@ function scenarioFromAnchors(method, methodLabel, anchors, gaps) {
     sensitivities: []
   };
 }
-function median(values) {
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
-}
 function bottomUpCandidate(draft) {
-  const months = draft.deal.performanceMonths || extractPeriodMonths(draft.deal.periodOfPerformance);
-  const labor = (draft.deal.laborSignals || []).filter((signal) => signal.title?.trim());
-  if (!months || !labor.length || draft.deal.laborModelComplete === false) return null;
-  if (labor.some((signal) => !signal.periods?.length && (!signal.quantity || signal.quantity <= 0))) return null;
-  const assumedAnnualHours = labor.filter((signal) => signal.periods?.length ? signal.periods.some((p) => p.totalHours == null && !p.annualHours && !signal.annualHours) : !signal.annualHours);
-  const rates = draft.evidence.filter(
-    (item) => item.numeric?.valueType === "HOURLY_CEILING_RATE" && item.numeric.units === "USD_PER_HOUR" && item.numeric.currency === "USD" && item.numeric.originalValue > 0
-  );
-  if (!rates.length) return null;
-  const components = [];
-  for (const signal of labor) {
-    const matches2 = rates.filter((item) => {
-      const n = item.numeric;
-      if (n.matchedLaborCategory && n.matchedLaborCategory !== signal.title) return false;
-      if (requiresClearance(signal.clearance) && !n.clearanceRequired) return false;
-      return laborRoleMatch(signal.title, n.scopeText || item.claim) >= 0.8;
-    });
-    if (!matches2.length) return null;
-    const hourlyRate = median(matches2.map((item) => item.numeric.originalValue));
-    const lowerRate = median(matches2.map((item) => item.numeric.lowerRate ?? item.numeric.originalValue));
-    const upperRate = median(matches2.map((item) => item.numeric.upperRate ?? item.numeric.originalValue));
-    const periods = signal.periods?.length ? [...signal.periods].sort((a, b) => a.startMonth - b.startMonth) : [{ label: "Full performance period", startMonth: 0, months, quantity: signal.quantity, annualHours: signal.annualHours, section: signal.section }];
-    let covered = 0;
-    for (const period of periods) {
-      if (!Number.isFinite(period.startMonth) || Math.abs(period.startMonth - covered) > 0.01 || !(period.months > 0) || !Number.isFinite(period.quantity) || period.quantity < 0) return null;
-      covered += period.months;
-      const documentedHours = period.annualHours || signal.annualHours;
-      const annualHours = documentedHours && documentedHours > 0 ? documentedHours : 2080;
-      const totalHours = "totalHours" in period ? period.totalHours : void 0;
-      if (documentedHours && documentedHours > 8784) return null;
-      if (totalHours != null && (!Number.isFinite(totalHours) || totalHours < 0 || period.quantity > 0 && totalHours === 0)) return null;
-      const hours = totalHours != null ? totalHours * 12 / period.months : period.quantity * annualHours;
-      components.push({
-        label: `${signal.title} / ${period.label}: ${totalHours != null ? `${totalHours} total row hours (${period.quantity} FTE; no additional quantity or duration multiplication)` : `${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? "" : " (planning assumption)"} x ${period.months}/12 years`} x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || "Extracted schedule"}; rates ${matches2.map((item) => item.id).join(", ")}.`,
-        annualCost: hours * hourlyRate,
-        lowCost: hours * lowerRate,
-        highCost: hours * upperRate,
-        startMonth: period.startMonth,
-        months: period.months,
-        evidenceIds: matches2.map((item) => item.id)
-      });
-    }
-    if (Math.abs(covered - months) > 0.01) return null;
-  }
-  const escalationEvidence = draft.evidence.find(
-    (item) => item.numeric?.valueType === "ESCALATION_RATE" && item.numeric.units === "PERCENT" && item.numeric.originalValue > 0 && item.numeric.originalValue < 20
-  );
-  const escalation = escalationEvidence?.numeric ? escalationEvidence.numeric.originalValue / 100 : 0;
-  const total = (field) => components.reduce((sum, c) => {
-    let amount2 = 0;
-    for (let offset = 0; offset < c.months; offset += 1) {
-      amount2 += c[field] / 12 * Math.min(1, c.months - offset) * (1 + escalation) ** Math.floor((c.startMonth + offset) / 12);
-    }
-    return sum + amount2;
-  }, 0);
-  const expected = total("annualCost");
+  const model2 = buildLaborModel(draft.deal, draft.evidence);
+  if (!model2.complete) return null;
+  const expected = laborTotal(model2.rows, "medianRate");
   if (!Number.isFinite(expected) || expected <= 0) return null;
-  const evidenceIds = [.../* @__PURE__ */ new Set([
-    ...components.flatMap((component) => component.evidenceIds),
-    ...escalationEvidence ? [escalationEvidence.id] : []
-  ])];
+  const assumed = model2.rows.some((r) => r.assumedHours);
+  const evidenceIds = [.../* @__PURE__ */ new Set([...model2.rows.flatMap((r) => r.evidenceIds), ...model2.escalationEvidenceId ? [model2.escalationEvidenceId] : []])];
   const synthetic = {
     id: "ANCHOR-MODEL-BOTTOM-UP",
     evidenceId: "MODEL-BOTTOM-UP",
@@ -2218,23 +2547,12 @@ function bottomUpCandidate(draft) {
     units: "TOTAL_USD",
     role: "CENTRAL_ANCHOR",
     comparabilityScore: 1,
-    comparability: {
-      scope: 1,
-      scale: 1,
-      acquisition: 1,
-      customer: 1,
-      period: 1,
-      naicsPsc: 1,
-      laborIntensity: 1,
-      recency: 1,
-      technologySecurityLocation: 1,
-      coverage: 1
-    },
-    evidenceQuality: assumedAnnualHours.length ? 0.72 : 0.86,
-    normalizationConfidence: assumedAnnualHours.length ? 0.62 : escalationEvidence || months <= 12 ? 0.84 : 0.76,
-    weight: assumedAnnualHours.length ? 0.45 : 0.72,
+    comparability: { scope: 1, scale: 1, acquisition: 1, customer: 1, period: 1, naicsPsc: 1, laborIntensity: 1, recency: 1, technologySecurityLocation: 1, coverage: 1 },
+    evidenceQuality: assumed ? 0.72 : 0.86,
+    normalizationConfidence: assumed ? 0.62 : 0.84,
+    weight: assumed ? 0.45 : 0.72,
     included: true,
-    inclusionRationale: assumedAnnualHours.length ? "Documented staffing quantities were multiplied by matched official hourly-rate evidence using an explicit annual-hours planning assumption." : "Complete solicitation staffing quantities and hours were multiplied by matched official hourly-rate evidence.",
+    inclusionRationale: "Documented quantities and hours were extended with public loaded-rate proxies. Rate relevance and competitive confidence remain separate.",
     exclusionReasons: [],
     normalizationSteps: [],
     evidenceIds,
@@ -2242,38 +2560,36 @@ function bottomUpCandidate(draft) {
     valueBasis: "OPPORTUNITY_TOTAL"
   };
   const readiness = calculateEvidenceReadiness([synthetic], draft.gaps, 0);
-  const rangeWidth = Math.max(ENGINE_THRESHOLDS.oneAnchorMinimumRangeWidth, assumedAnnualHours.length ? 0.35 : 0.2);
-  const hasDistribution = rates.some((rate) => rate.numeric?.lowerRate != null);
-  const modelWidth = hasDistribution ? Math.max(expected - total("lowCost"), total("highCost") - expected) / expected : rangeWidth;
+  const hasDistribution = draft.evidence.some((e) => e.numeric?.valueType === "HOURLY_CEILING_RATE" && e.numeric.lowerRate != null);
+  const fallbackWidth = assumed ? 0.35 : 0.2;
+  const low = hasDistribution ? laborTotal(model2.rows, "lowRate") : expected * (1 - fallbackWidth);
+  const high = hasDistribution ? laborTotal(model2.rows, "highRate") : expected * (1 + fallbackWidth);
   return {
     method: "BOTTOM_UP_LABOR",
-    methodLabel: assumedAnnualHours.length ? "Provisional bottom-up labor estimate" : "Bottom-up labor model",
+    methodLabel: assumed ? "Provisional bottom-up labor estimate" : "Bottom-up labor model",
     anchors: [synthetic],
-    aggressive: roundCurrency(rates.some((r) => r.numeric?.lowerRate != null) ? total("lowCost") : expected * (1 - rangeWidth)),
+    aggressive: roundCurrency(low),
     expected: roundCurrency(expected),
-    conservative: roundCurrency(rates.some((r) => r.numeric?.upperRate != null) ? total("highCost") : expected * (1 + rangeWidth)),
+    conservative: roundCurrency(high),
     status: "DIRECTIONAL",
     readiness,
     sampleSize: 1,
     dispersion: 0,
-    rangeWidth: modelWidth,
+    rangeWidth: Math.max(expected - low, high - expected) / expected,
     rangeFactors: [
-      `${assumedAnnualHours.length ? "Documented staffing quantities" : "Complete quantified staffing"} were modeled across ${months} months.`,
-      hasDistribution ? "Lower and upper references use matched sample rate quartiles; the spread measures benchmark dispersion, not bid strategy." : assumedAnnualHours.length ? "A 35% provisional planning band reflects assumed productive hours, labor mix, fee, and non-labor uncertainty." : "A 20% planning band reflects labor mix, fee, and non-labor uncertainty."
+      `Complete quantified staffing was modeled across ${draft.deal.performanceMonths || extractPeriodMonths(draft.deal.periodOfPerformance)} months.`,
+      hasDistribution ? "Summed role quartiles describe labor-rate scenarios, not a total-price statistical confidence interval or verified competitor offers." : `A ${fallbackWidth * 100}% provisional planning band is an assumption because matched rate distributions are unavailable.`
     ],
     assumptions: [
-      "This is a labor-only public ceiling-rate benchmark, not a predicted winning bid or guaranteed task-order revenue. Rate matches require analyst validation of qualifications, exact clearance level, and worksite.",
-      ...rates.some((r) => r.numeric?.lowerRate != null) ? ["Lower and upper references use the matched sample lower and upper quartiles; they are not confidence intervals or competitor bids."] : [],
-      assumedAnnualHours.length ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(", ")}; 2,080 hours per FTE-year is used only as a visible planning assumption.` : "The extracted staffing quantities and documented hours represent the complete priced labor model.",
-      "Matched GSA CALC+ values are treated as loaded public ceiling-rate proxies, not company-specific rates.",
-      escalationEvidence ? `BLS escalation evidence (${escalationEvidence.id}) was applied by performance year.` : "No escalation was applied because a suitable cited series was unavailable.",
-      "Travel, materials, ODCs, subcontractor premiums, fee, and unpriced CLINs are excluded unless embedded in the cited rates."
+      ...model2.assumptions,
+      "This is a labor-only public loaded ceiling-rate benchmark, not company cost, a winning bid or guaranteed task-order revenue.",
+      "Qualifications, clearance level, worksite and source-role conflicts require analyst review.",
+      "Specified travel and other evaluated components are included separately in the competitive scenario model; avoid adding embedded labor burden or fee twice."
     ],
-    verifiedInputs: components.map((component) => component.label),
+    verifiedInputs: model2.rows.map((r) => `${r.title} / ${r.period}: ${r.hours} total row hours (${r.fte} FTE; no additional quantity or duration multiplication) x median ${r.medianRate.toFixed(2)} USD/hour x escalation factor ${r.factor}. Source: ${r.source}; rates ${r.evidenceIds.join(", ")}.`),
     sensitivities: [
-      ...assumedAnnualHours.length ? ["Replace the 2,080-hour planning assumption with solicitation-specific productive hours as soon as they are known."] : [],
-      "Changes to staffing mix, productive hours, or period of performance move the estimate directly.",
-      "Company-specific rates, fee, ODCs, and subcontractor structure may materially change the working position."
+      "Changes to staffing mix, productive hours, period coverage or proxy relevance move the estimate directly.",
+      ...assumed ? ["Replace the 2,080-hour planning assumption with solicitation-specific productive hours as soon as they are known."] : []
     ]
   };
 }
@@ -2363,7 +2679,7 @@ function calculateDeterministicScenarios(draft, options) {
   const comparableLabel = comparableMethod === "PARAMETRIC_ANALOGY" ? "Normalized analogous awards" : "Comparable awards";
   const comparableCandidate = scenarioFromAnchors(comparableMethod, comparableLabel, indirect, draft.gaps);
   const bottomUp = bottomUpCandidate(draft);
-  const benchmark = publicBenchmark(comparableCandidate);
+  const benchmark = publicBenchmark(comparableCandidate && comparableCandidate.status !== "INSUFFICIENT_EVIDENCE" ? comparableCandidate : bottomUp);
   let selected = null;
   if (directCandidate && directCandidate.status !== "INSUFFICIENT_EVIDENCE") {
     selected = directCandidate;
@@ -2485,292 +2801,6 @@ import PDFDocument from "pdfkit";
 var regularFontData = "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";
 var boldFontData = "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";
 
-// src/exports/executivePdf.ts
-var colors = {
-  navy: "#10243E",
-  blue: "#1769E0",
-  paleBlue: "#EAF2FF",
-  ink: "#172033",
-  muted: "#667085",
-  line: "#DDE3EC",
-  panel: "#F6F8FB",
-  amber: "#A65F00",
-  paleAmber: "#FFF6E6",
-  green: "#087A55"
-};
-var pageWidth = 612;
-var margin = 42;
-var contentWidth = pageWidth - margin * 2;
-var regularFont = "FMP-Regular";
-var boldFont = "FMP-Bold";
-function clean(value) {
-  return String(value ?? "").replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\u2022/g, "-").replace(/\s+/g, " ").trim();
-}
-function truncate(value, length = 220) {
-  const normalized = clean(value);
-  return normalized.length <= length ? normalized : `${normalized.slice(0, length - 3).trim()}...`;
-}
-function money(value) {
-  return value == null ? "Not supportable" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(value);
-}
-function label(doc, value, x, y, width, color = colors.muted) {
-  doc.font(boldFont).fontSize(7.5).fillColor(color).text(clean(value).toUpperCase(), x, y, {
-    width,
-    lineBreak: false
-  });
-}
-function bulletList(doc, values, x, y, width, maxItems = 3) {
-  let currentY = y;
-  const items = values.filter(Boolean).slice(0, maxItems);
-  if (!items.length) {
-    doc.font(regularFont).fontSize(9).fillColor(colors.muted).text("No additional items were recorded.", x, currentY, { width });
-    return currentY + 18;
-  }
-  for (const item of items) {
-    doc.circle(x + 3, currentY + 5, 1.6).fill(colors.blue);
-    doc.font(regularFont).fontSize(8.7).fillColor(colors.ink).text(truncate(item, 170), x + 11, currentY, {
-      width: width - 11,
-      lineGap: 2,
-      height: 38,
-      ellipsis: true
-    });
-    currentY += Math.max(24, doc.heightOfString(truncate(item, 170), { width: width - 11, lineGap: 2 }) + 8);
-  }
-  return currentY;
-}
-function sectionTitle(doc, title, y) {
-  label(doc, title, margin, y, contentWidth);
-  doc.moveTo(margin, y + 14).lineTo(pageWidth - margin, y + 14).strokeColor(colors.line).lineWidth(0.7).stroke();
-  return y + 25;
-}
-function scenarioCard(doc, x, y, width, title, value, emphasized = false) {
-  const fill = emphasized ? colors.blue : colors.panel;
-  const text2 = emphasized ? "#FFFFFF" : colors.ink;
-  doc.roundedRect(x, y, width, 72, 8).fill(fill);
-  label(doc, title, x + 14, y + 14, width - 28, emphasized ? "#DCE9FF" : colors.muted);
-  doc.font(boldFont).fontSize(emphasized ? 17 : 14).fillColor(text2).text(money(value), x + 14, y + 34, {
-    width: width - 28,
-    lineBreak: false,
-    ellipsis: true
-  });
-}
-function pageHeader(doc, analysis) {
-  doc.rect(0, 0, pageWidth, 108).fill(colors.navy);
-  label(doc, "Federal PTW Intelligence - Supporting Market Evidence", margin, 24, contentWidth, "#AFCBFA");
-  doc.font(boldFont).fontSize(18).fillColor("#FFFFFF").text(truncate(analysis.deal.title, 105), margin, 42, {
-    width: contentWidth,
-    height: 43,
-    ellipsis: true,
-    lineGap: 2
-  });
-  doc.font(regularFont).fontSize(8.5).fillColor("#D6E0EE").text(
-    clean([analysis.deal.agency, analysis.deal.solicitationNumber].filter(Boolean).join("  |  ")),
-    margin,
-    88,
-    { width: contentWidth - 120, lineBreak: false, ellipsis: true }
-  );
-  doc.font(boldFont).fontSize(8).fillColor("#D6E0EE").text(
-    new Date(analysis.meta.analyzedAt).toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric" }),
-    pageWidth - margin - 105,
-    88,
-    { width: 105, align: "right", lineBreak: false }
-  );
-}
-function buildFirstPage(doc, analysis) {
-  const position = analysis.marketPosition;
-  pageHeader(doc, analysis);
-  label(doc, "Benchmark basis", margin, 128, 120);
-  doc.font(boldFont).fontSize(10).fillColor(colors.ink).text(truncate(position.methodLabel, 70), margin, 144, { width: 260, lineBreak: false, ellipsis: true });
-  label(doc, "Confidence", 334, 128, 80);
-  doc.font(boldFont).fontSize(10).fillColor(position.confidence === "HIGH" ? colors.green : position.confidence === "MEDIUM" ? colors.amber : "#B42318").text(position.confidence, 334, 144, { width: 70, lineBreak: false });
-  label(doc, "Evidence readiness", 432, 128, 138);
-  doc.font(boldFont).fontSize(10).fillColor(colors.ink).text(`${position.evidenceReadiness.score}/100`, 432, 144, { width: 138, lineBreak: false });
-  const gap = 10;
-  const cardWidth = (contentWidth - gap * 2) / 3;
-  scenarioCard(doc, margin, 176, cardWidth, "Lower reference", position.aggressive);
-  scenarioCard(doc, margin + cardWidth + gap, 176, cardWidth, "Central reference", position.expected, true);
-  scenarioCard(doc, margin + (cardWidth + gap) * 2, 176, cardWidth, "Upper reference", position.conservative);
-  doc.font(regularFont).fontSize(8).fillColor(colors.muted).text("Heuristic market references; strategy-specific bid scenarios require further modeling.", margin, 255, { width: contentWidth });
-  if (analysis.ptwStrategy?.status !== "DRAFT") {
-    doc.font(boldFont).fontSize(8).fillColor(colors.amber).text("STRATEGY INCOMPLETE \u2014 see assessment issues and next actions.", margin, 162, { width: contentWidth, lineBreak: false });
-  }
-  let y = sectionTitle(doc, "Qualitative market assessment", 272);
-  doc.font(boldFont).fontSize(12).fillColor(colors.navy).text(truncate(analysis.narrative.headline, 150), margin, y, { width: contentWidth, lineGap: 3 });
-  y += doc.heightOfString(truncate(analysis.narrative.headline, 150), { width: contentWidth, lineGap: 3 }) + 7;
-  doc.font(regularFont).fontSize(9.3).fillColor(colors.ink).text(truncate(analysis.narrative.rationale, 370), margin, y, { width: contentWidth, lineGap: 3, height: 58, ellipsis: true });
-  const columnsY = 385;
-  const columnWidth = (contentWidth - 20) / 2;
-  doc.roundedRect(margin, columnsY, columnWidth, 154, 8).fill(colors.panel);
-  doc.roundedRect(margin + columnWidth + 20, columnsY, columnWidth, 154, 8).fill(colors.paleAmber);
-  label(doc, "Benchmark evidence", margin + 14, columnsY + 14, columnWidth - 28, colors.blue);
-  bulletList(doc, [...analysis.narrative.decisionFactors, ...position.basis], margin + 14, columnsY + 36, columnWidth - 28, 3);
-  label(doc, "What could move it", margin + columnWidth + 34, columnsY + 14, columnWidth - 28, colors.amber);
-  bulletList(doc, [...position.sensitivities, ...analysis.narrative.guardrails], margin + columnWidth + 34, columnsY + 36, columnWidth - 28, 3);
-  y = sectionTitle(doc, "Recommended next actions", 568);
-  const actions = analysis.narrative.nextActions.slice(0, 3);
-  actions.forEach((action, index) => {
-    doc.roundedRect(margin, y - 2, 19, 19, 9.5).fill(colors.paleBlue);
-    doc.font(boldFont).fontSize(8).fillColor(colors.blue).text(String(index + 1), margin, y + 4, { width: 19, align: "center", lineBreak: false });
-    doc.font(regularFont).fontSize(8.8).fillColor(colors.ink).text(truncate(action, 155), margin + 29, y, { width: contentWidth - 29, height: 30, ellipsis: true, lineGap: 2 });
-    y += 34;
-  });
-  const benchmarkY = 672;
-  doc.roundedRect(margin, benchmarkY, contentWidth, 38, 7).fill(colors.panel);
-  label(doc, "Public market benchmark", margin + 12, benchmarkY + 9, 145);
-  doc.font(boldFont).fontSize(8.5).fillColor(colors.ink).text(
-    `${position.publicBenchmark.status.replaceAll("_", " ")}${position.publicBenchmark.expected !== null ? `  |  ${money(position.publicBenchmark.expected)}` : ""}`,
-    margin + 170,
-    benchmarkY + 13,
-    { width: contentWidth - 182, align: "right", lineBreak: false, ellipsis: true }
-  );
-}
-function buildPricingPages(doc, analysis) {
-  const scenario = analysis.pricingScenario;
-  if (!scenario) return;
-  let y = margin;
-  const paragraph = (value, heading = false) => {
-    doc.font(heading ? boldFont : regularFont).fontSize(heading ? 12 : 9);
-    const text2 = clean(value);
-    const height = doc.heightOfString(text2, { width: contentWidth, lineGap: 3 });
-    if (y + height > 690) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.fillColor(heading ? colors.navy : colors.ink).text(text2, margin, y, { width: contentWidth, lineGap: 3 });
-    y += height + 12;
-  };
-  paragraph("Conditional offer scenarios", true);
-  paragraph(analysis.deal.title, true);
-  paragraph(`Target offer: ${money(scenario.target)} | Lower offer: ${money(scenario.low)} | Upper offer: ${money(scenario.high)}`, true);
-  paragraph("Analyst-entered quantities and offered rates. These scenarios do not establish a winning price or probability. Confirm competitive evidence, compliance and execution feasibility before pricing use.");
-  paragraph(`Evaluation basis: ${scenario.inputs.evaluationBasis}`);
-  paragraph(`Evaluation source: ${scenario.inputs.basisSource}`);
-  paragraph(scenario.formula);
-  scenario.inputs.lines.forEach((line, index) => {
-    paragraph(`${index + 1}. ${line.label}`, true);
-    paragraph(`Evaluated quantity: ${line.quantity}. Offered unit prices - lower ${money(line.lowUnitPrice)}, target ${money(line.targetUnitPrice)}, upper ${money(line.highUnitPrice)}.`);
-    paragraph(`Sources and assumptions: ${line.source}`);
-  });
-  doc.addPage();
-}
-function buildStrategyPages(doc, analysis) {
-  if (analysis.ptwStrategy?.status !== "DRAFT") return;
-  const strategy = analysis.ptwStrategy.strategy;
-  let y = margin;
-  const paragraph = (value, heading = false) => {
-    const font = heading ? boldFont : regularFont;
-    const size = heading ? 11 : 9;
-    doc.font(font).fontSize(size);
-    const height = doc.heightOfString(clean(value), { width: contentWidth, lineGap: 3 });
-    if (y + height + (heading ? 55 : 0) > 697) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.font(font).fontSize(size).fillColor(heading ? colors.navy : colors.ink).text(clean(value), margin, y, { width: contentWidth, lineGap: 3 });
-    y += height + (heading ? 7 : 12);
-  };
-  paragraph("Federal PTW Intelligence - Strategic decision brief", true);
-  paragraph(analysis.deal.title, true);
-  paragraph("Analyst review required. Claims and assumptions below are unreviewed. A priced competitive corridor requires validated strategy-specific inputs; the later market references are supporting evidence.");
-  const selected = strategy.options.find((o) => o.id === strategy.recommendation.selectedOptionId);
-  paragraph(`Recommended approach: ${selected?.name || "Review required"}`, true);
-  paragraph(strategy.recommendation.rationale.text);
-  for (const { section, statement: statement2 } of strategyStatements(strategy)) {
-    paragraph(section, true);
-    paragraph(`${statement2.kind}: ${statement2.text}`);
-    paragraph(`Sources: ${statement2.evidenceIds.join(", ") || "Working assumption"}.${statement2.validationAction ? ` Validate: ${statement2.validationAction}` : ""}`);
-  }
-  if (strategy.missingInputs.length) {
-    paragraph("Inputs needed to price and validate the strategy", true);
-    strategy.missingInputs.forEach((v) => paragraph(v));
-  }
-  const sourceIds = new Set(strategyStatements(strategy).flatMap((row) => row.statement.evidenceIds));
-  paragraph("Strategy evidence locators", true);
-  analysis.evidence.filter((e) => sourceIds.has(e.id)).forEach((e) => paragraph(`${e.id}: ${e.sourceLabel}. ${e.section || e.sourceRecordId || ""} ${e.url || ""}`));
-  doc.addPage();
-}
-function buildSecondPage(doc, analysis) {
-  const position = analysis.marketPosition;
-  doc.addPage();
-  label(doc, "Federal Market Position - Evidence Basis", margin, 36, contentWidth, colors.blue);
-  doc.font(boldFont).fontSize(16).fillColor(colors.navy).text("Decision support and calculation lineage", margin, 55, { width: contentWidth });
-  doc.moveTo(margin, 84).lineTo(pageWidth - margin, 84).strokeColor(colors.line).stroke();
-  let y = sectionTitle(doc, "Primary calculation inputs", 104);
-  const used = position.anchors.filter((anchor) => anchor.included).slice(0, 7);
-  if (!used.length) {
-    doc.roundedRect(margin, y, contentWidth, 46, 7).fill(colors.paleAmber);
-    doc.font(regularFont).fontSize(9).fillColor(colors.amber).text("No eligible numeric input supported a responsible estimate.", margin + 12, y + 16, { width: contentWidth - 24 });
-    y += 60;
-  } else {
-    label(doc, "Source / evidence", margin, y, 260);
-    label(doc, "Normalized value", 392, y, 178);
-    y += 17;
-    for (const anchor of used) {
-      doc.moveTo(margin, y + 29).lineTo(pageWidth - margin, y + 29).strokeColor("#EDF0F5").lineWidth(0.6).stroke();
-      doc.font(boldFont).fontSize(8.5).fillColor(colors.ink).text(truncate(anchor.sourceLabel, 72), margin, y, { width: 250, lineBreak: false, ellipsis: true });
-      doc.font(regularFont).fontSize(7.7).fillColor(colors.muted).text(truncate(`${anchor.evidenceId} | ${anchor.valueType.replaceAll("_", " ")}`, 88), margin, y + 13, { width: 310, lineBreak: false, ellipsis: true });
-      doc.font(boldFont).fontSize(9).fillColor(colors.ink).text(money(anchor.normalizedValue ?? anchor.originalValue), 392, y + 5, { width: 178, align: "right", lineBreak: false, ellipsis: true });
-      y += 34;
-    }
-    y += 10;
-  }
-  const paragraph = (text2, heading = false) => {
-    doc.font(heading ? boldFont : regularFont).fontSize(heading ? 10 : 8.5);
-    const value = clean(text2);
-    const height = doc.heightOfString(value, { width: contentWidth, lineGap: 3 });
-    if (y + height + (heading ? 40 : 0) > 690) {
-      doc.addPage();
-      y = margin;
-    }
-    doc.fillColor(heading ? colors.navy : colors.ink).text(value, margin, y, { width: contentWidth, lineGap: 3 });
-    y += height + 10;
-  };
-  paragraph("Source coverage", true);
-  (analysis.meta.connectors || []).forEach((c) => paragraph(`${c.name}: ${c.status.replaceAll("_", " ")}. ${c.recordsFound} evidence records. ${c.message || ""}`));
-  paragraph("Assumptions and constraints", true);
-  [...position.assumptions, ...position.constraints].forEach((value) => paragraph(value));
-  paragraph("Critical gaps and assessment issues", true);
-  const issues = assessmentIssues(analysis);
-  (issues.length ? issues : ["No critical gaps were recorded in this assessment."]).forEach((value) => paragraph(value));
-  paragraph(`Method: ${position.methodLabel} | Engine: ${position.formulaVersion} | Status: ${position.rangeStatus.replaceAll("_", " ")}`);
-}
-function addFooters(doc) {
-  const range = doc.bufferedPageRange();
-  for (let index = range.start; index < range.start + range.count; index += 1) {
-    doc.switchToPage(index);
-    doc.moveTo(margin, 720).lineTo(pageWidth - margin, 720).strokeColor(colors.line).lineWidth(0.6).stroke();
-    doc.font(regularFont).fontSize(7).fillColor(colors.muted).text("Federal PTW Intelligence | Decision support - validate before bid submission", margin, 725, {
-      width: contentWidth - 65,
-      lineBreak: false,
-      ellipsis: true
-    });
-    doc.font(boldFont).fontSize(7).fillColor(colors.muted).text(`${index + 1} / ${range.count}`, pageWidth - margin - 55, 725, {
-      width: 55,
-      align: "right",
-      lineBreak: false
-    });
-  }
-}
-function createExecutivePdf(analysis) {
-  return new Promise((resolve, reject) => {
-    const regular = Buffer.from(regularFontData, "base64");
-    const bold = Buffer.from(boldFontData, "base64");
-    const doc = new PDFDocument({ font: regular, size: "LETTER", margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: true });
-    doc.registerFont(regularFont, regular);
-    doc.registerFont(boldFont, bold);
-    const chunks = [];
-    doc.on("data", (chunk) => chunks.push(chunk));
-    doc.on("error", reject);
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    buildPricingPages(doc, analysis);
-    buildStrategyPages(doc, analysis);
-    buildFirstPage(doc, analysis);
-    buildSecondPage(doc, analysis);
-    addFooters(doc);
-    doc.end();
-  });
-}
-
 // src/domain/marketPosition/authoritative.ts
 var currencyClaim = /(?:\$\s?\d[\d,.]*(?:\s?(?:million|billion|m|b))?|\bUSD\s+\d[\d,.]*|\b\d+(?:\.\d+)?\s*(?:million|billion)\b|\b\d{1,3}(?:,\d{3}){2,}\b)/gi;
 function scrubText(value) {
@@ -2862,7 +2892,7 @@ function createLegacyPosition(position = {}) {
   };
 }
 function enforceAuthoritativeAnalysis(analysis) {
-  analysis = { ...analysis, gaps: normalizeGaps(analysis.gaps) };
+  analysis = reconcileSourceFacts({ ...analysis, gaps: normalizeGaps(analysis.gaps) });
   const analyzedAt = analysis.meta?.analyzedAt;
   if (!analyzedAt || Number.isNaN(Date.parse(analyzedAt))) {
     throw new Error("Analysis metadata must include a valid analyzedAt date.");
@@ -2875,7 +2905,7 @@ function enforceAuthoritativeAnalysis(analysis) {
     gaps: analysis.gaps || [],
     marketAssessment
   }, { asOfDate: analyzedAt });
-  return {
+  const result = {
     ...analysis,
     marketPosition,
     narrative: sanitizeNarrative(analysis.narrative || {
@@ -2887,12 +2917,371 @@ function enforceAuthoritativeAnalysis(analysis) {
     }),
     meta: {
       ...analysis.meta,
-      warnings: [...new Set(analysis.meta.warnings || [])]
+      warnings: [...new Set(analysis.meta.warnings || [])].filter((w) => !resolvedGap(w, analysis.deal))
     }
   };
+  result.competitivePosition = calculateCompetitivePosition(result);
+  return result;
 }
 function isCurrentEngine(position) {
   return position?.formulaVersion === MARKET_POSITION_ENGINE_VERSION;
+}
+
+// src/exports/executivePdf.ts
+var colors = { navy: "#103243", teal: "#007E7A", ink: "#172D3A", muted: "#617580", line: "#DAE4E8", panel: "#F0F5F7", amber: "#965A12" };
+var pageWidth = 612;
+var margin = 42;
+var contentWidth = 528;
+var regularFont = "FMP-Regular";
+var boldFont = "FMP-Bold";
+var clean = (v) => String(v ?? "").replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, " ").trim();
+var short = (v, n = 190) => {
+  const s = clean(v);
+  return s.length > n ? `${s.slice(0, n - 3)}...` : s;
+};
+var money = (v) => v == null ? "Not established" : new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(v);
+var compact = (v) => v == null ? "Model incomplete" : v >= 1e6 ? `$${(v / 1e6).toFixed(1)}M` : money(v);
+var Layout = class {
+  constructor(doc, analysis) {
+    this.doc = doc;
+    this.analysis = analysis;
+    this.y = 102;
+    this.pageTitle = "";
+  }
+  page(title, subtitle, continuation = false) {
+    const d = this.doc;
+    d.addPage();
+    if (!continuation) this.pageTitle = title;
+    this.y = 102;
+    d.rect(margin, 23, contentWidth, 4).fill(colors.teal);
+    d.font(boldFont).fontSize(9).fillColor(colors.navy).text("FEDERAL MARKET POSITION", margin, 36, { width: contentWidth, lineBreak: false });
+    d.font(regularFont).fontSize(7).fillColor(colors.muted).text("EXECUTIVE RECOMMENDATION / PHASE 1 - INDEPENDENT MARKET POSITION", margin, 51, { width: contentWidth, lineBreak: false });
+    d.font(boldFont).fontSize(21);
+    const titleSize = d.widthOfString(title) > contentWidth ? 16 : 21;
+    d.fontSize(titleSize).fillColor(colors.navy).text(title, margin, 69, { width: contentWidth, lineBreak: false });
+    d.font(regularFont).fontSize(8).fillColor(colors.muted).text(short(subtitle, 120), margin, 94, { width: contentWidth, lineBreak: false });
+    this.y = 116;
+  }
+  ensure(height) {
+    if (this.y + height > 706) this.page(`${this.pageTitle} - continued`, this.analysis.deal.solicitationNumber, true);
+  }
+  text(value, bold = false, size = 9, color = colors.ink) {
+    const d = this.doc;
+    d.font(bold ? boldFont : regularFont).fontSize(size);
+    const v = clean(value), height = d.heightOfString(v, { width: contentWidth, lineGap: 2 });
+    this.ensure(height + 9);
+    d.font(bold ? boldFont : regularFont).fontSize(size).fillColor(color).text(v, margin, this.y, { width: contentWidth, lineGap: 2 });
+    this.y += height + 9;
+  }
+  title(value) {
+    this.ensure(58);
+    this.y += 8;
+    this.text(value, true, 12, colors.navy);
+  }
+  table(headers, widths, rows) {
+    const d = this.doc;
+    const header = () => {
+      this.ensure(34);
+      d.rect(margin, this.y, contentWidth, 25).fill(colors.navy);
+      let x = margin;
+      headers.forEach((h, i) => {
+        d.font(boldFont).fontSize(7.5).fillColor("white").text(h, x + 7, this.y + 7, { width: widths[i] - 14, height: 20 });
+        x += widths[i];
+      });
+      this.y += 25;
+    };
+    header();
+    rows.forEach((row, index) => {
+      d.font(regularFont).fontSize(8);
+      const height = Math.max(27, ...row.map((v, i) => d.heightOfString(clean(v), { width: widths[i] - 14, lineGap: 2 }) + 14));
+      if (this.y + height > 701) {
+        this.page(`${this.pageTitle} - continued`, this.analysis.deal.solicitationNumber, true);
+        header();
+      }
+      d.rect(margin, this.y, contentWidth, height).fill(index % 2 === 0 ? colors.panel : "#FFFFFF");
+      let x = margin;
+      row.forEach((v, i) => {
+        d.font(regularFont).fontSize(8).fillColor(colors.ink).text(clean(v), x + 7, this.y + 7, { width: widths[i] - 14, lineGap: 2 });
+        x += widths[i];
+      });
+      this.y += height;
+    });
+    this.y += 10;
+  }
+};
+function buildBrief(l) {
+  const { analysis: a, doc: d } = l;
+  const p = a.competitivePosition;
+  const m = a.marketPosition;
+  const subtitle = [a.deal.solicitationNumber, a.deal.agency, new Date(a.meta.analyzedAt).toISOString().slice(0, 10)].filter(Boolean).join(" | ");
+  l.page("Where to price. Why. What must hold.", subtitle);
+  l.text(short(a.deal.title, 155), true, 11);
+  const heroY = l.y;
+  d.roundedRect(margin, heroY, contentWidth, 107, 5).fill(colors.navy);
+  d.font(boldFont).fontSize(8).fillColor("#B9DDDB").text(p.evaluationComplete ? "RECOMMENDED TOTAL EVALUATED PRICE" : "PROVISIONAL PRICE OF MODELED BASKET", margin + 16, heroY + 15, { width: 320, lineBreak: false });
+  d.font(boldFont).fontSize(p.target == null ? 24 : 34).fillColor("white").text(compact(p.target), margin + 16, heroY + 35, { width: 300, lineBreak: false });
+  d.font(regularFont).fontSize(9).fillColor("white").text(`${p.status.replaceAll("_", " ")} | ${p.confidence.overall} PTW confidence`, margin + 16, heroY + 83, { width: 300, lineBreak: false });
+  d.font(regularFont).fontSize(9).fillColor("#D4E6E7").text(`Planning scenario range
+${compact(p.rangeLow)} - ${compact(p.rangeHigh)}
+${p.evaluationComplete ? "Evaluated basket represented" : "Component validation remains open"}`, margin + 327, heroY + 24, { width: 185, lineGap: 5 });
+  l.y = heroY + 119;
+  l.text(`Decision requested: ${p.decisionRequest}`, true, 9);
+  l.table(["Aggressive", "Recommended", "Defensive stress case"], [176, 176, 176], [p.scenarios.length ? p.scenarios.map((s) => compact(s.total)) : ["Not established", "Not established", "Not established"]]);
+  l.title("Why we recommend this position");
+  l.text(p.rationale);
+  l.text(`${p.priceOrderFirst ? "Rate protection" : "Market alignment"}: ${p.scenarios.find((s) => s.selected)?.rationale || "Resolve the missing calculation basis before selecting a numerical target."}`);
+  l.text(`Supporting labor benchmark: ${compact(m.aggressive)} / ${compact(m.expected)} / ${compact(m.conservative)}. Public loaded-rate references are distinct from the selected competitive planning case.`);
+  l.text(`Critical condition: ${short(p.missing[0] || p.scenarios.find((s) => s.selected)?.condition || "Analyst validation remains required.", 260)}`, true, 9, colors.amber);
+  l.text(`Confidence: quantities ${p.confidence.quantities}; rate relevance ${p.confidence.rateRelevance}; competition ${p.confidence.competition}; company execution NOT ASSESSED. The numerical range is a planning scenario envelope, not a statistical interval.`, false, 8, colors.muted);
+  l.text("Phase 2 - Company position: add authorized company costs, workforce, supplier commitments and margin requirements separately. No IBM costs, internal advantages or executable floor are established by this Phase 1 brief.", false, 8, colors.muted);
+  l.page("Understand the government decision", subtitle);
+  l.text(a.deal.title, true, 11);
+  l.table(["Source fact / extracted rule", "Pricing implication"], [264, 264], [
+    [`${a.deal.contractType}; ${a.deal.awardStructure}; ${a.deal.periodOfPerformance}.`, "Use the complete evaluated basket; task-order revenue and program ceilings are separate measurements."],
+    [`Set-aside: ${a.deal.setAside || "Not established - validate selected form boxes"}. NAICS: ${a.deal.naics || "Unknown"}.`, "Define the eligible field from the controlling solicitation/amendment."],
+    [a.deal.evaluationMethod, p.priceOrderFirst ? "Compete on evaluated price while preserving every scored non-price and compliance gate." : "Validate scored benefits and government willingness to pay before proposing a premium."],
+    [a.deal.evaluationPricing?.basis || "Evaluation basket requires source confirmation", `Source: ${a.deal.evaluationPricing?.source || "Not supplied"}. ${p.evaluationComplete ? "All modeled evaluated components are represented." : "Provisional totals retain the component assumptions listed on page 5."}`]
+  ]);
+  const evalRules = a.deal.requirements.filter((r) => ["EVALUATION", "COMPLIANCE"].includes(r.category));
+  l.title("Scored factors and mandatory gates");
+  if (!evalRules.length) l.text("Specific rating thresholds, evaluation branches and compliance gates remain unestablished. Validate the controlling instructions.");
+  evalRules.slice(0, 7).forEach((r) => l.text(`${r.name}: ${r.detail} [${r.section || "Locator needed"}]`));
+  l.text("Execution readiness supports delivery credibility. It earns independent evaluation credit only where the solicitation actually scores it.", false, 8, colors.muted);
+  l.title("Ceiling and evaluated-price distinction");
+  l.text(p.ceilingExplanation);
+  if (a.deal.sourceConflicts?.length) {
+    l.title("Source-package conflicts");
+    a.deal.sourceConflicts.forEach((c) => l.text(`${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution} Sources: ${c.sources.join("; ")}`));
+  }
+  l.page("Market and competitive intelligence", subtitle);
+  l.title("Independent market anchor");
+  l.table(["Labor reference", "Total", "Meaning"], [155, 90, 283], [
+    ["Lower public-rate reference", compact(m.aggressive), "Summed role-rate planning reference; not an executable staffing floor."],
+    ["Median public-rate reference", compact(m.expected), "Neutral public loaded-rate reference; not company cost or an automatically selected PTW."],
+    ["Upper public-rate reference", compact(m.conservative), "Labor-price stress reference; not a confidence bound."]
+  ]);
+  l.text(`Comparable-award evidence: ${m.anchors.filter((r) => r.included && !r.opportunitySpecific).length} total-value anchors used. ${m.publicBenchmark.summary}`);
+  const comparable = m.anchors.filter((r) => r.valueType === "TOTAL_AWARD_VALUE" || r.valueType === "CURRENT_AWARD_AMOUNT");
+  if (comparable.length) l.table(["Evidence / original", "Normalized / treatment"], [264, 264], comparable.slice(0, 5).map((r) => [`${r.evidenceId}: ${money(r.originalValue)}`, `${money(r.normalizedValue)}. ${r.included ? r.inclusionRationale : r.exclusionReasons.join(" ")}`]));
+  l.title("Competitor intelligence");
+  if (!a.competitors.length) l.text("No evidence-supported named competitor field has been established. General capabilities or vehicle membership do not demonstrate pursuit participation.");
+  else l.table(["Company / role", "Pursuit-specific support / limitation"], [165, 363], a.competitors.map((c) => [`${c.name} / ${c.role.replaceAll("_", " ")}`, `${c.rationale} Sources: ${c.sourceRefs.join(", ")}. Bid intent remains unconfirmed unless explicitly documented.`]));
+  l.title("Competitive hypotheses to validate");
+  l.text(p.priceOrderFirst ? "If enough lower-priced eligible offers satisfy the required non-price ratings, a more expensive staffing posture may never reach the qualifying cohort. Establish eligible rivals and their relevant past performance before increasing confidence." : "A premium is supportable only where a scored advantage is demonstrated and the government has reason to value it. Market proximity alone does not prove premium tolerance.");
+  l.text("No rival price range or bid intent is invented to fill a missing competitive field.");
+  l.title("Labor crosswalk priorities");
+  const roleRows = [...new Map(p.rows.map((r) => [r.title, r])).values()].sort((x, y) => p.rows.filter((r) => r.title === y.title).reduce((s, r) => s + r.target, 0) - p.rows.filter((r) => r.title === x.title).reduce((s, r) => s + r.target, 0));
+  if (roleRows.length) l.table(["High-impact role", "Mapping / validation"], [180, 348], roleRows.slice(0, 3).map((r) => [r.title, `${r.qualification || "Qualifications were not fully extracted."} ${r.rateLimitation} [${r.evidenceIds.join(", ")}]`]));
+  else l.text("A role-level public-rate model has not been established.");
+  l.page("A price that reconciles", subtitle);
+  l.text("Deterministic evaluation build. Fully burdened public labor proxies are not charged a second burden or fee.");
+  const periodTotals = [...new Set(p.rows.map((r) => r.period))].map((period) => [period, ...["low", "target", "high"].map((key) => money(p.rows.filter((r) => r.period === period).reduce((s, r) => s + r[key], 0)))]);
+  l.table(["Evaluated labor period", "Aggressive", "Recommended", "Defensive"], [207, 107, 107, 107], periodTotals.length ? periodTotals : [["No complete labor basis", "-", "-", "-"]]);
+  if (p.components.length) l.table(["Other evaluated component", "Included amount / treatment"], [264, 264], p.components.map((c) => [c.label, `${money(c.includedAmount)}. ${c.assumption || "Specified amount and documented indirect treatment."} Source: ${c.source}`]));
+  l.title("Calculated strategy cases");
+  l.table(["Case / total", "Why / condition"], [165, 363], p.scenarios.map((s) => [`${s.label}: ${compact(s.total)}${s.selected ? " - SELECTED" : ""}`, `${s.rationale} ${short(s.condition, 120)}`]));
+  l.title("Calculation chain");
+  l.text(`Labor = row hours x selected loaded rate x performance-year factor. ${p.rows.reduce((s, r) => s + r.hours, 0).toLocaleString("en-US")} evaluated hours; no second FTE multiplication. Add ${money(p.components.reduce((s, c) => s + c.includedAmount, 0))} other evaluated components = ${money(p.target)}. ${p.evaluationComplete ? "Basket represented." : "Component validation remains open."}`);
+  l.text(`Extension: ${a.deal.evaluationPricing?.extensionRateRule || "UNKNOWN"} [${a.deal.evaluationPricing?.extensionSource || "Clause validation needed"}]. Full rate protections, conditions and recalculable formulas are in the workbook.`, false, 8);
+  if (a.pricingScenario) {
+    l.title("Separate analyst-entered offer model");
+    l.text(`Lower ${money(a.pricingScenario.low)}; target ${money(a.pricingScenario.target)}; upper ${money(a.pricingScenario.high)}. ${a.pricingScenario.inputs.evaluationBasis} Source: ${a.pricingScenario.inputs.basisSource}. This separate conditional model does not override the independent recommendation.`);
+  }
+  l.page("Know when to change the position", subtitle);
+  l.title("Isolated planning sensitivities");
+  const executiveSensitivities = p.sensitivities.filter((s, i) => i === 0 || i === 1 || /escalation|Role protection/.test(s.label));
+  l.table(["Change", "Price effect", "Interpretation"], [170, 97, 261], executiveSensitivities.map((s) => [`${s.label}: ${s.change}`, `${s.delta >= 0 ? "+" : ""}${money(s.delta)}`, short(s.rationale, 125)]));
+  l.text("Sensitivities are separate deterministic changes, not probabilities. Check overlap before combining them.", false, 8, colors.muted);
+  l.title("Accountable validation actions");
+  l.table(["Owner", "Required action / decision consequence"], [115, 413], p.actions.map((a2) => [a2.owner, `${short(a2.action, 110)} ${short(a2.consequence, 70)}`]));
+  l.title("Material unresolved inputs");
+  (p.missing.length ? p.missing.slice(0, 3) : ["No evaluated-basket omission was recorded; rate and competition validation still remain."]).forEach((v) => l.text(short(v, 200)));
+  if (p.missing.length > 3) l.text(`${p.missing.length - 3} additional unresolved inputs are recorded in the workbook.`, false, 8, colors.amber);
+  l.title("Move conditions");
+  l.text("Lower: validated labor economics or reduced scope. Higher: specialist scarcity, corrected qualifications or additional evaluated obligations. Company costs alone do not establish government willingness to pay.");
+  l.page("Evidence, assumptions and limits", subtitle);
+  l.text(`Analysis as of ${a.meta.analyzedAt}. Run ${a.id}. Market engine ${m.formulaVersion}; competitive engine ${p.version}. Human pricing judgment and bid approval remain required.`);
+  l.title("Evidence and source lineage");
+  const ids = /* @__PURE__ */ new Set([...p.rows.flatMap((r) => r.evidenceIds), ...p.components.flatMap((c) => c.evidenceIds), ...a.evidence.filter((e) => e.numeric?.valueType === "ESCALATION_RATE").map((e) => e.id)]);
+  const used = a.evidence.filter((e) => ids.has(e.id) || e.type === "SOLICITATION_FACT").sort((x, y) => Number(y.type === "SOLICITATION_FACT") - Number(x.type === "SOLICITATION_FACT"));
+  l.table(["Evidence record", "Claim / locator / limitation"], [130, 398], used.slice(0, 4).map((e) => [`${e.id} / ${e.type.replaceAll("_", " ")}`, `${short(e.claim, 140)} Source: ${e.sourceLabel}; ${e.section || e.url || e.sourceRecordId || "Locator needed"}. ${e.retrievedAt ? `Retrieved ${e.retrievedAt}.` : ""}`]));
+  if (used.length > 4) l.text(`${used.length - 4} additional cited records, full source excerpts and frozen rate-distribution inputs are in the workbook.`, false, 8, colors.muted);
+  l.title("Planning assumptions");
+  p.assumptions.slice(0, 4).forEach((v) => l.text(v));
+  if (p.assumptions.length > 4) l.text("The complete assumption register is in Pricing Inputs. No labor benchmark is an executable cost floor; unquantified savings are excluded.", false, 8, colors.muted);
+  l.title("Research coverage");
+  l.text((a.meta.connectors || []).map((c) => `${c.name}: ${c.status.replaceAll("_", " ")} (${c.recordsFound} records)`).join("; ") || "Source coverage is recorded in the evidence ledger.", false, 8);
+  l.text(`Market-model confidence: ${m.confidence}. Competitive PTW confidence: ${p.confidence.overall} / provisional. High confidence in multiplication does not establish confidence in rival prices or premium tolerance.`, true, 9);
+  l.text("Historical reviews require a pre-decision evidence cutoff and exclusion of the actual result. This live-pilot brief records its analysis time; it does not certify a historical blind-test cutoff.", false, 8, colors.muted);
+  const issues = assessmentIssues(a);
+  if (issues.length) l.text(`${issues.length} assessment issues and source diagnostics are recorded in the workbook. Review consequential gaps before using this planning position.`, false, 8, colors.muted);
+  if (a.ptwStrategy?.status === "DRAFT") {
+    const s = a.ptwStrategy.strategy;
+    const selected = s.options.find((o) => o.id === s.recommendation.selectedOptionId);
+    l.page("Delivery-strategy hypotheses", subtitle);
+    l.text("Qualitative synthesis / unreviewed. Only the explicit role-rate scenarios on page 4 have numerical effects in the recommendation. Unquantified productivity, teaming and premium hypotheses remain separate.", true, 9);
+    l.title(`Selected delivery approach: ${selected?.name || "Review required"}`);
+    l.text(s.recommendation.rationale.text);
+    s.options.forEach((o) => {
+      l.title(o.name);
+      l.text(`Win logic: ${o.winLogic.text}`);
+      l.text(`Evaluation advantage: ${o.evaluationAdvantage.text}`);
+      l.text(`Pricing mechanism: ${o.pricingLevers.map((v) => v.text).join(" ")}`);
+      l.text(`Risk: ${o.principalRisk.text}`);
+      const other = s.recommendation.alternatives.find((v) => v.optionId === o.id);
+      if (other) l.text(`Why not selected: ${other.reason.text}`);
+    });
+    l.title("Change triggers");
+    s.recommendation.changeTriggers.forEach((v) => l.text(`${v.kind}: ${v.text} Sources: ${v.evidenceIds.join(", ") || "Working assumption"}. Validate: ${v.validationAction}`));
+  }
+}
+function footers(doc) {
+  const r = doc.bufferedPageRange();
+  for (let i = r.start; i < r.start + r.count; i++) {
+    doc.switchToPage(i);
+    doc.moveTo(margin, 728).lineTo(pageWidth - margin, 728).strokeColor(colors.line).lineWidth(0.6).stroke();
+    doc.font(regularFont).fontSize(7).fillColor(colors.muted).text("PROVISIONAL DECISION SUPPORT - ANALYST REVIEW AND COMPANY BID APPROVAL REQUIRED", margin, 738, { width: contentWidth - 55, lineBreak: false });
+    doc.font(boldFont).fontSize(7).text(`${i + 1}/${r.count}`, pageWidth - margin - 45, 738, { width: 45, align: "right", lineBreak: false });
+  }
+}
+function createExecutivePdf(raw) {
+  const analysis = enforceAuthoritativeAnalysis(raw);
+  analysis.ptwStrategy = preserveCurrentStrategy(analysis, raw.ptwStrategy);
+  return new Promise((resolve, reject) => {
+    const regular = Buffer.from(regularFontData, "base64"), bold = Buffer.from(boldFontData, "base64");
+    const doc = new PDFDocument({ font: regular, size: "LETTER", margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: false });
+    doc.registerFont(regularFont, regular);
+    doc.registerFont(boldFont, bold);
+    const chunks = [];
+    doc.on("data", (b) => chunks.push(b));
+    doc.on("error", reject);
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    try {
+      buildBrief(new Layout(doc, analysis));
+      footers(doc);
+      doc.end();
+    } catch (error) {
+      doc.destroy();
+      reject(error);
+    }
+  });
+}
+
+// src/exports/competitiveWorkbook.ts
+function addCompetitiveWorkbook(workbook, analysis) {
+  const p = analysis.competitivePosition;
+  const government = workbook.addWorksheet("Government Decision");
+  government.columns = [{ header: "Category", key: "category", width: 25 }, { header: "Fact / rule", key: "label", width: 35 }, { header: "Extracted value / implication", key: "value", width: 100 }, { header: "Source locator", key: "source", width: 80 }];
+  government.addRows([{ category: "Eligibility", label: "Set-aside", value: analysis.deal.setAside || "Unconfirmed" }, { category: "Eligibility", label: "NAICS", value: analysis.deal.naics }, { category: "Evaluation", label: "Method", value: analysis.deal.evaluationMethod }, { category: "Evaluation", label: "Basket", value: analysis.deal.evaluationPricing?.basis, source: analysis.deal.evaluationPricing?.source }]);
+  analysis.deal.facts.forEach((f) => government.addRow({ category: "Source fact", label: f.label, value: f.value, source: f.section }));
+  analysis.deal.requirements.forEach((r) => government.addRow({ category: r.category, label: r.name, value: r.detail, source: r.section }));
+  analysis.deal.pricingSignals.forEach((r) => government.addRow({ category: "Pricing instruction", label: r.signal, value: r.implication, source: r.section }));
+  const inputs = workbook.addWorksheet("Pricing Inputs");
+  inputs.columns = [{ header: "Input", key: "label", width: 38 }, { header: "Value", key: "value", width: 35 }, { header: "Source / interpretation", key: "source", width: 100 }];
+  const model2 = buildLaborModel(analysis.deal, analysis.evidence);
+  inputs.addRows([
+    { label: "Annual planning escalation (fraction)", value: model2.escalationPct / 100, source: model2.escalationEvidenceId || "Zero escalation assumption" },
+    { label: "Evaluation posture", value: p.priceOrderFirst ? "PRICE_ORDERED" : "MARKET_ALIGNED", source: analysis.deal.evaluationMethod },
+    { label: "Evaluation basket complete", value: p.evaluationComplete ? "YES" : "NO", source: analysis.deal.evaluationPricing?.source || "Re-extraction required" },
+    { label: "Extension rate rule", value: analysis.deal.evaluationPricing?.extensionRateRule || "UNKNOWN", source: analysis.deal.evaluationPricing?.extensionSource || "Validation required" },
+    { label: "Recommendation status", value: p.status, source: p.rangeMeaning }
+  ]);
+  inputs.getCell("B2").numFmt = "0.0%";
+  p.assumptions.forEach((source) => inputs.addRow({ label: "Planning assumption", source }));
+  p.missing.forEach((source) => inputs.addRow({ label: "Unresolved input", source }));
+  const distributions = workbook.addWorksheet("Rate Distribution");
+  distributions.columns = [{ header: "Evidence ID", key: "id", width: 30 }, { header: "Sample index", key: "index", width: 16 }, { header: "Loaded rate / hour", key: "rate", width: 24 }];
+  const stats = workbook.addWorksheet("Rate Statistics");
+  stats.columns = [{ header: "Evidence ID", key: "id", width: 30 }, { header: "Requested category", key: "category", width: 38 }, { header: "Lower quartile", key: "low", width: 20 }, { header: "Median", key: "median", width: 20 }, { header: "Upper quartile", key: "high", width: 20 }, { header: "Sample count", key: "count", width: 16 }, { header: "Source / limitation", key: "source", width: 90 }, { header: "Query URL", key: "url", width: 80 }, { header: "Retrieved", key: "retrieved", width: 28 }, { header: "Source-sample SHA-256", key: "fingerprint", width: 68 }];
+  const statRows = /* @__PURE__ */ new Map();
+  const records = workbook.addWorksheet("Rate Source Records");
+  records.columns = [{ header: "Evidence ID", key: "evidence", width: 30 }, { header: "Record ID", key: "id", width: 24 }, { header: "Category", key: "category", width: 40 }, { header: "Vendor", key: "vendor", width: 34 }, { header: "Contract", key: "contract", width: 25 }, { header: "Rate", key: "rate", width: 16 }, { header: "Experience years", key: "experience", width: 22 }, { header: "Education", key: "education", width: 28 }, { header: "Worksite", key: "worksite", width: 25 }, { header: "Clearance", key: "clearance", width: 20 }];
+  for (const e of analysis.evidence.filter((e2) => e2.numeric?.valueType === "HOURLY_CEILING_RATE")) {
+    const n = e.numeric;
+    const first = distributions.rowCount + 1;
+    const rates = n.rateDistribution || [];
+    rates.forEach((rate, index) => distributions.addRow({ id: e.id, index: index + 1, rate }));
+    const last = distributions.rowCount;
+    const percentile = (q, result) => rates.length ? { formula: `PERCENTILE.INC('Rate Distribution'!C${first}:C${last},${q})`, result } : result;
+    const row = stats.addRow({ id: e.id, category: n.matchedLaborCategory || n.scopeText, low: percentile(0.25, n.lowerRate ?? n.originalValue), median: percentile(0.5, n.originalValue), high: percentile(0.75, n.upperRate ?? n.originalValue), count: n.rateSampleSize || rates.length || 1, source: e.claim, url: e.url, retrieved: e.retrievedAt, fingerprint: n.rateSampleFingerprint || "Full source snapshot not available for this older run" });
+    statRows.set(e.id, row.number);
+    n.rateRecords?.forEach((r) => records.addRow({ evidence: e.id, ...r }));
+  }
+  const labor = workbook.addWorksheet("Competitive Labor");
+  labor.columns = [{ header: "Row ID", key: "id", width: 16 }, { header: "Labor category", key: "title", width: 38 }, { header: "Period", key: "period", width: 27 }, { header: "Total evaluated hours", key: "hours", width: 24 }, { header: "Lower loaded rate", key: "lowRate", width: 22 }, { header: "Median loaded rate", key: "medianRate", width: 22 }, { header: "Upper loaded rate", key: "highRate", width: 22 }, { header: "Selected loaded rate", key: "selectedRate", width: 22 }, { header: "Escalation factor", key: "factor", width: 22 }, { header: "Aggressive labor", key: "low", width: 24 }, { header: "Recommended labor", key: "target", width: 24 }, { header: "Defensive labor", key: "high", width: 24 }, { header: "Rate-protection reason", key: "reason", width: 100 }, { header: "Quantity source", key: "source", width: 85 }, { header: "Rate evidence IDs", key: "evidence", width: 40 }, { header: "Qualification / mapping limitation", key: "limitation", width: 100 }, { header: "Protect median: 1 / lower: 0", key: "protect", width: 30 }];
+  p.rows.forEach((r) => {
+    const index = labor.rowCount + 1;
+    const rate = (column, result) => {
+      const refs = r.evidenceIds.map((id) => statRows.get(id)).filter((v) => v != null).map((n) => `'Rate Statistics'!${column}${n}`);
+      return refs.length ? { formula: `MEDIAN(${refs.join(",")})`, result } : result;
+    };
+    const factorFormula = r.rateYearWeights.map((w) => `${w.weight}*(1+'Pricing Inputs'!$B$2)^${w.year}`).join("+");
+    labor.addRow({
+      id: r.id,
+      title: r.title,
+      period: r.period,
+      hours: r.hours,
+      lowRate: rate("C", r.lowRate),
+      medianRate: rate("D", r.medianRate),
+      highRate: rate("E", r.highRate),
+      selectedRate: { formula: `IF('Pricing Inputs'!$B$3="PRICE_ORDERED",IF(Q${index}=1,F${index},E${index}),F${index})`, result: r.recommendedRate },
+      factor: { formula: factorFormula, result: r.factor },
+      low: { formula: `D${index}*E${index}*I${index}`, result: r.hours * r.lowRate * r.factor },
+      target: { formula: `D${index}*H${index}*I${index}`, result: r.hours * r.recommendedRate * r.factor },
+      high: { formula: `D${index}*G${index}*I${index}`, result: r.hours * r.highRate * r.factor },
+      reason: r.protectionReason,
+      source: r.source,
+      evidence: r.evidenceIds.join(", "),
+      limitation: `${r.qualification} ${r.rateLimitation}`,
+      protect: r.recommendedRate === r.medianRate ? 1 : 0
+    });
+  });
+  const components = workbook.addWorksheet("Evaluated Components");
+  components.columns = [{ header: "Evaluated component", key: "label", width: 40 }, { header: "Specified USD", key: "amount", width: 24 }, { header: "Indirect fraction", key: "indirect", width: 23 }, { header: "Included USD", key: "total", width: 24 }, { header: "Treatment / assumption", key: "treatment", width: 100 }, { header: "Source locator", key: "source", width: 80 }, { header: "Evidence IDs", key: "evidence", width: 40 }];
+  p.components.forEach((c) => {
+    const row = components.rowCount + 1;
+    const indirect = c.indirectTreatment === "KNOWN" && c.indirectPct != null && Number.isFinite(c.indirectPct) && c.indirectPct >= 0 && c.indirectPct <= 100 ? c.indirectPct / 100 : 0;
+    components.addRow({ label: c.label, amount: c.amount, indirect, total: { formula: `ROUND(B${row}*(1+C${row}),2)`, result: c.includedAmount }, treatment: c.assumption || `${c.indirectTreatment}; fee ${c.feeAllowed ? "requires validation" : "not added"}`, source: c.source, evidence: c.evidenceIds.join(", ") });
+  });
+  const strategies = workbook.addWorksheet("Competitive Strategies");
+  strategies.columns = [{ header: "Strategy", key: "label", width: 30 }, { header: "Labor USD", key: "labor", width: 26 }, { header: "Other evaluated USD", key: "other", width: 26 }, { header: "Total USD", key: "total", width: 28 }, { header: "Selected", key: "selected", width: 16 }, { header: "Decision rationale", key: "rationale", width: 100 }, { header: "Conditions / interpretation", key: "condition", width: 100 }];
+  const end = labor.rowCount, lastComponent = components.rowCount;
+  p.scenarios.forEach((s, i) => {
+    const index = strategies.rowCount + 1;
+    const column = ["J", "K", "L"][i];
+    strategies.addRow({ label: s.label, labor: { formula: `ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2, end)}),2)`, result: s.labor }, other: { formula: lastComponent > 1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : "0", result: s.nonLabor }, total: { formula: `ROUND(B${index}+C${index},2)`, result: s.total }, selected: s.selected ? "YES" : "NO", rationale: s.rationale, condition: `${p.status}; ${p.evaluationComplete ? "Basket represented" : "Component validation open"}. ${s.condition}` });
+  });
+  const decision = workbook.getWorksheet("Executive Decision");
+  decision.addRows([
+    { field: "Selected provisional PTW target", value: p.target == null ? "No complete quantity/rate basis" : { formula: "'Competitive Strategies'!D3", result: p.target } },
+    { field: "Planning scenario lower", value: p.rangeLow == null ? "Not established" : { formula: "'Competitive Strategies'!D2", result: p.rangeLow } },
+    { field: "Planning scenario upper", value: p.rangeHigh == null ? "Not established" : { formula: "'Competitive Strategies'!D4", result: p.rangeHigh } },
+    { field: "Range meaning", value: p.rangeMeaning },
+    { field: "Competitive recommendation status", value: p.status },
+    { field: "Evaluated basket complete", value: p.evaluationComplete ? "YES" : "NO - see unresolved inputs" },
+    ...Object.entries(p.confidence).map(([key, value]) => ({ field: `${key} confidence`, value })),
+    { field: "Decision request", value: p.decisionRequest },
+    { field: "Competitive rationale", value: p.rationale },
+    { field: "Ceiling interpretation", value: p.ceilingExplanation },
+    { field: "Phase 2 - Company position", value: "Requires authorized company inputs. Company cost, margin, execution floor and IBM advantages are not established by public rate proxies." }
+  ]);
+  const sensitivities = workbook.addWorksheet("Sensitivity and Actions");
+  sensitivities.columns = [{ header: "Category", key: "category", width: 23 }, { header: "Input / owner", key: "label", width: 38 }, { header: "Change / action", key: "change", width: 100 }, { header: "Price delta USD", key: "delta", width: 26 }, { header: "Interpretation", key: "reason", width: 100 }];
+  p.sensitivities.forEach((s) => sensitivities.addRow({ category: "Sensitivity", label: s.label, change: s.change, delta: s.delta, reason: s.rationale }));
+  p.actions.forEach((a) => sensitivities.addRow({ category: "Validation action", label: a.owner, change: a.action, reason: a.consequence }));
+  p.missing.forEach((change) => sensitivities.addRow({ category: "Unresolved input", change }));
+  analysis.deal.sourceConflicts?.forEach((c) => sensitivities.addRow({ category: "Source conflict", label: c.topic, change: c.descriptions.join(" versus "), reason: `${c.resolution} ${c.sources.join("; ")}` }));
+  const sources = workbook.addWorksheet("Source Snapshots");
+  sources.columns = [{ header: "Snapshot / evidence", key: "id", width: 35 }, { header: "Retrieved / as of", key: "date", width: 30 }, { header: "Locator / fingerprint", key: "source", width: 110 }, { header: "Limitation", key: "limitation", width: 100 }];
+  sources.addRow({ id: "Analysis cutoff", date: analysis.meta.analyzedAt, source: analysis.id, limitation: "Live analysis timestamp; not a certified historical pre-award evidence cutoff." });
+  analysis.meta.warnings.filter((w) => w.startsWith("Package snapshot:")).forEach((source) => sources.addRow({ id: "Uploaded source SHA-256", date: analysis.meta.analyzedAt, source, limitation: "Retain original uploaded files with this decision package." }));
+  analysis.evidence.forEach((e) => sources.addRow({ id: e.id, date: e.retrievedAt || e.numeric?.sourceDate, source: [e.sourceLabel, e.section, e.url, e.numeric?.rateSampleFingerprint].filter(Boolean).join("; "), limitation: e.numeric?.rateDistribution ? "All retrieved matched rates are frozen in Rate Distribution; up to 40 detailed source records are included. Sampling and qualification limitations remain." : "Detailed source snapshot is not available; retain the original cited record." }));
+  workbook.calcProperties.fullCalcOnLoad = true;
+  for (const sheet of [stats, labor, components, strategies]) sheet.eachRow((r, i) => {
+    if (i > 1) r.eachCell((c) => {
+      if (typeof c.value === "number" || c.type === 6) c.numFmt = "#,##0.00";
+    });
+  });
 }
 
 // server.ts
@@ -2981,6 +3370,7 @@ var baseSchema = {
         laborModelComplete: { type: "BOOLEAN" },
         laborModelSource: { type: "STRING" },
         naics: { type: "STRING" },
+        setAside: { type: "STRING" },
         psc: { type: "STRING" },
         awardStructure: { type: "STRING" },
         evaluationMethod: { type: "STRING" },
@@ -3023,6 +3413,13 @@ var baseSchema = {
               location: { type: "STRING" },
               clearance: { type: "STRING" },
               section: { type: "STRING" },
+              duties: { type: "STRING" },
+              pwsTitle: { type: "STRING" },
+              qualificationSource: { type: "STRING" },
+              minExperienceYears: { type: "NUMBER" },
+              education: { type: "STRING" },
+              certifications: stringArray,
+              titleConflict: { type: "STRING" },
               periods: { type: "ARRAY", items: { type: "OBJECT", properties: {
                 label: { type: "STRING" },
                 startMonth: { type: "NUMBER" },
@@ -3047,7 +3444,27 @@ var baseSchema = {
             },
             required: ["signal", "implication", "confidence"]
           }
-        }
+        },
+        evaluationPricing: { type: "OBJECT", properties: {
+          basis: { type: "STRING" },
+          source: { type: "STRING" },
+          completeness: { type: "STRING", enum: ["COMPLETE", "PARTIAL"] },
+          extensionRateRule: { type: "STRING", enum: ["FINAL_OPTION_RATES", "ESCALATE", "UNKNOWN", "NOT_APPLICABLE"] },
+          extensionSource: { type: "STRING" },
+          rateBaseYear: { type: "NUMBER" },
+          components: { type: "ARRAY", items: { type: "OBJECT", properties: {
+            id: { type: "STRING" },
+            label: { type: "STRING" },
+            category: { type: "STRING", enum: ["TRAVEL", "ODC", "MATERIALS", "OTHER"] },
+            amount: { type: "NUMBER" },
+            source: { type: "STRING" },
+            evidenceIds: stringArray,
+            indirectPct: { type: "NUMBER" },
+            indirectTreatment: { type: "STRING", enum: ["NOT_ALLOWED", "KNOWN", "UNKNOWN"] },
+            feeAllowed: { type: "BOOLEAN" }
+          }, required: ["id", "label", "category", "source", "evidenceIds", "indirectTreatment", "feeAllowed"] } }
+        }, required: ["basis", "source", "completeness", "extensionRateRule", "components"] },
+        sourceConflicts: { type: "ARRAY", items: { type: "OBJECT", properties: { topic: { type: "STRING" }, descriptions: stringArray, sources: stringArray, resolution: { type: "STRING" } }, required: ["topic", "descriptions", "sources", "resolution"] } }
       },
       required: [
         "documentStatus",
@@ -3068,7 +3485,10 @@ var baseSchema = {
         "laborSignals",
         "pricingSignals",
         "laborModelComplete",
-        "laborModelSource"
+        "laborModelSource",
+        "setAside",
+        "evaluationPricing",
+        "sourceConflicts"
       ]
     },
     marketAssessment: {
@@ -3213,6 +3633,10 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set opportunitySpecific true only for a value that describes this solicitation.
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
+- Read selected boxes on SF1449 visually. Merely printing WOSB/SDVOSB/8(a) on a standard form does not establish that set-aside. Extract the checked designation and NAICS from the controlling form/amendment, with a fact and evidence locator. If markings cannot be read, say Unknown rather than choosing a printed option.
+- Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
+- Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
+- Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
 - For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
 - Set performanceMonths to the total evaluated labor duration supported by the schedule. Set laborModelComplete true only when every priced labor row and every evaluated period is accounted for with locators. Otherwise false, with the specific missing rows/periods in laborModelSource and gaps. A blank offered-rate column is normal in an unpriced solicitation: source external rate benchmarks; do not demand that the analyst supply a completed bid to perform market research.
@@ -3255,7 +3679,7 @@ function usableResearchUrl(value) {
   }
 }
 function connectorCacheKey(name, deal) {
-  const labor = deal.laborSignals?.map((item) => item.title).filter(Boolean).slice(0, 5) || [];
+  const labor = deal.laborSignals || [];
   return JSON.stringify([name, deal.agency, deal.naics, deal.solicitationNumber, deal.title, labor]);
 }
 async function runConnectorSet(deal, only, force = false, fileNames = []) {
@@ -3387,6 +3811,7 @@ function mergeSamDealMetadata(analysis, metadata, naicsOverride) {
     solicitationNumber: metadata.solicitationNumber || analysis.deal.solicitationNumber,
     dueDate: metadata.responseDeadline || analysis.deal.dueDate,
     naics: metadata.naics || naicsOverride || analysis.deal.naics,
+    setAside: analysis.deal.setAside || metadata.setAside || "Unknown",
     psc: metadata.psc || analysis.deal.psc
   };
 }
@@ -3404,6 +3829,7 @@ function recalculateForOfficialDealMetadata(analysis) {
     preRfpSignals: analysis.preRfpSignals
   };
   analysis.marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt });
+  analysis.competitivePosition = calculateCompetitivePosition(analysis);
 }
 async function synthesizeOfficialEvidence(draft) {
   const official = draft.evidence.filter((item) => item.type === "EXTERNAL_SOURCE" && /API/.test(item.sourceLabel));
@@ -3432,12 +3858,13 @@ ${JSON.stringify(official)}`);
 }
 async function analyzeFiles(files) {
   const client = new OpenAIIntelligence(void 0, void 0, fetch, 17e4);
-  const draft = await client.extract(analysisPrompt, files, baseSchema);
+  let draft = await client.extract(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);
   draft.gaps = normalizeGaps(draft.gaps);
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
+  draft = reconcileSourceFacts(draft);
   const warnings = assessEligibility(draft.deal);
   let researchStatus = "SOLICITATION_ONLY";
   const connectors = [];
@@ -3525,13 +3952,13 @@ Do not infer company-specific costs, staffing, or bids.`) : Promise.resolve(null
   const analyzedAt = (/* @__PURE__ */ new Date()).toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
   const { marketAssessment: _marketAssessment, ...analysisFields } = draft;
-  return {
+  return enforceAuthoritativeAnalysis({
     ...analysisFields,
     marketPosition,
     narrative: sanitizeNarrative(draft.narrative),
     id: `run-${crypto2.randomUUID()}`,
     meta: { mode: "MARKET_ONLY", model, analyzedAt, researchStatus, warnings, connectors }
-  };
+  });
 }
 app.get("/api/health", (_req, res) => res.json({
   status: "ok",
@@ -3737,6 +4164,7 @@ app.post("/api/retry-connector", async (req, res) => {
       narrative: sanitizeNarrative(draft.narrative),
       marketPosition: calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt })
     };
+    analysis = enforceAuthoritativeAnalysis(analysis);
     analysis.ptwStrategy = preserveCurrentStrategy(analysis, analysis.ptwStrategy);
     res.json({ data: analysis });
   } catch (error) {
@@ -3759,7 +4187,7 @@ app.post("/api/export-brief", async (req, res) => {
       { field: "Benchmark lower reference", value: displayValue(analysis.marketPosition.aggressive) },
       { field: "Benchmark central reference", value: displayValue(analysis.marketPosition.expected) },
       { field: "Benchmark upper reference", value: displayValue(analysis.marketPosition.conservative) },
-      { field: "Numeric interpretation", value: "Heuristic market references. These are not priced competitive strategies or an approved bid recommendation." },
+      { field: "Numeric interpretation", value: "Supporting market benchmarks are distinct from the selected provisional PTW target in Competitive Strategies. Company bid approval is separate." },
       { field: "Range Status", value: analysis.marketPosition.rangeStatus },
       { field: "Estimation Method", value: analysis.marketPosition.methodLabel },
       { field: "Confidence", value: analysis.marketPosition.confidence },
@@ -3794,7 +4222,12 @@ app.post("/api/export-brief", async (req, res) => {
       priced.addRow({ label: "Evaluation source", source: scenario.inputs.basisSource });
       priced.addRow({ label: "Calculation", source: scenario.formula });
       priced.addRow({ label: "Status", source: "CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price." });
-    } else priced.addRow({ label: "No priced scenario", source: "Enter explicit evaluated quantities and offered unit prices in the decision workspace." });
+    } else if (analysis.competitivePosition?.scenarios.length) {
+      const p = analysis.competitivePosition;
+      p.rows.forEach((r) => priced.addRow({ label: `${r.title} / ${r.period}`, quantity: r.hours, lowUnitPrice: r.lowRate * r.factor, targetUnitPrice: r.recommendedRate * r.factor, highUnitPrice: r.highRate * r.factor, source: `${r.source}; ${r.evidenceIds.join(", ")}. ${r.protectionReason}` }));
+      p.components.forEach((c) => priced.addRow({ label: c.label, quantity: 1, lowUnitPrice: c.includedAmount, targetUnitPrice: c.includedAmount, highUnitPrice: c.includedAmount, source: `${c.source}. ${c.assumption}` }));
+      priced.addRow({ label: "EVALUATED PLANNING TOTALS", lowUnitPrice: p.scenarios[0].total, targetUnitPrice: p.scenarios[1].total, highUnitPrice: p.scenarios[2].total, source: `${p.status}. ${p.evaluationComplete ? "Evaluation basket represented" : "Component validation remains open"}. Recalculable formulas: Competitive Labor / Competitive Strategies.` });
+    } else priced.addRow({ label: "No complete calculation basis", source: analysis.competitivePosition?.missing.join(" ") || "Re-extract the quantity/rate and evaluated-basket inputs." });
     const strategy = workbook.addWorksheet("PTW Strategy");
     strategy.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "assessment", width: 100 }, { header: "Claim type", key: "kind", width: 18 }, { header: "Evidence IDs", key: "evidence", width: 36 }, { header: "Validation action", key: "validation", width: 80 }];
     if (analysis.ptwStrategy?.status === "DRAFT") {
@@ -3894,6 +4327,7 @@ app.post("/api/export-brief", async (req, res) => {
       valueType: item.numeric?.valueType,
       originalValue: item.numeric?.originalValue
     })));
+    addCompetitiveWorkbook(workbook, analysis);
     for (const sheet of workbook.worksheets) {
       sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
       sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF10243E" } };

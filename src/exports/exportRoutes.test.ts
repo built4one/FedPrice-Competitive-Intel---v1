@@ -5,6 +5,7 @@ import { passwordHash } from '../server/auth';
 import ExcelJS from 'exceljs';
 import { ptwStrategyFixture } from '../testFixtures/ptwStrategy';
 import { synthesizePtwStrategy } from '../server/ptwSynthesis';
+import { pricedServicesFixture } from '../testFixtures/pricedServices';
 
 test('serves valid PDF and Excel downloads through the production export routes', async (t) => {
   process.env.VERCEL = '1';
@@ -58,4 +59,14 @@ test('serves valid PDF and Excel downloads through the production export routes'
       assert.match(exported,/SOL-EVAL/);
     }
   }
+  const priced=pricedServicesFixture(),expected=priced.competitivePosition!.target;
+  priced.competitivePosition!.target=1;
+  const response=await fetch(`http://127.0.0.1:${port}/api/export-brief`,{
+    method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify(priced),
+  });
+  assert.equal(response.status,200);
+  const workbook=new ExcelJS.Workbook();
+  await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()) as any);
+  assert.equal(workbook.getWorksheet('Competitive Labor')!.rowCount,97);
+  assert.equal((workbook.getWorksheet('Competitive Strategies')!.getCell('D3').value as ExcelJS.CellFormulaValue).result,expected);
 });

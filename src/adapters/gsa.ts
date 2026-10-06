@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { AdapterResult } from './types';
 import type { EvidenceItem, LaborSignal } from '../types';
 import { ConnectorError, fetchJsonWithRetry } from './http';
-import { laborFamily, laborRoleMatch, requiresClearance } from '../domain/laborMatching';
+import { benchmarkRole, laborFamily, laborRoleMatch, qualificationMatch, requiresClearance } from '../domain/laborMatching';
 
 const sourceSchema = z.object({
   id: z.union([z.string(), z.number()]), labor_category: z.string(), current_price: z.union([z.number(), z.string()]),
@@ -29,7 +29,7 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
   const retrievedAt = new Date().toISOString();
   const signals = [...new Map((laborSignals || []).filter(s => s.title?.trim()).map(s => [s.title.toLowerCase(), s])).values()].slice(0, 30);
   const queries = [...new Map(signals.map(s => {
-    const category = laborFamily(s.title), clearance = requiresClearance(s.clearance);
+    const category = laborFamily(benchmarkRole(s)), clearance = requiresClearance(s.clearance);
     return [`${category}|${clearance}`, { category, clearance }];
   })).values()];
   const querySummary = queries.map(q => `${q.category}${q.clearance ? ' (cleared)' : ''}`).join(', ');
@@ -65,14 +65,13 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
   const evidence: EvidenceItem[] = [];
   const messages: string[] = [];
   for (const signal of signals) {
-    const mappedFamily = laborFamily(signal.title);
+    const requestedRole = benchmarkRole(signal);
+    const mappedFamily = laborFamily(requestedRole);
     const result = successful.find(q => q.category === mappedFamily && q.clearance === requiresClearance(signal.clearance));
     if (!result) { messages.push(`${signal.title}: rate search unavailable.`); continue; }
-    const exactMatches = result.records.filter(r => laborRoleMatch(signal.title, r.labor_category) >= 0.8);
-    const familyProxyAllowed = mappedFamily.toLowerCase() !== signal.title.trim().toLowerCase();
-    const familyMatches = familyProxyAllowed
-      ? result.records.filter(r => laborRoleMatch(mappedFamily, r.labor_category) >= 0.8)
-      : [];
+    const relevant = result.records.filter(r => laborRoleMatch(requestedRole, r.labor_category) >= 0.8 && qualificationMatch(signal, r));
+    const exactMatches = relevant.filter(r => r.labor_category.trim().toLowerCase() === requestedRole.trim().toLowerCase());
+    const familyMatches = relevant;
     const matches = exactMatches.length ? exactMatches : familyMatches;
     const proxyUsed = exactMatches.length === 0 && familyMatches.length > 0;
     if (!matches.length) { messages.push(`${signal.title}: no rate matched the role and clearance filter.`); continue; }
@@ -84,12 +83,15 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
       claim: proxyUsed
         ? `${signal.title}: provisional ${mappedFamily} family proxy with median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. Analyst must validate that the proxy is suitable before pricing use. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`
         : `${signal.title}: median public ceiling rate ${value.toFixed(2)} USD/hour across ${matches.length} matched contract/category records. ${result.clearance ? 'Records require clearance; exact clearance level is not verified.' : 'No clearance filter applied.'} ${result.complete ? 'Complete retrieved search population.' : 'Bounded sample of the search population; provisional benchmark.'}`,
-      excerpt: `Search role: ${result.category}. ${proxyUsed ? `Solicitation title mapped to ${mappedFamily} as a provisional benchmark family. ` : ''}Matched categories: ${[...new Set(matches.map(r => r.labor_category))].slice(0,16).join('; ')}. Record examples: ${matches.slice(0,8).map(r => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour`).join('; ')}`,
+      excerpt: `Search role: ${result.category}. ${signal.titleConflict ? `Source conflict: ${signal.titleConflict}. Duties/PWS role used: ${requestedRole}. ` : ''}${proxyUsed ? `Solicitation title mapped to ${mappedFamily} as a provisional benchmark family. ` : ''}Matched categories: ${[...new Set(matches.map(r => r.labor_category))].slice(0,16).join('; ')}. Record examples: ${matches.slice(0,8).map(r => `${r.id}: ${r.vendor_name}, ${r.idv_piid}, ${r.labor_category}, ${r.current_price}/hour; experience ${r.min_years_experience ?? 'unknown'}; education ${r.education_level || 'unknown'}; worksite ${r.worksite || 'unknown'}`).join('; ')}`,
       confidence: proxyUsed ? (result.complete ? 75 : 60) : (result.complete ? 90 : 70), retrievedAt, url: result.url,
       numeric: { originalValue: value, valueType: 'HOURLY_CEILING_RATE', units: 'USD_PER_HOUR', currency: 'USD',
         scopeText: signal.title, sourceDate: retrievedAt.slice(0,10), matchedLaborCategory: signal.title,
         lowerRate: quantile(rates,0.25), upperRate: quantile(rates,0.75), rateSampleSize: matches.length,
         rateSampleComplete: result.complete, clearanceRequired: result.clearance, laborMatchScore: proxyUsed ? 0.60 : 0.85,
+        benchmarkFamily: mappedFamily, qualificationFit: 'UNVALIDATED',
+        rateDistribution: rates, rateSampleFingerprint:createHash('sha256').update(JSON.stringify(matches)).digest('hex'),
+        rateRecords: matches.slice(0,40).map(r => ({id:String(r.id),category:r.labor_category,vendor:r.vendor_name || '',contract:r.idv_piid || '',rate:Number(r.current_price),experience:r.min_years_experience == null ? undefined : Number(r.min_years_experience),education:r.education_level || undefined,worksite:r.worksite || undefined,clearance:String(r.security_clearance ?? 'unknown')})),
         technologySecurityLocation: `${proxyUsed ? `Provisional ${mappedFamily} family mapping; validate qualifications. ` : ''}${result.clearance ? 'Clearance required; exact level and worksite must be validated.' : 'Clearance and worksite not constrained.'}`,
       },
     });

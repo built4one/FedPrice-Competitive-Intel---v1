@@ -6,6 +6,8 @@ import multer from 'multer';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
 import { calculatePricingScenario } from './src/domain/ptw/pricingScenario.js';
+import { calculateCompetitivePosition } from './src/domain/ptw/competitivePosition.js';
+import { reconcileSourceFacts } from './src/domain/sourceConsistency.js';
 import { assessEligibility, IneligibleSolicitationError } from './src/server/eligibility.js';
 import { OpenAIIntelligence, getOpenAIModel, openAIConfigured } from './src/server/openaiIntelligence.js';
 import { authConfigured, installAuth } from './src/server/auth.js';
@@ -31,6 +33,7 @@ import { calculateDeterministicScenarios } from './src/domain/marketPosition/sce
 import { MARKET_POSITION_ENGINE_VERSION } from './src/domain/marketPosition/engineConfig.js';
 import { classifyNumericEvidence } from './src/domain/marketPosition/evidenceClassification.js';
 import { createExecutivePdf } from './src/exports/executivePdf.js';
+import { addCompetitiveWorkbook } from './src/exports/competitiveWorkbook.js';
 import {
   createLegacyPosition,
   enforceAuthoritativeAnalysis,
@@ -132,6 +135,7 @@ const baseSchema = {
         laborModelComplete: { type: 'BOOLEAN' },
         laborModelSource: { type: 'STRING' },
         naics: { type: 'STRING' },
+        setAside: { type: 'STRING' },
         psc: { type: 'STRING' },
         awardStructure: { type: 'STRING' },
         evaluationMethod: { type: 'STRING' },
@@ -164,6 +168,7 @@ const baseSchema = {
             properties: {
               title: { type: 'STRING' }, quantity: { type: 'NUMBER' }, annualHours: { type: 'NUMBER' },
               location: { type: 'STRING' }, clearance: { type: 'STRING' }, section: { type: 'STRING' },
+              duties: {type:'STRING'}, pwsTitle:{type:'STRING'}, qualificationSource:{type:'STRING'}, minExperienceYears:{type:'NUMBER'}, education:{type:'STRING'}, certifications:stringArray, titleConflict:{type:'STRING'},
               periods: { type: 'ARRAY', items: { type: 'OBJECT', properties: {
                 label: { type: 'STRING' }, startMonth: { type: 'NUMBER' }, months: { type: 'NUMBER' }, quantity: { type: 'NUMBER' }, totalHours: { type: 'NUMBER' }, section: { type: 'STRING' },
               }, required: ['label', 'startMonth', 'months', 'quantity', 'section'] } },
@@ -181,11 +186,20 @@ const baseSchema = {
             required: ['signal', 'implication', 'confidence'],
           },
         },
+        evaluationPricing: {type:'OBJECT',properties:{
+          basis:{type:'STRING'},source:{type:'STRING'},completeness:{type:'STRING',enum:['COMPLETE','PARTIAL']},
+          extensionRateRule:{type:'STRING',enum:['FINAL_OPTION_RATES','ESCALATE','UNKNOWN','NOT_APPLICABLE']},extensionSource:{type:'STRING'},rateBaseYear:{type:'NUMBER'},
+          components:{type:'ARRAY',items:{type:'OBJECT',properties:{
+            id:{type:'STRING'},label:{type:'STRING'},category:{type:'STRING',enum:['TRAVEL','ODC','MATERIALS','OTHER']},amount:{type:'NUMBER'},source:{type:'STRING'},evidenceIds:stringArray,
+            indirectPct:{type:'NUMBER'},indirectTreatment:{type:'STRING',enum:['NOT_ALLOWED','KNOWN','UNKNOWN']},feeAllowed:{type:'BOOLEAN'},
+          },required:['id','label','category','source','evidenceIds','indirectTreatment','feeAllowed']}},
+        },required:['basis','source','completeness','extensionRateRule','components']},
+        sourceConflicts:{type:'ARRAY',items:{type:'OBJECT',properties:{topic:{type:'STRING'},descriptions:stringArray,sources:stringArray,resolution:{type:'STRING'}},required:['topic','descriptions','sources','resolution']}},
       },
       required: [
         'documentStatus', 'eligibilityReason', 'eligibilitySource', 'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
         'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements',
-        'laborSignals', 'pricingSignals', 'laborModelComplete', 'laborModelSource',
+        'laborSignals', 'pricingSignals', 'laborModelComplete', 'laborModelSource', 'setAside', 'evaluationPricing', 'sourceConflicts',
       ],
     },
     marketAssessment: {
@@ -296,6 +310,10 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Set opportunitySpecific true only for a value that describes this solicitation.
 - Set recurringService, scalableByQuantity, or sharedAcrossAwards true only when the document supports it.
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
+- Read selected boxes on SF1449 visually. Merely printing WOSB/SDVOSB/8(a) on a standard form does not establish that set-aside. Extract the checked designation and NAICS from the controlling form/amendment, with a fact and evidence locator. If markings cannot be read, say Unknown rather than choosing a printed option.
+- Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
+- Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
+- Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
 - For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
 - Set performanceMonths to the total evaluated labor duration supported by the schedule. Set laborModelComplete true only when every priced labor row and every evaluated period is accounted for with locators. Otherwise false, with the specific missing rows/periods in laborModelSource and gaps. A blank offered-rate column is normal in an unpriced solicitation: source external rate benchmarks; do not demand that the analyst supply a completed bid to perform market research.
@@ -334,7 +352,7 @@ function usableResearchUrl(value?: string) {
 }
 
 function connectorCacheKey(name: ConnectorStatus['name'], deal: OpportunityAnalysis['deal']) {
-  const labor = deal.laborSignals?.map((item) => item.title).filter(Boolean).slice(0, 5) || [];
+  const labor = deal.laborSignals || [];
   return JSON.stringify([name, deal.agency, deal.naics, deal.solicitationNumber, deal.title, labor]);
 }
 
@@ -461,6 +479,7 @@ function mergeSamDealMetadata(analysis: OpportunityAnalysis, metadata: SamOpport
     solicitationNumber: metadata.solicitationNumber || analysis.deal.solicitationNumber,
     dueDate: metadata.responseDeadline || analysis.deal.dueDate,
     naics: metadata.naics || naicsOverride || analysis.deal.naics,
+    setAside: analysis.deal.setAside || metadata.setAside || 'Unknown',
     psc: metadata.psc || analysis.deal.psc,
   };
 }
@@ -479,6 +498,7 @@ function recalculateForOfficialDealMetadata(analysis: OpportunityAnalysis) {
     preRfpSignals: analysis.preRfpSignals,
   };
   analysis.marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt });
+  analysis.competitivePosition = calculateCompetitivePosition(analysis);
 }
 
 async function synthesizeOfficialEvidence(draft: AiAnalysisDraft) {
@@ -509,12 +529,13 @@ ${JSON.stringify(official)}`);
 
 export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
   const client = new OpenAIIntelligence(undefined, undefined, fetch, 170_000);
-  const draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
+  let draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence);
   draft.gaps = normalizeGaps(draft.gaps);
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
+  draft = reconcileSourceFacts(draft);
   const warnings: string[] = assessEligibility(draft.deal);
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
   const connectors: ConnectorStatus[] = [];
@@ -608,13 +629,13 @@ Do not infer company-specific costs, staffing, or bids.`)
   const analyzedAt = new Date().toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
   const { marketAssessment: _marketAssessment, ...analysisFields } = draft;
-  return {
+  return enforceAuthoritativeAnalysis({
     ...analysisFields,
     marketPosition,
     narrative: sanitizeNarrative(draft.narrative),
     id: `run-${crypto.randomUUID()}`,
     meta: { mode: 'MARKET_ONLY', model, analyzedAt, researchStatus, warnings, connectors },
-  };
+  });
 }
 
 app.get('/api/health', (_req, res) => res.json({
@@ -836,6 +857,7 @@ app.post('/api/retry-connector', async (req, res) => {
       narrative: sanitizeNarrative(draft.narrative),
       marketPosition: calculateDeterministicScenarios(draft, { asOfDate: analysis.meta.analyzedAt }),
     };
+    analysis = enforceAuthoritativeAnalysis(analysis);
     analysis.ptwStrategy = preserveCurrentStrategy(analysis, analysis.ptwStrategy);
     res.json({ data: analysis });
   } catch (error) {
@@ -861,7 +883,7 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Benchmark lower reference', value: displayValue(analysis.marketPosition.aggressive) },
       { field: 'Benchmark central reference', value: displayValue(analysis.marketPosition.expected) },
       { field: 'Benchmark upper reference', value: displayValue(analysis.marketPosition.conservative) },
-      { field: 'Numeric interpretation', value: 'Heuristic market references. These are not priced competitive strategies or an approved bid recommendation.' },
+      { field: 'Numeric interpretation', value: 'Supporting market benchmarks are distinct from the selected provisional PTW target in Competitive Strategies. Company bid approval is separate.' },
       { field: 'Range Status', value: analysis.marketPosition.rangeStatus },
       { field: 'Estimation Method', value: analysis.marketPosition.methodLabel },
       { field: 'Confidence', value: analysis.marketPosition.confidence },
@@ -899,7 +921,12 @@ app.post('/api/export-brief', async (req, res) => {
       priced.addRow({label:'Evaluation source',source:scenario.inputs.basisSource});
       priced.addRow({label:'Calculation',source:scenario.formula});
       priced.addRow({label:'Status',source:'CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price.'});
-    } else priced.addRow({label:'No priced scenario',source:'Enter explicit evaluated quantities and offered unit prices in the decision workspace.'});
+    } else if (analysis.competitivePosition?.scenarios.length) {
+      const p=analysis.competitivePosition;
+      p.rows.forEach(r=>priced.addRow({label:`${r.title} / ${r.period}`,quantity:r.hours,lowUnitPrice:r.lowRate*r.factor,targetUnitPrice:r.recommendedRate*r.factor,highUnitPrice:r.highRate*r.factor,source:`${r.source}; ${r.evidenceIds.join(', ')}. ${r.protectionReason}`}));
+      p.components.forEach(c=>priced.addRow({label:c.label,quantity:1,lowUnitPrice:c.includedAmount,targetUnitPrice:c.includedAmount,highUnitPrice:c.includedAmount,source:`${c.source}. ${c.assumption}`}));
+      priced.addRow({label:'EVALUATED PLANNING TOTALS',lowUnitPrice:p.scenarios[0].total,targetUnitPrice:p.scenarios[1].total,highUnitPrice:p.scenarios[2].total,source:`${p.status}. ${p.evaluationComplete?'Evaluation basket represented':'Component validation remains open'}. Recalculable formulas: Competitive Labor / Competitive Strategies.`});
+    } else priced.addRow({label:'No complete calculation basis',source:analysis.competitivePosition?.missing.join(' ') || 'Re-extract the quantity/rate and evaluated-basket inputs.'});
     const strategy = workbook.addWorksheet('PTW Strategy');
     strategy.columns = [{header:'Section',key:'section',width:38},{header:'Assessment',key:'assessment',width:100},{header:'Claim type',key:'kind',width:18},{header:'Evidence IDs',key:'evidence',width:36},{header:'Validation action',key:'validation',width:80}];
     if (analysis.ptwStrategy?.status === 'DRAFT') {
@@ -993,6 +1020,7 @@ app.post('/api/export-brief', async (req, res) => {
       originalValue: item.numeric?.originalValue,
     })));
 
+    addCompetitiveWorkbook(workbook,analysis);
     for (const sheet of workbook.worksheets) {
       sheet.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
       sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10243E' } };

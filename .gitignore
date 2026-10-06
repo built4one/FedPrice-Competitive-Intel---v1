@@ -3,6 +3,7 @@ build/
 dist/
 coverage/
 .tmp/
+tmp/
 data/
 .DS_Store
 *.log

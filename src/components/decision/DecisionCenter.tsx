@@ -11,6 +11,7 @@ import {
 import type { EvaluatedNumericAnchor, OpportunityAnalysis } from '../../types';
 import { authoritativeScenarioValues } from '../../domain/marketPosition/authoritative';
 import PtwStrategyBrief from './PtwStrategyBrief';
+import CompetitiveRecommendation from './CompetitiveRecommendation';
 
 const money = (value: number | null) => value === null
   ? 'Not supportable'
@@ -65,6 +66,7 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
 
   return (
     <div className="space-y-5">
+      <CompetitiveRecommendation analysis={analysis} />
       <PtwStrategyBrief analysis={analysis} onGenerate={onGenerateStrategy} generating={generatingStrategy} />
       {(samUnavailable || unresolvedDocuments.length > 0) && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">

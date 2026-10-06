@@ -92,3 +92,7 @@ The OpenAI branch still needs a private preview deployment, credentials, and one
 - SAM bulk ingestion
 - MCP or ContextForge
 - Monte Carlo simulation
+
+## Executive recommendation and provisional PTW
+
+The Decision workspace and PDF now lead with a deterministic, role-priced provisional market recommendation. The workbook includes recalculable rate statistics, labor, evaluated components and strategy totals. Public benchmarks and company economics remain separate; IBM/company intelligence is an optional Phase 2 layer. See [executive output and calculation contract](docs/EXECUTIVE_BRIEF_AND_PTW.md) for assumptions, source controls and the real-package retest requirement.

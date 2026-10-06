@@ -1,5 +1,6 @@
 import type { PricingScenario } from './domain/ptw/pricingScenario';
 import type { PtwStrategyResult } from './domain/ptw/strategy';
+import type { CompetitivePosition } from './domain/ptw/competitivePosition';
 
 export type ConfidenceLevel = 'HIGH' | 'MEDIUM' | 'LOW';
 export type EvidenceType = 'SOLICITATION_FACT' | 'EXTERNAL_SOURCE' | 'ANALYST_INFERENCE' | 'DATA_GAP';
@@ -46,7 +47,25 @@ export interface RequirementSignal {
   confidence: number;
 }
 export interface LaborPeriod { label: string; startMonth: number; months: number; quantity: number; annualHours?: number; totalHours?: number; section?: string; }
-export interface LaborSignal { title: string; quantity?: number; annualHours?: number; location?: string; clearance?: string; section?: string; periods?: LaborPeriod[]; }
+export interface LaborSignal {
+  title: string; quantity?: number; annualHours?: number; location?: string; clearance?: string; section?: string; periods?: LaborPeriod[];
+  duties?: string; pwsTitle?: string; qualificationSource?: string; minExperienceYears?: number;
+  education?: string; certifications?: string[]; titleConflict?: string;
+}
+
+export interface EvaluatedPriceComponent {
+  id: string; label: string; category: 'TRAVEL' | 'ODC' | 'MATERIALS' | 'OTHER';
+  amount?: number; source: string; evidenceIds: string[];
+  indirectPct?: number; indirectTreatment: 'NOT_ALLOWED' | 'KNOWN' | 'UNKNOWN';
+  feeAllowed: boolean;
+}
+export interface EvaluationPricing {
+  basis: string; source: string; completeness: 'COMPLETE' | 'PARTIAL';
+  components: EvaluatedPriceComponent[];
+  extensionRateRule: 'FINAL_OPTION_RATES' | 'ESCALATE' | 'UNKNOWN' | 'NOT_APPLICABLE';
+  extensionSource?: string; rateBaseYear?: number;
+}
+export interface SourceConflict { topic: string; descriptions: string[]; sources: string[]; resolution: string; }
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
 
 export interface NumericEvidence {
@@ -82,6 +101,11 @@ export interface NumericEvidence {
   rateSampleComplete?: boolean;
   clearanceRequired?: boolean;
   laborMatchScore?: number;
+  benchmarkFamily?: string;
+  qualificationFit?: 'FILTERED_PROXY' | 'UNVALIDATED';
+  rateDistribution?: number[];
+  rateSampleFingerprint?: string;
+  rateRecords?: Array<{id: string; category: string; vendor: string; contract: string; rate: number; experience?: number; education?: string; worksite?: string; clearance?: string;}>;
 }
 
 export interface EvidenceItem {
@@ -115,6 +139,7 @@ export interface DealProfile {
   periodOfPerformance: string;
   performanceMonths?: number;
   naics: string;
+  setAside?: string;
   psc?: string;
   awardStructure: string;
   evaluationMethod: string;
@@ -125,6 +150,8 @@ export interface DealProfile {
   laborModelComplete?: boolean;
   laborModelSource?: string;
   pricingSignals: PricingSignal[];
+  evaluationPricing?: EvaluationPricing;
+  sourceConflicts?: SourceConflict[];
 }
 
 export interface RecommendationDriver {
@@ -341,6 +368,7 @@ export interface ValidationRecord {
 }
 
 export interface OpportunityAnalysis {
+  competitivePosition?: CompetitivePosition;
   pricingScenario?: PricingScenario;
   ptwStrategy?: PtwStrategyResult;
   storageVersion?: number;

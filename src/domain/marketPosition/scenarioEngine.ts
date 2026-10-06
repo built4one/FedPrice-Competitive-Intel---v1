@@ -13,7 +13,7 @@ import { ENGINE_THRESHOLDS, MARKET_POSITION_ENGINE_VERSION } from './engineConfi
 import { calculateEvidenceReadiness, effectiveSampleSize } from './readiness';
 import { determineCalculationRole, extractPeriodMonths, normalizeNumericEvidence } from './valueNormalization';
 import { normalizeGaps } from '../analysisQuality';
-import { laborRoleMatch, requiresClearance } from '../laborMatching';
+import { buildLaborModel, laborTotal } from '../ptw/laborModel';
 
 interface EngineOptions {
   asOfDate: string;
@@ -234,143 +234,37 @@ function median(values: number[]) {
 function bottomUpCandidate(
   draft: Pick<AiAnalysisDraft, 'deal' | 'evidence' | 'gaps'>,
 ): ScenarioCandidate | null {
-  const months = draft.deal.performanceMonths || extractPeriodMonths(draft.deal.periodOfPerformance);
-  const labor = (draft.deal.laborSignals || []).filter((signal) => signal.title?.trim());
-  if (!months || !labor.length || draft.deal.laborModelComplete === false) return null;
-  // Quantity is essential. Annual hours may use an explicit planning assumption when the
-  // solicitation provides headcount but omits productive hours.
-  if (labor.some(signal => !signal.periods?.length && (!signal.quantity || signal.quantity <= 0))) return null;
-  const assumedAnnualHours = labor.filter(signal => signal.periods?.length
-    ? signal.periods.some(p => p.totalHours == null && !p.annualHours && !signal.annualHours) : !signal.annualHours);
-
-  const rates = draft.evidence.filter((item) =>
-    item.numeric?.valueType === 'HOURLY_CEILING_RATE' &&
-    item.numeric.units === 'USD_PER_HOUR' &&
-    item.numeric.currency === 'USD' &&
-    item.numeric.originalValue > 0,
-  );
-  if (!rates.length) return null;
-
-  const components: Array<{ label: string; annualCost: number; lowCost: number; highCost: number; startMonth: number; months: number; evidenceIds: string[] }> = [];
-  for (const signal of labor) {
-    const matches = rates.filter(item => {
-      const n = item.numeric!;
-      if (n.matchedLaborCategory && n.matchedLaborCategory !== signal.title) return false;
-      if (requiresClearance(signal.clearance) && !n.clearanceRequired) return false;
-      return laborRoleMatch(signal.title, n.scopeText || item.claim) >= 0.8;
-    });
-    if (!matches.length) return null;
-    const hourlyRate = median(matches.map((item) => item.numeric!.originalValue));
-    const lowerRate = median(matches.map(item => item.numeric!.lowerRate ?? item.numeric!.originalValue));
-    const upperRate = median(matches.map(item => item.numeric!.upperRate ?? item.numeric!.originalValue));
-    const periods = signal.periods?.length ? [...signal.periods].sort((a,b) => a.startMonth-b.startMonth)
-      : [{ label: 'Full performance period', startMonth: 0, months, quantity: signal.quantity!, annualHours: signal.annualHours, section: signal.section }];
-    let covered = 0;
-    for (const period of periods) {
-      if (!Number.isFinite(period.startMonth) || Math.abs(period.startMonth - covered) > 0.01 || !(period.months > 0)
-        || !Number.isFinite(period.quantity) || period.quantity < 0) return null;
-      covered += period.months;
-      const documentedHours = period.annualHours || signal.annualHours;
-      const annualHours = documentedHours && documentedHours > 0 ? documentedHours : 2_080;
-      const totalHours = 'totalHours' in period ? period.totalHours : undefined;
-      if (documentedHours && documentedHours > 8784) return null;
-      if (totalHours != null && (!Number.isFinite(totalHours) || totalHours < 0 || (period.quantity > 0 && totalHours === 0))) return null;
-      const hours = totalHours != null ? totalHours * 12 / period.months : period.quantity * annualHours;
-      components.push({
-        label: `${signal.title} / ${period.label}: ${totalHours != null ? `${totalHours} total row hours (${period.quantity} FTE; no additional quantity or duration multiplication)` : `${period.quantity} FTE x ${annualHours} annual hours${documentedHours ? '' : ' (planning assumption)'} x ${period.months}/12 years`} x median ${hourlyRate.toFixed(2)} USD/hour. Source: ${period.section || signal.section || 'Extracted schedule'}; rates ${matches.map(item => item.id).join(', ')}.`,
-        annualCost: hours * hourlyRate, lowCost: hours * lowerRate, highCost: hours * upperRate,
-        startMonth: period.startMonth, months: period.months, evidenceIds: matches.map(item => item.id),
-      });
-    }
-    if (Math.abs(covered - months) > 0.01) return null;
-  }
-
-  const escalationEvidence = draft.evidence.find((item) =>
-    item.numeric?.valueType === 'ESCALATION_RATE' &&
-    item.numeric.units === 'PERCENT' &&
-    item.numeric.originalValue > 0 &&
-    item.numeric.originalValue < 20,
-  );
-  const escalation = escalationEvidence?.numeric ? escalationEvidence.numeric.originalValue / 100 : 0;
-  const total = (field: 'annualCost' | 'lowCost' | 'highCost') => components.reduce((sum, c) => {
-    let amount = 0;
-    for (let offset = 0; offset < c.months; offset += 1) {
-      amount += c[field] / 12 * Math.min(1,c.months-offset) * ((1+escalation) ** Math.floor((c.startMonth+offset)/12));
-    }
-    return sum + amount;
-  }, 0);
-  const expected = total('annualCost');
+  const model = buildLaborModel(draft.deal,draft.evidence);
+  if (!model.complete) return null;
+  const expected = laborTotal(model.rows,'medianRate');
   if (!Number.isFinite(expected) || expected <= 0) return null;
-
-  const evidenceIds = [...new Set([
-    ...components.flatMap((component) => component.evidenceIds),
-    ...(escalationEvidence ? [escalationEvidence.id] : []),
-  ])];
+  const assumed = model.rows.some(r=>r.assumedHours);
+  const evidenceIds = [...new Set([...model.rows.flatMap(r=>r.evidenceIds),...(model.escalationEvidenceId ? [model.escalationEvidenceId] : [])])];
   const synthetic: EvaluatedNumericAnchor = {
-    id: 'ANCHOR-MODEL-BOTTOM-UP',
-    evidenceId: 'MODEL-BOTTOM-UP',
-    sourceLabel: 'Deterministic bottom-up labor model',
-    originalValue: expected,
-    normalizedValue: expected,
-    valueType: 'ESTIMATED_VALUE',
-    units: 'TOTAL_USD',
-    role: 'CENTRAL_ANCHOR',
-    comparabilityScore: 1,
-    comparability: {
-      scope: 1, scale: 1, acquisition: 1, customer: 1, period: 1,
-      naicsPsc: 1, laborIntensity: 1, recency: 1, technologySecurityLocation: 1, coverage: 1,
-    },
-    evidenceQuality: assumedAnnualHours.length ? 0.72 : 0.86,
-    normalizationConfidence: assumedAnnualHours.length ? 0.62 : (escalationEvidence || months <= 12 ? 0.84 : 0.76),
-    weight: assumedAnnualHours.length ? 0.45 : 0.72,
-    included: true,
-    inclusionRationale: assumedAnnualHours.length
-      ? 'Documented staffing quantities were multiplied by matched official hourly-rate evidence using an explicit annual-hours planning assumption.'
-      : 'Complete solicitation staffing quantities and hours were multiplied by matched official hourly-rate evidence.',
-    exclusionReasons: [],
-    normalizationSteps: [],
-    evidenceIds,
-    opportunitySpecific: true,
-    valueBasis: 'OPPORTUNITY_TOTAL',
+    id:'ANCHOR-MODEL-BOTTOM-UP',evidenceId:'MODEL-BOTTOM-UP',sourceLabel:'Deterministic bottom-up labor model',
+    originalValue:expected,normalizedValue:expected,valueType:'ESTIMATED_VALUE',units:'TOTAL_USD',role:'CENTRAL_ANCHOR',
+    comparabilityScore:1,comparability:{scope:1,scale:1,acquisition:1,customer:1,period:1,naicsPsc:1,laborIntensity:1,recency:1,technologySecurityLocation:1,coverage:1},
+    evidenceQuality:assumed ? .72 : .86,normalizationConfidence:assumed ? .62 : .84,weight:assumed ? .45 : .72,included:true,
+    inclusionRationale:'Documented quantities and hours were extended with public loaded-rate proxies. Rate relevance and competitive confidence remain separate.',
+    exclusionReasons:[],normalizationSteps:[],evidenceIds,opportunitySpecific:true,valueBasis:'OPPORTUNITY_TOTAL',
   };
-  const readiness = calculateEvidenceReadiness([synthetic], draft.gaps, 0);
-  const rangeWidth = Math.max(ENGINE_THRESHOLDS.oneAnchorMinimumRangeWidth, assumedAnnualHours.length ? 0.35 : 0.20);
-  const hasDistribution = rates.some(rate => rate.numeric?.lowerRate != null);
-  const modelWidth = hasDistribution ? Math.max(expected-total('lowCost'),total('highCost')-expected)/expected : rangeWidth;
+  const readiness=calculateEvidenceReadiness([synthetic],draft.gaps,0);
+  const hasDistribution = draft.evidence.some(e=>e.numeric?.valueType==='HOURLY_CEILING_RATE' && e.numeric.lowerRate!=null);
+  const fallbackWidth=assumed ? .35 : .20;
+  const low=hasDistribution ? laborTotal(model.rows,'lowRate') : expected*(1-fallbackWidth);
+  const high=hasDistribution ? laborTotal(model.rows,'highRate') : expected*(1+fallbackWidth);
   return {
-    method: 'BOTTOM_UP_LABOR',
-    methodLabel: assumedAnnualHours.length ? 'Provisional bottom-up labor estimate' : 'Bottom-up labor model',
-    anchors: [synthetic],
-    aggressive: roundCurrency(rates.some(r => r.numeric?.lowerRate != null) ? total('lowCost') : expected * (1 - rangeWidth)),
-    expected: roundCurrency(expected),
-    conservative: roundCurrency(rates.some(r => r.numeric?.upperRate != null) ? total('highCost') : expected * (1 + rangeWidth)),
-    status: 'DIRECTIONAL',
-    readiness,
-    sampleSize: 1,
-    dispersion: 0,
-    rangeWidth: modelWidth,
-    rangeFactors: [
-      `${assumedAnnualHours.length ? 'Documented staffing quantities' : 'Complete quantified staffing'} were modeled across ${months} months.`,
-      hasDistribution ? 'Lower and upper references use matched sample rate quartiles; the spread measures benchmark dispersion, not bid strategy.' : assumedAnnualHours.length
-        ? 'A 35% provisional planning band reflects assumed productive hours, labor mix, fee, and non-labor uncertainty.'
-        : 'A 20% planning band reflects labor mix, fee, and non-labor uncertainty.',
-    ],
-    assumptions: [
-      'This is a labor-only public ceiling-rate benchmark, not a predicted winning bid or guaranteed task-order revenue. Rate matches require analyst validation of qualifications, exact clearance level, and worksite.',
-      ...(rates.some(r => r.numeric?.lowerRate != null) ? ['Lower and upper references use the matched sample lower and upper quartiles; they are not confidence intervals or competitor bids.'] : []),
-      assumedAnnualHours.length
-        ? `Annual hours were not stated for ${assumedAnnualHours.map((signal) => signal.title).join(', ')}; 2,080 hours per FTE-year is used only as a visible planning assumption.`
-        : 'The extracted staffing quantities and documented hours represent the complete priced labor model.',
-      'Matched GSA CALC+ values are treated as loaded public ceiling-rate proxies, not company-specific rates.',
-      escalationEvidence ? `BLS escalation evidence (${escalationEvidence.id}) was applied by performance year.` : 'No escalation was applied because a suitable cited series was unavailable.',
-      'Travel, materials, ODCs, subcontractor premiums, fee, and unpriced CLINs are excluded unless embedded in the cited rates.',
-    ],
-    verifiedInputs: components.map((component) => component.label),
-    sensitivities: [
-      ...(assumedAnnualHours.length ? ['Replace the 2,080-hour planning assumption with solicitation-specific productive hours as soon as they are known.'] : []),
-      'Changes to staffing mix, productive hours, or period of performance move the estimate directly.',
-      'Company-specific rates, fee, ODCs, and subcontractor structure may materially change the working position.',
-    ],
+    method:'BOTTOM_UP_LABOR',methodLabel:assumed ? 'Provisional bottom-up labor estimate' : 'Bottom-up labor model',anchors:[synthetic],
+    aggressive:roundCurrency(low),expected:roundCurrency(expected),conservative:roundCurrency(high),status:'DIRECTIONAL',readiness,sampleSize:1,dispersion:0,
+    rangeWidth:Math.max(expected-low,high-expected)/expected,
+    rangeFactors:[`Complete quantified staffing was modeled across ${draft.deal.performanceMonths || extractPeriodMonths(draft.deal.periodOfPerformance)} months.`,
+      hasDistribution ? 'Summed role quartiles describe labor-rate scenarios, not a total-price statistical confidence interval or verified competitor offers.' : `A ${fallbackWidth*100}% provisional planning band is an assumption because matched rate distributions are unavailable.`],
+    assumptions:[...model.assumptions,'This is a labor-only public loaded ceiling-rate benchmark, not company cost, a winning bid or guaranteed task-order revenue.',
+      'Qualifications, clearance level, worksite and source-role conflicts require analyst review.',
+      'Specified travel and other evaluated components are included separately in the competitive scenario model; avoid adding embedded labor burden or fee twice.'],
+    verifiedInputs:model.rows.map(r=>`${r.title} / ${r.period}: ${r.hours} total row hours (${r.fte} FTE; no additional quantity or duration multiplication) x median ${r.medianRate.toFixed(2)} USD/hour x escalation factor ${r.factor}. Source: ${r.source}; rates ${r.evidenceIds.join(', ')}.`),
+    sensitivities:['Changes to staffing mix, productive hours, period coverage or proxy relevance move the estimate directly.',
+      ...(assumed ? ['Replace the 2,080-hour planning assumption with solicitation-specific productive hours as soon as they are known.'] : [])],
   };
 }
 
@@ -480,7 +374,7 @@ export function calculateDeterministicScenarios(
   const comparableLabel = comparableMethod === 'PARAMETRIC_ANALOGY' ? 'Normalized analogous awards' : 'Comparable awards';
   const comparableCandidate = scenarioFromAnchors(comparableMethod, comparableLabel, indirect, draft.gaps);
   const bottomUp = bottomUpCandidate(draft);
-  const benchmark = publicBenchmark(comparableCandidate);
+  const benchmark = publicBenchmark(comparableCandidate && comparableCandidate.status !== 'INSUFFICIENT_EVIDENCE' ? comparableCandidate : bottomUp);
 
   let selected: ScenarioCandidate | null = null;
   if (directCandidate && directCandidate.status !== 'INSUFFICIENT_EVIDENCE') {

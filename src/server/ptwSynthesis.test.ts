@@ -49,11 +49,11 @@ test('selection must compare all alternatives and cannot choose a nonexistent op
 
 test('capability and vehicle membership do not establish confirmed bid intent', () => {
   const {analysis,strategy} = ptwStrategyFixture();
-  analysis.evidence.push({id:'COMP',type:'EXTERNAL_SOURCE',sourceLabel:'Synthetic company source',url:'https://example.com',claim:'Example Co has agency experience and is on a contract vehicle.',confidence:80});
+  analysis.evidence.push({id:'COMP',type:'EXTERNAL_SOURCE',sourceLabel:'Synthetic company source',url:'https://example.com',claim:`Example Co has agency experience and is on a contract vehicle related to ${analysis.deal.solicitationNumber}.`,confidence:80});
   const basis = {text:'Example Co is bidding.',kind:'FACT' as const,evidenceIds:['COMP'],validationAction:''};
   strategy.competitors = [{name:'Example Co',bidIntent:'CONFIRMED',intentBasis:basis,likelyApproach:{...basis,kind:'INFERENCE',validationAction:'Validate the approach.'},threat:{...basis,kind:'INFERENCE',validationAction:'Validate the threat.'}}];
   assert.throws(() => validateStrategy(strategy,analysis),/explicit, sourced statement/);
-  analysis.evidence.find(e => e.id === 'COMP')!.claim = 'Example Co will bid on the identified procurement.';
+  analysis.evidence.find(e => e.id === 'COMP')!.claim = `Example Co will bid on ${analysis.deal.solicitationNumber}.`;
   assert.doesNotThrow(() => validateStrategy(strategy,analysis));
 });
 

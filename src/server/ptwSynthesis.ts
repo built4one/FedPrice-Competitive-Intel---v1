@@ -4,15 +4,23 @@ import type { OpportunityAnalysis } from '../types';
 import { strategySchema, strategyStatements, type PtwStrategy, type PtwStrategyResult } from '../domain/ptw/strategy';
 import { OpenAIIntelligence } from './openaiIntelligence';
 import { strategyResponseSchema } from './strategyResponseSchema';
+import { resolvedGap, supportedCompetitors } from '../domain/sourceConsistency';
+import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
 
-export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.2.0';
-type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta'>;
+export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.3.0';
+type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition'>;
 
-function sourceInput(analysis: StrategyInput) {
+function sourceInput(analysis: StrategyInput, compact=false) {
+  const position=calculateCompetitivePosition(analysis);
   return {
-    deal: analysis.deal, evidence: analysis.evidence, competitors: analysis.competitors,
+    deal: {...analysis.deal,sourceConflicts:analysis.deal.sourceConflicts || []}, evidence: compact ? analysis.evidence.map(e=>{
+      if(!e.numeric)return e;
+      const {rateDistribution:_distribution,rateRecords:_records,...numeric}=e.numeric;
+      return {...e,numeric};
+    }) : analysis.evidence, competitors: analysis.competitors,
     incumbent: analysis.incumbent, gaps: analysis.gaps, marketPosition: analysis.marketPosition,
     analyzedAt: analysis.meta.analyzedAt,
+    competitivePosition: compact ? {...position,rows:[...new Map(position.rows.map(r=>[r.title,{title:r.title,recommendedRate:r.recommendedRate,protectionReason:r.protectionReason,evidenceIds:r.evidenceIds}])).values()]} : position,
   };
 }
 
@@ -50,6 +58,8 @@ export function validateStrategy(raw: unknown, analysis: StrategyInput): PtwStra
     })) throw new Error('A fact needs a specific source claim and locator, not a generic source listing or inference.');
   }
   for (const rival of result.competitors) {
+    const support = supportedCompetitors([{name:rival.name,sourceRefs:rival.intentBasis.evidenceIds} as OpportunityAnalysis['competitors'][number]],analysis.evidence,analysis.deal);
+    if (!support.length) throw new Error('A named competitor requires a claim-specific source linking that company to this pursuit or documented predecessor.');
     if (rival.bidIntent === 'CONFIRMED') {
       const explicitIntent = rival.intentBasis.evidenceIds.some(id => {
         const item = evidence.get(id)!;
@@ -61,6 +71,9 @@ export function validateStrategy(raw: unknown, analysis: StrategyInput): PtwStra
       if (rival.intentBasis.kind !== 'FACT' || !explicitIntent) throw new Error('Confirmed bid intent requires an explicit, sourced statement naming the bidder.');
     }
   }
+  result.missingInputs = result.missingInputs.filter(v=>!resolvedGap(v,analysis.deal));
+  if (analysis.deal.setAside && !/WOSB|women.owned/i.test(analysis.deal.setAside) && /WOSB|women.owned/i.test(JSON.stringify(result)))
+    throw new Error('Strategic eligibility contradicts the controlling extracted set-aside.');
   return result;
 }
 
@@ -106,11 +119,13 @@ Produce 2–4 genuinely different delivery/competitive approaches, not low/mediu
 FACT and INFERENCE require evidence IDs. A generic list of web URLs is not proof of a specific fact. ASSUMPTION may have no citations but must name what is assumed and how to test it. Every inference needs validation. Source presence is not verification; all output remains unreviewed.
 Do not infer bid intent from agency history, capability, or vehicle membership. Use CONFIRMED only for an explicit documented intent-to-bid fact; otherwise POSSIBLE or UNKNOWN. Leave the competitor array empty if no specific company has source support.
 Respect LPTA versus tradeoff evaluation: a premium requires an evidenced, evaluable benefit and an explicit assumption about willingness to pay; it is never automatically justified. Identify compliance gates before recommending efficiencies. For expired/sole-source/noncompetitive opportunities, make applicability a prominent qualification and frame alternatives as validation/negotiation actions, not live competitive PTW.
+Use the authoritative setAside and NAICS fields; never infer eligibility from printed unchecked form choices. If the solicitation uses price-ordered evaluation with fallback branches, preserve the specific qualifying past-performance/clearance ratings and stopping rules. Staffing readiness is an execution condition; do not claim standalone evaluation credit unless it is a scored factor.
+The competitivePosition contains deterministic provisional priced strategies. Explain how the selected delivery approach supports or challenges its explicit rate protections. Do not demand quantities or hours already supplied, or company confidential costs before an independent market planning recommendation. Qualitative alternatives with unquantified savings remain unpriced delivery hypotheses; never imply their effects are already included in the numeric cases.
 Select one option conditionally and explain why EACH other option was not selected. Give concrete change triggers and named validation tasks. Do not claim IBM capabilities, approved costs, historical wins, or a delivery model absent from evidence.
-Do not output dollars, percentage adjustments, quantitative win probabilities, or a numeric corridor. Cite numeric evidence IDs. The current marketPosition range is a heuristic benchmark, not a proposed bid, an optimization objective, or proof of competitor willingness to bid. Later deterministic strategy models must calculate the cost/price effects of explicit, approved scenario inputs.
+Do not output dollars, percentage adjustments, quantitative win probabilities, or a numeric corridor. Cite numeric evidence IDs. The marketPosition range is a supporting benchmark; the separate competitivePosition owns the provisional numerical recommendation. No productivity, teaming or premium dollars are included without explicit numerical inputs. Named competitors require claim-specific evidence tying them to this pursuit or documented predecessor; generic source URLs are insufficient.
 Keep each statement under 1600 characters, validation actions under 600, and the whole response concise.
 INPUT JSON:
-${JSON.stringify(sourceInput(analysis))}
+${JSON.stringify(sourceInput(analysis,true))}
 ${correction}`, strategyResponseSchema);
     return {status: 'DRAFT', version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: new Date().toISOString(), reviewStatus: 'UNREVIEWED', strategy: validateStrategy(raw, analysis)};
   } catch (error) {

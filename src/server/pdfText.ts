@@ -72,6 +72,10 @@ export async function normalizePdfText<T extends IntelligenceFile & { size: numb
         .map((item: any) => 'str' in item ? `${item.str}${item.hasEOL ? '\n' : ' '}` : '')
         .join('')
         .trim();
+      // SF1449 eligibility is conveyed by selected boxes, which a text layer can
+      // list without preserving selection. Keep the visual form for extraction.
+      if (i === 1 && /SOLICITATION\/CONTRACT\/ORDER FOR COMMERCIAL|STANDARD FORM\s*1449|SF\s*1449/i.test(text)
+        && /SET.?ASIDE|WOSB|WOMEN.OWNED|SMALL BUSINESS/i.test(text)) return file;
       // Scanned/image-only pages must stay as PDFs so the AI can inspect the visual page.
       if (text.replace(/\s/g, '').length < 25) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}\n${text}`);

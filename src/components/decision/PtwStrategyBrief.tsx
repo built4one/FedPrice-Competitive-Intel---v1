@@ -22,7 +22,7 @@ export default function PtwStrategyBrief({analysis, onGenerate, generating = fal
       <p className="mt-3 text-base leading-7">{s.recommendation.rationale.text}</p>
       <p className="mt-3 text-xs text-blue-200">{s.recommendation.rationale.kind.toLowerCase()} · Evidence: {s.recommendation.rationale.evidenceIds.join(', ') || 'Working assumption'} · Source support awaits analyst review.</p>
       {s.recommendation.rationale.validationAction && <p className="mt-2 text-sm text-slate-300">Validate: {s.recommendation.rationale.validationAction}</p>}
-      <p className="mt-5 border-t border-white/15 pt-4 text-sm text-slate-300">Strategic recommendation draft. Pricing this approach requires an explicit scenario model and validation of the inputs listed below.</p>
+      <p className="mt-5 border-t border-white/15 pt-4 text-sm text-slate-300">Delivery-strategy draft. The provisional price recommendation uses explicit role-rate assumptions. Unquantified productivity, teaming savings and premiums below remain hypotheses pending a separate calculation.</p>
     </div>
     <div className="rounded-2xl border border-slate-200 bg-white p-5">
       <h3 className="text-base font-black">How the government chooses</h3>
