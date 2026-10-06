@@ -12,6 +12,7 @@ import { scoreComparability, scoreEvidenceQuality } from './comparability';
 import { ENGINE_THRESHOLDS, MARKET_POSITION_ENGINE_VERSION } from './engineConfig';
 import { calculateEvidenceReadiness, effectiveSampleSize } from './readiness';
 import { determineCalculationRole, extractPeriodMonths, normalizeNumericEvidence } from './valueNormalization';
+import { classifyNumericEvidence } from './evidenceClassification';
 import { normalizeGaps } from '../analysisQuality';
 import { buildLaborModel, laborTotal } from '../ptw/laborModel';
 
@@ -352,7 +353,8 @@ export function calculateDeterministicScenarios(
   draft: Pick<AiAnalysisDraft, 'deal' | 'evidence' | 'gaps' | 'marketAssessment'>,
   options: EngineOptions,
 ): MarketPosition {
-  draft = { ...draft, gaps: normalizeGaps(draft.gaps) };
+  draft = { ...draft, gaps: normalizeGaps(draft.gaps), evidence: draft.evidence.map(e=>({...e,numeric:e.numeric ? {...e.numeric} : undefined})) };
+  classifyNumericEvidence(draft.evidence, draft.deal);
   if (!options.asOfDate || Number.isNaN(Date.parse(options.asOfDate))) {
     throw new Error('A valid as-of date is required for deterministic Market Position calculations.');
   }

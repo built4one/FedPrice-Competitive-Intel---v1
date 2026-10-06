@@ -10,36 +10,6 @@ import mammoth from "mammoth";
 // src/domain/ptw/pricingScenario.ts
 import Decimal from "decimal.js";
 import { z } from "zod";
-var amount = z.number().finite().nonnegative().max(1e12);
-var pricingInputsSchema = z.object({
-  evaluationBasis: z.string().trim().min(10).max(2e3),
-  basisSource: z.string().trim().min(3).max(1e3),
-  completenessConfirmed: z.literal(true),
-  lines: z.array(z.object({
-    label: z.string().trim().min(1).max(200),
-    quantity: z.number().finite().positive().max(1e9),
-    lowUnitPrice: amount,
-    targetUnitPrice: amount,
-    highUnitPrice: amount,
-    source: z.string().trim().min(3).max(1e3)
-  }).strict().refine((v) => v.lowUnitPrice <= v.targetUnitPrice && v.targetUnitPrice <= v.highUnitPrice, "Unit prices must be ordered low \u2264 target \u2264 high.")).min(1).max(40)
-}).strict();
-function calculatePricingScenario(raw) {
-  const inputs = pricingInputsSchema.parse(raw);
-  const total = (key) => {
-    const value = inputs.lines.reduce((sum, row) => sum.plus(new Decimal(row.quantity).times(row[key])), new Decimal(0));
-    if (value.greaterThan(1e15)) throw new Error("Evaluated total exceeds the supported calculation limit.");
-    return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
-  };
-  return {
-    inputs,
-    low: total("lowUnitPrice"),
-    target: total("targetUnitPrice"),
-    high: total("highUnitPrice"),
-    formula: "Sum of evaluated quantity \xD7 offered unit price for every entered CLIN/period; rounded once to cents.",
-    status: "CONDITIONAL"
-  };
-}
 
 // src/domain/laborMatching.ts
 var roles = [
@@ -93,6 +63,12 @@ function benchmarkRole(signal) {
   if (/background investigations?|personnel security|clearance processing|security adjudication/i.test(signal.duties || "") && !/financial|budget/i.test(signal.title)) return "Personnel Security Specialist";
   return signal.pwsTitle || signal.title;
 }
+function roleMappingIssue(signal) {
+  const text2 = `${signal.title} ${signal.pwsTitle || ""} ${signal.titleConflict || ""}`;
+  if (signal.titleConflict && /personnel security|background investigations?/i.test(text2) && /cyber|infrastructure security|information security/i.test(text2))
+    return "Personnel/background-investigation security and cybersecurity are different occupations. Resolve the conflicting source role before selecting a rate proxy.";
+  return void 0;
+}
 function qualificationMatch(signal, record) {
   const years = Number(record.min_years_experience);
   if (signal.minExperienceYears != null && record.min_years_experience != null && Number.isFinite(years) && years < signal.minExperienceYears) return false;
@@ -109,9 +85,12 @@ function qualificationMatch(signal, record) {
 function laborCoverage(deal, evidence) {
   const rates = evidence.filter((e) => e.numeric?.valueType === "HOURLY_CEILING_RATE" && e.numeric.units === "USD_PER_HOUR" && e.numeric.originalValue > 0);
   return (deal.laborSignals || []).map((signal) => {
+    const mappingIssue = roleMappingIssue(signal);
     const matches2 = rates.filter((e) => {
       const n = e.numeric;
-      return (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title) && (!requiresClearance(signal.clearance) || n.clearanceRequired) && laborRoleMatch(benchmarkRole(signal), n.benchmarkFamily || n.scopeText || e.claim) >= 0.8 && (!signal.titleConflict || Boolean(n.benchmarkFamily && laborFamily(benchmarkRole(signal)) === n.benchmarkFamily));
+      const requested = benchmarkRole(signal);
+      const validatedFamily = n.benchmarkFamily === laborFamily(requested) && n.matchedLaborCategory === signal.title && (n.validatedBenchmarkRole === requested && !n.rateRecords?.length || Boolean(n.rateRecords?.length && n.rateRecords.every((r) => laborRoleMatch(requested, r.category) >= 0.8 && qualificationMatch(signal, { min_years_experience: r.experience, education_level: r.education, worksite: r.worksite }))));
+      return !mappingIssue && (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title) && (!requiresClearance(signal.clearance) || n.clearanceRequired) && (validatedFamily || laborRoleMatch(requested, n.benchmarkFamily || n.scopeText || e.claim) >= 0.8) && (!signal.titleConflict || Boolean(n.benchmarkFamily && laborFamily(benchmarkRole(signal)) === n.benchmarkFamily));
     });
     const values = matches2.map((e) => e.numeric.originalValue).sort((a, b) => a - b);
     const center = values.length ? (values[Math.floor((values.length - 1) / 2)] + values[Math.ceil((values.length - 1) / 2)]) / 2 : null;
@@ -124,7 +103,7 @@ function laborCoverage(deal, evidence) {
       lowerRate: median(matches2.map((e) => e.numeric.lowerRate ?? e.numeric.originalValue)),
       upperRate: median(matches2.map((e) => e.numeric.upperRate ?? e.numeric.originalValue)),
       proxyMapped,
-      limitation: matches2.length ? proxyMapped ? "Provisional role-family ceiling-rate proxy; validate the mapped family, qualifications, clearance level, and worksite before final pricing use." : "Public ceiling-rate proxy; verify exact qualifications, clearance level, and worksite." : "No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping."
+      limitation: matches2.length ? proxyMapped ? "Provisional role-family ceiling-rate proxy; validate the mapped family, qualifications, clearance level, and worksite before final pricing use." : "Public ceiling-rate proxy; verify exact qualifications, clearance level, and worksite." : mappingIssue || "No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping."
     };
   });
 }
@@ -194,6 +173,7 @@ function extractPeriodMonths(value) {
   return void 0;
 }
 function determineCalculationRole(numeric, asOfDate) {
+  if (numeric.valueBasis === "EVALUATED_COMPONENT") return "COMPONENT";
   if (!Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) return "EXCLUDED";
   if (numeric.currency !== "USD" && numeric.units !== "PERCENT") return "EXCLUDED";
   if (numeric.sharedAcrossAwards) return "EXCLUDED";
@@ -300,7 +280,12 @@ function normalizeNumericEvidence(evidence, deal, allEvidence, asOfDate) {
 var dollars = (value) => Math.round((value + Number.EPSILON) * 100) / 100;
 var positive = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
 function buildLaborModel(deal, evidence) {
-  const rows = [], missing = [], assumptions = [];
+  const rows = [], quantityRows = [], missing = [], assumptions = [];
+  let quantityValid = true;
+  const quantityGap = (message) => {
+    missing.push(message);
+    quantityValid = false;
+  };
   const months = deal.performanceMonths || extractPeriodMonths(deal.periodOfPerformance);
   const escalationSource = evidence.find((e) => e.numeric?.valueType === "ESCALATION_RATE" && e.numeric.units === "PERCENT" && Number.isFinite(e.numeric.originalValue) && e.numeric.originalValue >= 0 && e.numeric.originalValue < 20);
   const escalationPct = escalationSource?.numeric?.originalValue || 0;
@@ -310,31 +295,25 @@ function buildLaborModel(deal, evidence) {
   const openingExponent = baseYear != null && Number.isFinite(openingYear) && openingYear > 0 ? Math.max(0, openingYear - baseYear) : 0;
   if (baseYear != null && !openingYear) missing.push("Confirm the opening performance year to reconcile the explicit labor rate base year.");
   if (openingExponent) assumptions.push(`The opening performance year ${openingYear} follows the stated rate base year ${baseYear}; apply ${openingExponent} opening-year escalation step(s).`);
-  if (!months || !positive(months)) missing.push("Confirm the complete evaluated performance period.");
-  if (!deal.laborSignals?.length) missing.push("No quantified labor schedule is available.");
-  if (deal.laborModelComplete === false) missing.push(deal.laborModelSource || "The extracted labor schedule is incomplete.");
+  if (!months || !positive(months)) quantityGap("Confirm the complete evaluated performance period.");
+  if (!deal.laborSignals?.length) quantityGap("No quantified labor schedule is available.");
+  if (deal.laborModelComplete === false) quantityGap(deal.laborModelSource || "The extracted labor schedule is incomplete.");
   const rateBase = "Retrieved public rates are treated as opening-period planning proxies, unless the schedule explicitly identifies a different rate basis. Historical escalation is a forward planning assumption, not a forecast.";
   assumptions.push(rateBase);
   assumptions.push(escalationSource ? `Apply ${escalationPct}% annual planning escalation from ${escalationSource.id}; validate its relevance and future application.` : "Use zero escalation provisionally because no cited escalation series is available.");
   for (const coverage of laborCoverage(deal, evidence)) {
     const s = coverage.signal;
-    if (!positive(coverage.medianRate) || !positive(coverage.lowerRate) || !positive(coverage.upperRate)) {
-      missing.push(`${s.title}: a relevant duty/qualification rate proxy is required.`);
-      continue;
-    }
-    if (coverage.lowerRate > coverage.medianRate || coverage.medianRate > coverage.upperRate) {
-      missing.push(`${s.title}: rate statistics are inconsistent.`);
-      continue;
-    }
+    const ratesValid = positive(coverage.medianRate) && positive(coverage.lowerRate) && positive(coverage.upperRate) && coverage.lowerRate <= coverage.medianRate && coverage.medianRate <= coverage.upperRate;
+    if (!ratesValid) missing.push(`${s.title}: ${coverage.limitation}`);
     const periods = s.periods?.length ? [...s.periods].sort((a, b) => a.startMonth - b.startMonth) : months && positive(s.quantity) ? [{ label: "Full performance period", startMonth: 0, months, quantity: s.quantity, annualHours: s.annualHours, section: s.section }] : [];
     if (!periods.length) {
-      missing.push(`${s.title}: no documented quantity/period basis.`);
+      quantityGap(`${s.title}: no documented quantity/period basis.`);
       continue;
     }
     let end = 0;
     for (const [index, p] of periods.entries()) {
       if (!Number.isFinite(p.startMonth) || p.startMonth < 0 || Math.abs(p.startMonth - end) > 0.01 || !positive(p.months) || !Number.isFinite(p.quantity) || p.quantity < 0 || months && p.startMonth + p.months > months + 0.01) {
-        missing.push(`${s.title} / ${p.label}: period coverage or quantity is invalid.`);
+        quantityGap(`${s.title} / ${p.label}: period coverage or quantity is invalid.`);
         continue;
       }
       end = p.startMonth + p.months;
@@ -342,7 +321,7 @@ function buildLaborModel(deal, evidence) {
       const assumedHours = p.totalHours == null && !positive(annualHours);
       const hours = p.totalHours ?? p.quantity * (annualHours || 2080) * p.months / 12;
       if (!Number.isFinite(hours) || hours < 0 || p.quantity > 0 && hours === 0 || annualHours != null && annualHours > 8784) {
-        missing.push(`${s.title} / ${p.label}: invalid evaluated hours.`);
+        quantityGap(`${s.title} / ${p.label}: invalid evaluated hours.`);
         continue;
       }
       const extension = /extension|52\.217.?8|six.month|6.month/i.test(p.label);
@@ -359,19 +338,25 @@ function buildLaborModel(deal, evidence) {
       if (extension && (!deal.evaluationPricing || deal.evaluationPricing.extensionRateRule === "UNKNOWN"))
         assumptions.push("Extension rate language remains unconfirmed: the planning case continues annual escalation; compare with final-option rates before relying on total evaluated price.");
       if (finalOption) assumptions.push(`Extension uses final-option rates without another annual uplift. Source: ${deal.evaluationPricing?.extensionSource || deal.evaluationPricing?.source}.`);
-      rows.push({
-        id: `LAB-${rows.length + 1}`,
+      const quantityRow = {
+        id: `LAB-${quantityRows.length + 1}`,
         title: s.title,
         period: p.label,
         hours,
         fte: p.quantity,
         months: p.months,
-        lowRate: coverage.lowerRate,
-        medianRate: coverage.medianRate,
-        highRate: coverage.upperRate,
         exponent: openingExponent + Math.floor(rateStart / 12),
         factor,
         source: p.section || s.section || "Extracted schedule; locator needs validation",
+        assumedHours,
+        rateYearWeights: [...weights].map(([year, weight]) => ({ year, weight }))
+      };
+      quantityRows.push(quantityRow);
+      if (ratesValid) rows.push({
+        ...quantityRow,
+        lowRate: coverage.lowerRate,
+        medianRate: coverage.medianRate,
+        highRate: coverage.upperRate,
         evidenceIds: coverage.evidenceIds,
         assumedHours,
         proxy: coverage.proxyMapped,
@@ -382,15 +367,18 @@ function buildLaborModel(deal, evidence) {
       });
       if (assumedHours) assumptions.push(`${s.title} / ${p.label}: use 2,080 hours per FTE-year as a provisional assumption.`);
     }
-    if (months && Math.abs(end - months) > 0.01) missing.push(`${s.title}: the schedule does not cover all ${months} evaluated months.`);
+    if (months && Math.abs(end - months) > 0.01) quantityGap(`${s.title}: the schedule does not cover all ${months} evaluated months.`);
   }
   return {
     rows,
+    quantityRows,
     missing: [...new Set(missing)],
     assumptions: [...new Set(assumptions)],
     escalationPct,
     escalationEvidenceId: escalationSource?.id,
-    totalHours: rows.reduce((a, r) => a + r.hours, 0),
+    totalHours: quantityRows.reduce((a, r) => a + r.hours, 0),
+    pricedHours: rows.reduce((a, r) => a + r.hours, 0),
+    quantityComplete: quantityRows.length > 0 && quantityValid && quantityRows.every((r) => !r.assumedHours),
     complete: rows.length > 0 && !missing.length
   };
 }
@@ -398,8 +386,90 @@ function laborTotal(rows, basis) {
   return dollars(rows.reduce((a, r) => a + r.hours * r[basis] * r.factor, 0));
 }
 
+// src/domain/governmentRules.ts
+function governmentRules(deal, evidence) {
+  const requirements = (deal.requirements || []).filter((r) => ["EVALUATION", "COMPLIANCE"].includes(r.category) || /rating|confidence|clearance|facility security|\bFCL\b|past performance|acceptab|eligible|set.aside/i.test(`${r.name} ${r.detail}`)).map((r) => ({ name: r.name, detail: r.detail, source: r.section || "Locator needed" }));
+  const facts = evidence.filter((e) => e.type === "SOLICITATION_FACT" && e.section && /rating|confidence|\bFCL\b|facility clearance|past performance|evaluat|eligible|set.aside/i.test(e.claim)).map((e) => ({ name: e.id, detail: e.claim, source: e.section }));
+  return [...requirements, ...facts].filter((r, i, all) => all.findIndex((v) => v.detail === r.detail) === i);
+}
+function ruleEvidence(deal, evidence) {
+  const result = evidence.filter((e) => !(e.sourceLabel === "Extracted solicitation instruction" && /^RULE-\d+$/.test(e.id)));
+  const rules = [
+    ...deal.requirements.map((r) => ({ label: r.name, detail: r.detail, section: r.section, confidence: r.confidence })),
+    ...deal.pricingSignals.map((r) => ({ label: r.signal, detail: r.implication, section: r.section, confidence: r.confidence }))
+  ];
+  for (const [index, r] of rules.entries()) {
+    if (!r.section || !r.detail || result.some((e) => e.type === "SOLICITATION_FACT" && e.claim === `${r.label}: ${r.detail}`)) continue;
+    const id = `RULE-${index + 1}`;
+    if (result.some((e) => e.id === id)) continue;
+    result.push({ id, type: "SOLICITATION_FACT", sourceLabel: "Extracted solicitation instruction", claim: `${r.label}: ${r.detail}`, section: r.section, confidence: r.confidence });
+  }
+  return result;
+}
+function claimSupportIssue(text2, citations, kind) {
+  if (kind === "ASSUMPTION") return void 0;
+  const source = citations.map((e) => `${e.claim} ${e.excerpt || ""}`).join(" ");
+  const tests = [
+    [/\bFCL\b|facility clearance|facility security/i, /\bFCL\b|facility (?:security )?clearance/i, "facility-clearance gate"],
+    [/substantial confidence|satisfactory confidence|past.performance (?:rating|threshold)/i, /substantial confidence|satisfactory confidence|past.performance/i, "past-performance rating"],
+    [/transition (?:window|period|deadline)|(?:transition|mobilization) (?:must|requires?|within|before)/i, /transition|mobilization|phase.in/i, "transition timing"],
+    [/all (?:required |evaluated )?(?:labor (?:categories|roles)|categories)|every (?:labor )?(?:category|role) (?:must|is required)|(?:retain|price|propose|include) all (?:required )?(?:labor|pricing|categories|ordering periods)/i, /all (?:required |evaluated )?(?:labor |pricing )?(?:categories|roles|lines)|every (?:labor )?(?:category|role)|pricing (?:schedule|worksheet)|evaluated (?:hours|quantities)|complete.*labor.*(?:schedule|basket)/i, "full pricing-schedule requirement"]
+  ];
+  for (const [claim, required, label] of tests) if (claim.test(text2) && !required.test(source)) return `Citations do not support the ${label}; use a claim-specific instruction or mark the statement as an assumption.`;
+  if (kind === "FACT" && /(?:WOSB|women.owned|total small.business|set.aside)/i.test(text2) && !/set.aside|small.business|WOSB|women.owned/i.test(source)) return "Eligibility needs a citation to the selected set-aside rule.";
+  return void 0;
+}
+var readableDecisionText = (text2) => text2.replace(/\bcompetitivePosition\b/g, "provisional pricing model").replace(/\bmarketPosition\b/g, "supporting market benchmark");
+
+// src/domain/sourceConsistency.ts
+function sourceConflictStatus(conflict, deal) {
+  if (conflict.status === "OPEN" || /do not remap|requires? (?:clarification|resolution)|unresolved|pending|\bconfirm\b|\bresolve\b|without (?:an? )?amendment/i.test(conflict.resolution)) return "OPEN";
+  if (conflict.status === "RESOLVED" && conflict.sources.length && conflict.resolution.trim()) return "RESOLVED";
+  if (/set.aside/i.test(conflict.topic) && /^(?:total )?small business(?: set.aside)?$/i.test(deal.setAside || "") && conflict.descriptions.length >= 2 && conflict.descriptions.every((d) => /small business|52\.219.?6/i.test(d)) && !conflict.descriptions.some((d) => /women.owned|WOSB|8\(a\)|HUBZone|SDVOSB/i.test(d.replace(/(?:WOSB|EDWOSB|SDVOSB|HUBZone)(?:\/(?:WOSB|EDWOSB|SDVOSB|HUBZone))* boxes not checked/gi, ""))) && /(?:treat|use|controlling|total) (?:as |the )?(?:a )?(?:total )?small.business/i.test(conflict.resolution)) return "RESOLVED";
+  return "OPEN";
+}
+function resolvedGap(question, deal) {
+  if (!/missing|illegible|not legible|not (?:stated|provided|found)|confirm|provide|need|obtain/i.test(question)) return false;
+  if (/NAICS/i.test(question) && /^\d{6}$/.test(deal.naics)) return true;
+  if (/evaluated (?:quantities|hours)|staffing (?:quantities|schedule)|labor (?:quantities|hours)/i.test(question) && deal.laborModelComplete && deal.laborSignals.length && deal.laborSignals.every((s) => s.periods?.length && s.periods.every((p) => p.totalHours != null))) return true;
+  return false;
+}
+function supportedCompetitors(competitors, evidence, deal) {
+  const keys = [deal.solicitationNumber, ...deal.facts.filter((f) => /incumbent|predecessor|current contract|program name/i.test(f.label)).map((f) => f.value)].filter((k) => k && k.length >= 5);
+  return (competitors || []).filter((c) => c.sourceRefs?.some((ref) => evidence.some((e) => {
+    if (e.type === "ANALYST_INFERENCE" || e.type === "DATA_GAP" || !(e.section || e.url || e.sourceRecordId)) return false;
+    if (e.id !== ref && e.url !== ref) return false;
+    const text2 = `${e.claim} ${e.excerpt || ""}`.toLowerCase();
+    return text2.includes(c.name.toLowerCase()) && keys.some((k) => text2.includes(k.toLowerCase()));
+  })));
+}
+function reconcileSourceFacts(input) {
+  const deal = { ...input.deal, facts: [...input.deal.facts || []], sourceConflicts: [...input.deal.sourceConflicts || []] };
+  deal.sourceConflicts = deal.sourceConflicts.map((c) => ({ ...c, status: sourceConflictStatus(c, deal) }));
+  const naicsFacts = [
+    ...deal.facts.filter((f) => /NAICS/i.test(f.label) && f.section).map((f) => f.value.match(/\b\d{6}\b/)?.[0]),
+    ...input.evidence.filter((e) => e.type === "SOLICITATION_FACT" && e.section).map((e) => `${e.claim} ${e.excerpt || ""}`.match(/\bNAICS(?:\s+(?:code|is))?\s*[:#-]?\s*(\d{6})\b/i)?.[1])
+  ].filter((v) => Boolean(v));
+  const codes = [...new Set(naicsFacts)];
+  if (codes.length === 1) deal.naics = codes[0];
+  else if (codes.length > 1 && !deal.sourceConflicts.some((c) => c.topic === "NAICS")) deal.sourceConflicts.push({ topic: "NAICS", descriptions: codes, sources: ["Extracted source ledger"], resolution: "Resolve the controlling solicitation/amendment before defining the eligible field." });
+  const gaps = (input.gaps || []).filter((g) => !resolvedGap(g.question, deal) && !deal.sourceConflicts.some((c) => c.status === "RESOLVED" && g.question === `Resolve source conflict: ${c.topic}.`));
+  for (const conflict of deal.sourceConflicts.filter((c) => c.status !== "RESOLVED")) if (!gaps.some((g) => g.question === `Resolve source conflict: ${conflict.topic}.`)) gaps.push({ question: `Resolve source conflict: ${conflict.topic}.`, impact: `${conflict.descriptions.join(" versus ")} ${conflict.resolution}`, priority: "HIGH" });
+  const competitors = supportedCompetitors(input.competitors, input.evidence, deal);
+  const incumbentSupported = input.incumbent.name && supportedCompetitors([{ name: input.incumbent.name, sourceRefs: input.incumbent.sourceRefs }], input.evidence, deal).length;
+  return {
+    ...input,
+    deal,
+    evidence: ruleEvidence(deal, input.evidence),
+    gaps,
+    competitors,
+    incumbent: incumbentSupported ? input.incumbent : { ...input.incumbent, name: "", status: "UNKNOWN", confidence: 0, sourceRefs: [] },
+    narrative: { ...input.narrative, nextActions: (input.narrative.nextActions || []).filter((a) => !resolvedGap(a, deal)), guardrails: (input.narrative.guardrails || []).filter((a) => !resolvedGap(a, deal)) }
+  };
+}
+
 // src/domain/ptw/competitivePosition.ts
-var COMPETITIVE_POSITION_VERSION = "competitive-position-1.0.0";
+var COMPETITIVE_POSITION_VERSION = "competitive-position-1.1.0";
 function isPriceOrdered(analysis) {
   const evaluationText = [
     analysis.deal.evaluationMethod,
@@ -423,7 +493,7 @@ function calculateCompetitivePosition(analysis) {
   const priceOrderFirst = isPriceOrdered(analysis);
   const missing = [...model2.missing];
   if (model2.rows.some((r) => r.assumedHours)) missing.push("Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.");
-  analysis.deal.sourceConflicts?.forEach((c) => missing.push(`Resolve ${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution}`));
+  analysis.deal.sourceConflicts?.filter((c) => sourceConflictStatus(c, analysis.deal) === "OPEN").forEach((c) => missing.push(`Resolve ${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution}`));
   const assumptions = [
     ...model2.assumptions,
     "All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.",
@@ -477,12 +547,16 @@ function calculateCompetitivePosition(analysis) {
   const aggressive = laborTotal(rows, "lowRate"), defensive = laborTotal(rows, "highRate");
   const central = dollars(rows.reduce((a, r) => a + r.hours * r.recommendedRate * r.factor, 0));
   const hasBasis = model2.complete;
+  const lowerRoles = new Set(rows.filter((r) => r.recommendedRate !== r.medianRate).map((r) => r.title));
+  const medianRoles = new Set(rows.filter((r) => r.recommendedRate === r.medianRate).map((r) => r.title));
+  const selectionRationale = lowerRoles.size ? `Apply lower-quartile rates to ${lowerRoles.size} role(s) and median rates to ${medianRoles.size} role(s), based on the documented protection choices.` : `Every priced role uses its public median. No lower-quartile reduction is applied${priceOrderFirst ? " because each role currently requires rate protection" : ""}.`;
+  const basis = hasBasis ? "MODELED_BASKET" : "PARTIAL_SUBTOTAL";
   const evaluationComplete = hasBasis && pricing?.completeness === "COMPLETE" && !missing.length;
   const target = hasBasis ? dollars(central + nonLabor) : null;
   const scenarios = rows.length ? [
-    { id: "AGGRESSIVE", label: "Aggressive", labor: aggressive, nonLabor, total: dollars(aggressive + nonLabor), selected: false, rationale: "Lower-quartile role rates test the lowest public-rate planning posture.", condition: "Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor." },
-    { id: "RECOMMENDED", label: "Recommended", labor: central, nonLabor, total: dollars(central + nonLabor), selected: true, rationale: priceOrderFirst ? "Apply lower-quartile pressure to better-supported roles; protect senior, specialist and weakly mapped roles at median rates." : "Use median role economics until quantified source-selection benefits or competitor evidence supports another position.", condition: "Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target." },
-    { id: "DEFENSIVE", label: "Defensive stress case", labor: defensive, nonLabor, total: dollars(defensive + nonLabor), selected: false, rationale: "Upper-quartile role rates test higher labor-price exposure.", condition: priceOrderFirst ? "Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves." : "A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay." }
+    { id: "AGGRESSIVE", label: "Aggressive", labor: aggressive, nonLabor, total: dollars(aggressive + nonLabor), selected: false, basis, rationale: "Lower-quartile role rates test the lowest public-rate planning posture.", condition: "Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor." },
+    { id: "RECOMMENDED", label: hasBasis ? "Recommended" : "Working median / protected case", labor: central, nonLabor, total: dollars(central + nonLabor), selected: hasBasis, basis, rationale: selectionRationale, condition: "Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target." },
+    { id: "DEFENSIVE", label: "Defensive stress case", labor: defensive, nonLabor, total: dollars(defensive + nonLabor), selected: false, basis, rationale: "Upper-quartile role rates test higher labor-price exposure.", condition: priceOrderFirst ? "Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves." : "A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay." }
   ] : [];
   const shift = dollars(rows.reduce((a, r) => a + r.hours * r.factor, 0));
   const byRole = [...new Set(rows.map((r) => r.title))].map((title) => ({ title, delta: dollars(rows.filter((r) => r.title === title).reduce((a, r) => a + r.hours * r.factor * 10, 0)) })).sort((a, b) => b.delta - a.delta);
@@ -518,50 +592,107 @@ function calculateCompetitivePosition(analysis) {
     scenarios,
     missing: [...new Set(missing)],
     assumptions: [...new Set(assumptions)],
-    confidence: { quantities: model2.complete && rows.every((r) => !r.assumedHours && !r.source.includes("needs validation")) ? "HIGH" : "LOW", rateRelevance: rows.some((r) => r.proxy || r.sampleSize < 5 || !r.qualification || r.evidenceIds.some((id) => analysis.evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "LOW" : "MEDIUM", competition: "LOW", execution: "NOT_ASSESSED", overall: "LOW" },
+    unpricedRows: model2.quantityRows.filter((r) => !rows.some((priced) => priced.id === r.id)),
+    totalHours: model2.totalHours,
+    pricedHours: model2.pricedHours,
+    quantityComplete: model2.quantityComplete,
+    confidence: { quantities: model2.quantityComplete && model2.quantityRows.every((r) => !r.source.includes("needs validation")) ? "HIGH" : "LOW", rateRelevance: !hasBasis || rows.some((r) => r.proxy || r.sampleSize < 5 || !r.qualification || r.evidenceIds.some((id) => analysis.evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "LOW" : "MEDIUM", competition: "LOW", execution: "NOT_ASSESSED", overall: "LOW" },
     sensitivities,
     actions,
     ceilingExplanation
   };
 }
 
-// src/domain/sourceConsistency.ts
-function resolvedGap(question, deal) {
-  if (!/missing|illegible|not legible|not (?:stated|provided|found)|confirm|provide|need|obtain/i.test(question)) return false;
-  if (/NAICS/i.test(question) && /^\d{6}$/.test(deal.naics)) return true;
-  if (/evaluated (?:quantities|hours)|staffing (?:quantities|schedule)|labor (?:quantities|hours)/i.test(question) && deal.laborModelComplete && deal.laborSignals.length && deal.laborSignals.every((s) => s.periods?.length && s.periods.every((p) => p.totalHours != null))) return true;
-  return false;
-}
-function supportedCompetitors(competitors, evidence, deal) {
-  const keys = [deal.solicitationNumber, ...deal.facts.filter((f) => /incumbent|predecessor|current contract|program name/i.test(f.label)).map((f) => f.value)].filter((k) => k && k.length >= 5);
-  return (competitors || []).filter((c) => c.sourceRefs?.some((ref) => evidence.some((e) => {
-    if (e.type === "ANALYST_INFERENCE" || e.type === "DATA_GAP" || !(e.section || e.url || e.sourceRecordId)) return false;
-    if (e.id !== ref && e.url !== ref) return false;
-    const text2 = `${e.claim} ${e.excerpt || ""}`.toLowerCase();
-    return text2.includes(c.name.toLowerCase()) && keys.some((k) => text2.includes(k.toLowerCase()));
-  })));
-}
-function reconcileSourceFacts(input) {
-  const deal = { ...input.deal, facts: [...input.deal.facts || []], sourceConflicts: [...input.deal.sourceConflicts || []] };
-  const naicsFacts = [
-    ...deal.facts.filter((f) => /NAICS/i.test(f.label) && f.section).map((f) => f.value.match(/\b\d{6}\b/)?.[0]),
-    ...input.evidence.filter((e) => e.type === "SOLICITATION_FACT" && e.section).map((e) => `${e.claim} ${e.excerpt || ""}`.match(/\bNAICS(?:\s+(?:code|is))?\s*[:#-]?\s*(\d{6})\b/i)?.[1])
-  ].filter((v) => Boolean(v));
-  const codes = [...new Set(naicsFacts)];
-  if (codes.length === 1) deal.naics = codes[0];
-  else if (codes.length > 1 && !deal.sourceConflicts.some((c) => c.topic === "NAICS")) deal.sourceConflicts.push({ topic: "NAICS", descriptions: codes, sources: ["Extracted source ledger"], resolution: "Resolve the controlling solicitation/amendment before defining the eligible field." });
-  const gaps = (input.gaps || []).filter((g) => !resolvedGap(g.question, deal));
-  for (const conflict of deal.sourceConflicts) if (!gaps.some((g) => g.question === `Resolve source conflict: ${conflict.topic}.`)) gaps.push({ question: `Resolve source conflict: ${conflict.topic}.`, impact: `${conflict.descriptions.join(" versus ")} ${conflict.resolution}`, priority: "HIGH" });
-  const competitors = supportedCompetitors(input.competitors, input.evidence, deal);
-  const incumbentSupported = input.incumbent.name && supportedCompetitors([{ name: input.incumbent.name, sourceRefs: input.incumbent.sourceRefs }], input.evidence, deal).length;
-  return {
-    ...input,
-    deal,
-    gaps,
-    competitors,
-    incumbent: incumbentSupported ? input.incumbent : { ...input.incumbent, name: "", status: "UNKNOWN", confidence: 0, sourceRefs: [] },
-    narrative: { ...input.narrative, nextActions: (input.narrative.nextActions || []).filter((a) => !resolvedGap(a, deal)), guardrails: (input.narrative.guardrails || []).filter((a) => !resolvedGap(a, deal)) }
+// src/domain/ptw/pricingScenario.ts
+var amount = z.number().finite().nonnegative().max(1e12);
+var pricingInputsSchema = z.object({
+  evaluationBasis: z.string().trim().min(10).max(2e3),
+  basisSource: z.string().trim().min(3).max(1e3),
+  completenessConfirmed: z.literal(true),
+  lines: z.array(z.object({
+    label: z.string().trim().min(1).max(200),
+    sourceRowId: z.string().min(1).max(100).optional(),
+    quantity: z.number().finite().nonnegative().max(1e9),
+    lowUnitPrice: amount,
+    targetUnitPrice: amount,
+    highUnitPrice: amount,
+    source: z.string().trim().min(3).max(1e3)
+  }).strict().refine((v) => v.lowUnitPrice <= v.targetUnitPrice && v.targetUnitPrice <= v.highUnitPrice, "Unit prices must be ordered low \u2264 target \u2264 high.")).min(1).max(400)
+}).strict();
+function calculatePricingScenario(raw) {
+  const inputs = pricingInputsSchema.parse(raw);
+  if (!inputs.lines.some((r) => r.quantity > 0)) throw new Error("At least one evaluated quantity must be positive.");
+  const total = (key) => {
+    const value = inputs.lines.reduce((sum, row) => sum.plus(new Decimal(row.quantity).times(row[key])), new Decimal(0));
+    if (value.greaterThan(1e15)) throw new Error("Evaluated total exceeds the supported calculation limit.");
+    return value.toDecimalPlaces(2, Decimal.ROUND_HALF_UP).toNumber();
   };
+  return {
+    inputs,
+    low: total("lowUnitPrice"),
+    target: total("targetUnitPrice"),
+    high: total("highUnitPrice"),
+    formula: "Sum of evaluated quantity \xD7 offered unit price for every entered CLIN/period; rounded once to cents.",
+    status: "CONDITIONAL"
+  };
+}
+function pricingDraft(analysis) {
+  const p = calculateCompetitivePosition(analysis);
+  const rows = new Map(p.rows.map((r) => [r.id, r]));
+  const quantities = [...p.rows, ...p.unpricedRows].sort((a, b) => Number(a.id.slice(4)) - Number(b.id.slice(4)));
+  return {
+    evaluationBasis: analysis.deal.evaluationPricing?.basis || "",
+    basisSource: analysis.deal.evaluationPricing?.source || "",
+    lines: [...quantities.map((r) => {
+      const priced = rows.get(r.id);
+      return {
+        sourceRowId: r.id,
+        label: `${r.title} / ${r.period}`,
+        quantity: String(r.hours),
+        lowUnitPrice: priced ? String(priced.lowRate * r.factor) : "",
+        targetUnitPrice: priced ? String(priced.recommendedRate * r.factor) : "",
+        highUnitPrice: priced ? String(priced.highRate * r.factor) : "",
+        source: `${r.source}; ${priced ? `Public planning proxies: ${priced.evidenceIds.join(", ")}; factor ${r.factor}. Validate fully burdened offered rates.` : "Rate or role mapping unresolved: enter a cited analyst assumption."}`
+      };
+    }), ...(analysis.deal.evaluationPricing?.components || []).map((c) => {
+      const modeled = p.components.find((v) => v.id === c.id);
+      return { sourceRowId: `COMP-${c.id}`, label: c.label, quantity: "1", lowUnitPrice: modeled ? String(modeled.includedAmount) : "", targetUnitPrice: modeled ? String(modeled.includedAmount) : "", highUnitPrice: modeled ? String(modeled.includedAmount) : "", source: `${c.source}; ${c.evidenceIds.join(", ")}. ${modeled?.assumption || "Validate all applicable component costs and fees."}` };
+    })]
+  };
+}
+function calculateSourcePricingScenario(raw, analysis) {
+  const scenario = calculatePricingScenario(raw);
+  const expected = pricingDraft(analysis).lines;
+  if (expected.length) {
+    if (!calculateCompetitivePosition(analysis).quantityComplete) throw new Error("Complete the source quantity schedule before saving a full-scope offer scenario.");
+    for (const row of expected) {
+      const matches2 = scenario.inputs.lines.filter((r) => r.sourceRowId === row.sourceRowId);
+      if (matches2.length !== 1 || matches2[0].quantity !== Number(row.quantity)) throw new Error(`Retain the source quantity row ${row.label}; edit its rates or re-analyze a corrected source schedule.`);
+    }
+  }
+  return { ...scenario, scopeReconciled: true };
+}
+
+// src/domain/ptw/validation.ts
+function validationPrediction(analysis) {
+  if (analysis.deal.laborSignals.length) {
+    const p = calculateCompetitivePosition(analysis);
+    return { expected: p.target, aggressive: p.rangeLow, conservative: p.rangeHigh, complete: p.evaluationComplete, version: p.version, basis: "Total evaluated pricing model" };
+  }
+  const m = analysis.marketPosition;
+  return { expected: m.expected, aggressive: m.aggressive, conservative: m.conservative, complete: m.expected != null, version: m.formulaVersion, basis: "Supporting total-value market benchmark" };
+}
+function comparisonReady(analysis, type) {
+  const p = validationPrediction(analysis);
+  return p.complete && p.expected != null && p.aggressive != null && p.conservative != null && !["CONTRACT_CEILING", "INITIAL_OBLIGATION", "CURRENT_OBLIGATIONS"].includes(type);
+}
+function preserveValidation(analysis) {
+  const v = analysis.validation;
+  if (!v) return void 0;
+  const p = validationPrediction(analysis);
+  if (!comparisonReady(analysis, v.actualValueType) || p.expected !== v.predictedExpected || p.aggressive !== v.predictedAggressive || p.conservative !== v.predictedConservative)
+    return { ...v, comparableToPrediction: false, inRange: null, expectedErrorPct: null };
+  return v;
 }
 
 // src/server/eligibility.ts
@@ -956,7 +1087,7 @@ var strategyResponseSchema = object({
 });
 
 // src/server/ptwSynthesis.ts
-var PTW_SYNTHESIS_VERSION = "ptw-strategy-0.3.0";
+var PTW_SYNTHESIS_VERSION = "ptw-strategy-0.4.0";
 function sourceInput(analysis, compact2 = false) {
   const position = calculateCompetitivePosition(analysis);
   return {
@@ -995,13 +1126,17 @@ function validateStrategy(raw, analysis) {
     throw new Error(`Strategic prose cannot invent a price, adjustment, or win probability. Replace the literal "${numericClaim}" with its numeric evidence ID.`);
   }
   for (const { statement: statement2 } of strategyStatements(result)) {
+    statement2.text = readableDecisionText(statement2.text);
+    statement2.validationAction = readableDecisionText(statement2.validationAction);
     if (statement2.evidenceIds.some((id) => !evidence.has(id))) throw new Error("Strategy cites an unknown evidence ID.");
     if (statement2.kind !== "ASSUMPTION" && !statement2.evidenceIds.length) throw new Error("Facts and inferences require source evidence.");
     if (statement2.kind !== "FACT" && !statement2.validationAction.trim()) throw new Error("Inferences and assumptions require a validation action.");
     if (statement2.kind === "FACT" && statement2.evidenceIds.some((id) => {
       const e = evidence.get(id);
-      return e.type === "ANALYST_INFERENCE" || !(e.section || e.url || e.sourceRecordId) || e.claim === "Public market source used during grounded qualitative enrichment.";
+      return !["SOLICITATION_FACT", "EXTERNAL_SOURCE"].includes(e.type) || !(e.section || e.url || e.sourceRecordId) || e.claim === "Public market source used during grounded qualitative enrichment.";
     })) throw new Error("A fact needs a specific source claim and locator, not a generic source listing or inference.");
+    const supportIssue = claimSupportIssue(statement2.text, statement2.evidenceIds.map((id) => evidence.get(id)), statement2.kind);
+    if (supportIssue) throw new Error(supportIssue);
   }
   for (const rival of result.competitors) {
     const support = supportedCompetitors([{ name: rival.name, sourceRefs: rival.intentBasis.evidenceIds }], analysis.evidence, analysis.deal);
@@ -1055,6 +1190,7 @@ Return JSON matching this structure, with no extra keys:
 Every STATEMENT is {"text":"...","kind":"FACT|INFERENCE|ASSUMPTION","evidenceIds":["existing ID"],"validationAction":"specific action, or empty for a sourced fact"}.
 Produce 2\u20134 genuinely different delivery/competitive approaches, not low/medium/high percentages. Explain each option's economic mechanism, evaluation benefit, rival response, and sacrifice. When evidence is thin, formulate conditional hypotheses with validation actions.
 FACT and INFERENCE require evidence IDs. A generic list of web URLs is not proof of a specific fact. ASSUMPTION may have no citations but must name what is assumed and how to test it. Every inference needs validation. Source presence is not verification; all output remains unreviewed.
+Each citation must support the actual claim: an evaluation-order citation does not prove the full labor-category requirement, a due date does not establish a transition window, and facility clearance is distinct from personnel clearance. Use the supplied RULE evidence for specific instructions. If no matching instruction is supplied, use ASSUMPTION and a validation action. Refer to the provisional pricing model and supporting market benchmark in plain language; never emit internal JSON field names.
 Do not infer bid intent from agency history, capability, or vehicle membership. Use CONFIRMED only for an explicit documented intent-to-bid fact; otherwise POSSIBLE or UNKNOWN. Leave the competitor array empty if no specific company has source support.
 Respect LPTA versus tradeoff evaluation: a premium requires an evidenced, evaluable benefit and an explicit assumption about willingness to pay; it is never automatically justified. Identify compliance gates before recommending efficiencies. For expired/sole-source/noncompetitive opportunities, make applicability a prominent qualification and frame alternatives as validation/negotiation actions, not live competitive PTW.
 Use the authoritative setAside and NAICS fields; never infer eligibility from printed unchecked form choices. If the solicitation uses price-ordered evaluation with fallback branches, preserve the specific qualifying past-performance/clearance ratings and stopping rules. Staffing readiness is an execution condition; do not claim standalone evaluation credit unless it is a scored factor.
@@ -2053,6 +2189,7 @@ async function queryGsaCalc(laborSignals) {
         clearanceRequired: result.clearance,
         laborMatchScore: proxyUsed ? 0.6 : 0.85,
         benchmarkFamily: mappedFamily,
+        validatedBenchmarkRole: requestedRole,
         qualificationFit: "UNVALIDATED",
         rateDistribution: rates,
         rateSampleFingerprint: createHash2("sha256").update(JSON.stringify(matches2)).digest("hex"),
@@ -2166,7 +2303,7 @@ async function queryBls() {
 }
 
 // src/domain/marketPosition/engineConfig.ts
-var MARKET_POSITION_ENGINE_VERSION = "market-position-v3.2.0";
+var MARKET_POSITION_ENGINE_VERSION = "market-position-v3.3.0";
 var COMPARABILITY_WEIGHTS = {
   scope: 0.25,
   scale: 0.15,
@@ -2388,6 +2525,58 @@ function calculateEvidenceReadiness(anchors, gaps, dispersion) {
     consistency: percent(consistency),
     gapResolution: percent(gapResolution)
   };
+}
+
+// src/domain/marketPosition/evidenceClassification.ts
+function stableRangeId(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `RANGE-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+function classifyNumericEvidence(items, deal) {
+  const componentIds = new Set(deal?.evaluationPricing?.components.flatMap((c) => c.evidenceIds) || []);
+  for (const item of items) {
+    const numeric = item.numeric;
+    if (!numeric) continue;
+    const claim = `${item.claim} ${item.section || ""}`.toLowerCase();
+    if (numeric.units === "TOTAL_USD" && (componentIds.has(item.id) || item.type === "SOLICITATION_FACT" && /\b(?:travel|odcs?|other direct costs?|materials?)\b[^.]{0,65}\b(?:amounts?|values?|allowances?|clins?|cost.no.fee)\b|\b(?:specified|fixed) (?:travel|odc|material)/i.test(claim) && !/\b(?:total|overall|aggregate) (?:evaluated )?(?:contract |award )?(?:price|value|estimate|amount)|whole.contract (?:price|value)/i.test(claim))) {
+      numeric.valueBasis = "EVALUATED_COMPONENT";
+    } else if (/past performance|relevant experience/.test(claim) && /minimum|at least|threshold/.test(claim)) {
+      numeric.valueBasis = "PAST_PERFORMANCE_THRESHOLD";
+    } else if (/minimum order|maximum order|order limitation/.test(claim)) {
+      numeric.valueBasis = "ORDER_LIMIT";
+    } else if (/individual (?:awards?|contracts?)|each award|single award/.test(claim)) {
+      numeric.valueBasis = "INDIVIDUAL_AWARD";
+      numeric.opportunitySpecific = true;
+    } else if (/total estimated funding|program(?:-wide)? funding|portfolio funding|anticipated funding for fy|annual funding/.test(claim)) {
+      numeric.valueBasis = /multiple awards?|pool/.test(claim) ? "MULTIPLE_AWARD_POOL" : "PROGRAM_TOTAL";
+    } else if (numeric.valueType === "BUDGET_CONTEXT") {
+      numeric.valueBasis = "BUDGET";
+    } else if (numeric.opportunitySpecific && numeric.units === "TOTAL_USD" && !numeric.valueBasis) {
+      numeric.valueBasis = "OPPORTUNITY_TOTAL";
+    } else {
+      numeric.valueBasis ||= "UNKNOWN";
+    }
+  }
+  const rangeGroups = /* @__PURE__ */ new Map();
+  for (const item of items) {
+    if (!item.numeric || item.numeric.valueBasis !== "INDIVIDUAL_AWARD") continue;
+    if (!/range|between|from.+to/.test(item.claim.toLowerCase())) continue;
+    const key = `${item.sourceLabel}|${item.section || ""}|${item.claim.toLowerCase().replace(/\$?[\d,.]+/g, "#")}`;
+    rangeGroups.set(key, [...rangeGroups.get(key) || [], item]);
+  }
+  for (const [key, group] of rangeGroups) {
+    const ordered = group.filter((item) => item.numeric).sort((a, b) => (a.numeric?.originalValue || 0) - (b.numeric?.originalValue || 0));
+    if (ordered.length < 2) continue;
+    const rangeId = stableRangeId(key);
+    ordered[0].numeric.rangeBound = "LOW";
+    ordered[0].numeric.rangeId = rangeId;
+    ordered[ordered.length - 1].numeric.rangeBound = "HIGH";
+    ordered[ordered.length - 1].numeric.rangeId = rangeId;
+  }
 }
 
 // src/domain/marketPosition/scenarioEngine.ts
@@ -2663,7 +2852,8 @@ function insufficientPosition(draft, anchors, benchmark) {
   };
 }
 function calculateDeterministicScenarios(draft, options) {
-  draft = { ...draft, gaps: normalizeGaps(draft.gaps) };
+  draft = { ...draft, gaps: normalizeGaps(draft.gaps), evidence: draft.evidence.map((e) => ({ ...e, numeric: e.numeric ? { ...e.numeric } : void 0 })) };
+  classifyNumericEvidence(draft.evidence, draft.deal);
   if (!options.asOfDate || Number.isNaN(Date.parse(options.asOfDate))) {
     throw new Error("A valid as-of date is required for deterministic Market Position calculations.");
   }
@@ -2745,55 +2935,6 @@ function calculateDeterministicScenarios(draft, options) {
   };
 }
 
-// src/domain/marketPosition/evidenceClassification.ts
-function stableRangeId(value) {
-  let hash = 2166136261;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return `RANGE-${(hash >>> 0).toString(16).padStart(8, "0")}`;
-}
-function classifyNumericEvidence(items) {
-  for (const item of items) {
-    const numeric = item.numeric;
-    if (!numeric) continue;
-    const claim = `${item.claim} ${item.section || ""}`.toLowerCase();
-    if (/past performance|relevant experience/.test(claim) && /minimum|at least|threshold/.test(claim)) {
-      numeric.valueBasis = "PAST_PERFORMANCE_THRESHOLD";
-    } else if (/minimum order|maximum order|order limitation/.test(claim)) {
-      numeric.valueBasis = "ORDER_LIMIT";
-    } else if (/individual (?:awards?|contracts?)|each award|single award/.test(claim)) {
-      numeric.valueBasis = "INDIVIDUAL_AWARD";
-      numeric.opportunitySpecific = true;
-    } else if (/total estimated funding|program(?:-wide)? funding|portfolio funding|anticipated funding for fy|annual funding/.test(claim)) {
-      numeric.valueBasis = /multiple awards?|pool/.test(claim) ? "MULTIPLE_AWARD_POOL" : "PROGRAM_TOTAL";
-    } else if (numeric.valueType === "BUDGET_CONTEXT") {
-      numeric.valueBasis = "BUDGET";
-    } else if (numeric.opportunitySpecific && numeric.units === "TOTAL_USD" && !numeric.valueBasis) {
-      numeric.valueBasis = "OPPORTUNITY_TOTAL";
-    } else {
-      numeric.valueBasis ||= "UNKNOWN";
-    }
-  }
-  const rangeGroups = /* @__PURE__ */ new Map();
-  for (const item of items) {
-    if (!item.numeric || item.numeric.valueBasis !== "INDIVIDUAL_AWARD") continue;
-    if (!/range|between|from.+to/.test(item.claim.toLowerCase())) continue;
-    const key = `${item.sourceLabel}|${item.section || ""}|${item.claim.toLowerCase().replace(/\$?[\d,.]+/g, "#")}`;
-    rangeGroups.set(key, [...rangeGroups.get(key) || [], item]);
-  }
-  for (const [key, group] of rangeGroups) {
-    const ordered = group.filter((item) => item.numeric).sort((a, b) => (a.numeric?.originalValue || 0) - (b.numeric?.originalValue || 0));
-    if (ordered.length < 2) continue;
-    const rangeId = stableRangeId(key);
-    ordered[0].numeric.rangeBound = "LOW";
-    ordered[0].numeric.rangeId = rangeId;
-    ordered[ordered.length - 1].numeric.rangeBound = "HIGH";
-    ordered[ordered.length - 1].numeric.rangeId = rangeId;
-  }
-}
-
 // src/exports/executivePdf.ts
 import PDFDocument from "pdfkit";
 
@@ -2804,7 +2945,7 @@ var boldFontData = "d09GRgABAAAAAHpYAA8AAAABCZQAAQABAAAAAAAAAAAAAAAAAAAAAAAAAABH
 // src/domain/marketPosition/authoritative.ts
 var currencyClaim = /(?:\$\s?\d[\d,.]*(?:\s?(?:million|billion|m|b))?|\bUSD\s+\d[\d,.]*|\b\d+(?:\.\d+)?\s*(?:million|billion)\b|\b\d{1,3}(?:,\d{3}){2,}\b)/gi;
 function scrubText(value) {
-  return value.replace(currencyClaim, "the calculated Market Position");
+  return readableDecisionText(value.replace(currencyClaim, "the calculated Market Position"));
 }
 function sanitizeNarrative(narrative) {
   return {
@@ -2893,6 +3034,8 @@ function createLegacyPosition(position = {}) {
 }
 function enforceAuthoritativeAnalysis(analysis) {
   analysis = reconcileSourceFacts({ ...analysis, gaps: normalizeGaps(analysis.gaps) });
+  analysis = { ...analysis, evidence: analysis.evidence.map((e) => ({ ...e, numeric: e.numeric ? { ...e.numeric } : void 0 })) };
+  classifyNumericEvidence(analysis.evidence, analysis.deal);
   const analyzedAt = analysis.meta?.analyzedAt;
   if (!analyzedAt || Number.isNaN(Date.parse(analyzedAt))) {
     throw new Error("Analysis metadata must include a valid analyzedAt date.");
@@ -2934,7 +3077,7 @@ var margin = 42;
 var contentWidth = 528;
 var regularFont = "FMP-Regular";
 var boldFont = "FMP-Bold";
-var clean = (v) => String(v ?? "").replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, " ").trim();
+var clean = (v) => readableDecisionText(String(v ?? "")).replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, " ").trim();
 var short = (v, n = 190) => {
   const s = clean(v);
   return s.length > n ? `${s.slice(0, n - 3)}...` : s;
@@ -3023,14 +3166,15 @@ function buildBrief(l) {
   d.font(regularFont).fontSize(9).fillColor("white").text(`${p.status.replaceAll("_", " ")} | ${p.confidence.overall} PTW confidence`, margin + 16, heroY + 83, { width: 300, lineBreak: false });
   d.font(regularFont).fontSize(9).fillColor("#D4E6E7").text(`Planning scenario range
 ${compact(p.rangeLow)} - ${compact(p.rangeHigh)}
-${p.evaluationComplete ? "Evaluated basket represented" : "Component validation remains open"}`, margin + 327, heroY + 24, { width: 185, lineGap: 5 });
+${p.evaluationComplete ? "Evaluated basket represented" : p.status === "PARTIAL_MODEL" ? "Partial labor coverage" : "Component validation remains open"}`, margin + 327, heroY + 24, { width: 185, lineGap: 5 });
   l.y = heroY + 119;
   l.text(`Decision requested: ${p.decisionRequest}`, true, 9);
-  l.table(["Aggressive", "Recommended", "Defensive stress case"], [176, 176, 176], [p.scenarios.length ? p.scenarios.map((s) => compact(s.total)) : ["Not established", "Not established", "Not established"]]);
+  l.text(`Rate coverage: ${p.pricedHours.toLocaleString("en-US")} of ${p.totalHours.toLocaleString("en-US")} source hours priced; ${p.unpricedRows.length} unpriced rows.`, true, 9);
+  l.table(["Aggressive", "Protected working case", "Defensive stress case"], [176, 176, 176], [p.scenarios.length ? p.scenarios.map((s) => `${compact(s.total)}${s.basis === "PARTIAL_SUBTOTAL" ? " / PARTIAL SUBTOTAL" : ""}`) : ["Not established", "Not established", "Not established"]]);
   l.title("Why we recommend this position");
   l.text(p.rationale);
-  l.text(`${p.priceOrderFirst ? "Rate protection" : "Market alignment"}: ${p.scenarios.find((s) => s.selected)?.rationale || "Resolve the missing calculation basis before selecting a numerical target."}`);
-  l.text(`Supporting labor benchmark: ${compact(m.aggressive)} / ${compact(m.expected)} / ${compact(m.conservative)}. Public loaded-rate references are distinct from the selected competitive planning case.`);
+  l.text(`${p.priceOrderFirst ? "Rate protection" : "Market alignment"}: ${p.scenarios.find((s) => s.id === "RECOMMENDED")?.rationale || "Resolve the missing calculation basis before selecting a numerical target."}`);
+  l.text(`Supporting total-value benchmark: ${compact(m.aggressive)} / ${compact(m.expected)} / ${compact(m.conservative)}. The ${m.methodLabel.toLowerCase()} references are distinct from the selected competitive planning case.`);
   l.text(`Critical condition: ${short(p.missing[0] || p.scenarios.find((s) => s.selected)?.condition || "Analyst validation remains required.", 260)}`, true, 9, colors.amber);
   l.text(`Confidence: quantities ${p.confidence.quantities}; rate relevance ${p.confidence.rateRelevance}; competition ${p.confidence.competition}; company execution NOT ASSESSED. The numerical range is a planning scenario envelope, not a statistical interval.`, false, 8, colors.muted);
   l.text("Phase 2 - Company position: add authorized company costs, workforce, supplier commitments and margin requirements separately. No IBM costs, internal advantages or executable floor are established by this Phase 1 brief.", false, 8, colors.muted);
@@ -3039,30 +3183,35 @@ ${p.evaluationComplete ? "Evaluated basket represented" : "Component validation 
   l.table(["Source fact / extracted rule", "Pricing implication"], [264, 264], [
     [`${a.deal.contractType}; ${a.deal.awardStructure}; ${a.deal.periodOfPerformance}.`, "Use the complete evaluated basket; task-order revenue and program ceilings are separate measurements."],
     [`Set-aside: ${a.deal.setAside || "Not established - validate selected form boxes"}. NAICS: ${a.deal.naics || "Unknown"}.`, "Define the eligible field from the controlling solicitation/amendment."],
-    [a.deal.evaluationMethod, p.priceOrderFirst ? "Compete on evaluated price while preserving every scored non-price and compliance gate." : "Validate scored benefits and government willingness to pay before proposing a premium."],
-    [a.deal.evaluationPricing?.basis || "Evaluation basket requires source confirmation", `Source: ${a.deal.evaluationPricing?.source || "Not supplied"}. ${p.evaluationComplete ? "All modeled evaluated components are represented." : "Provisional totals retain the component assumptions listed on page 5."}`]
+    [short(a.deal.evaluationMethod, 170), p.priceOrderFirst ? "Compete on evaluated price while preserving every scored non-price and compliance gate." : "Validate scored benefits and government willingness to pay before proposing a premium."],
+    [a.deal.evaluationPricing?.basis || "Evaluation basket requires source confirmation", `Source: ${short(a.deal.evaluationPricing?.source || "Not supplied", 100)}. ${p.evaluationComplete ? "All modeled evaluated components are represented." : "Provisional totals retain the assumptions listed in A price that reconciles and the workbook."}`]
   ]);
-  const evalRules = a.deal.requirements.filter((r) => ["EVALUATION", "COMPLIANCE"].includes(r.category));
+  const evalRules = governmentRules(a.deal, a.evidence);
+  const briefGates = [evalRules.find((r) => /substantial confidence|past.performance/i.test(r.detail)), evalRules.find((r) => /facility (?:security )?clearance/i.test(r.detail) && /Top Secret|TOP SECRET/i.test(r.detail)), evalRules.find((r) => /all personnel|personnel require|all contractor personnel/i.test(`${r.name} ${r.detail}`))].filter((r) => Boolean(r));
+  const displayedRules = briefGates.length ? briefGates : evalRules.slice(0, 3);
   l.title("Scored factors and mandatory gates");
   if (!evalRules.length) l.text("Specific rating thresholds, evaluation branches and compliance gates remain unestablished. Validate the controlling instructions.");
-  evalRules.slice(0, 7).forEach((r) => l.text(`${r.name}: ${r.detail} [${r.section || "Locator needed"}]`));
-  l.text("Execution readiness supports delivery credibility. It earns independent evaluation credit only where the solicitation actually scores it.", false, 8, colors.muted);
+  displayedRules.forEach((r) => l.text(`${r.name}: ${short(r.detail, 310)} [${short(r.source, 80)}]`, false, 8));
+  if (evalRules.length > 3) l.text("Additional source rules and full evaluation branches are preserved in Government Decision in the workbook.", false, 8, colors.muted);
   l.title("Ceiling and evaluated-price distinction");
-  l.text(p.ceilingExplanation);
-  if (a.deal.sourceConflicts?.length) {
-    l.title("Source-package conflicts");
-    a.deal.sourceConflicts.forEach((c) => l.text(`${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution} Sources: ${c.sources.join("; ")}`));
+  l.text(short(p.ceilingExplanation, 225), false, 8);
+  const openConflicts = a.deal.sourceConflicts?.filter((c) => sourceConflictStatus(c, a.deal) === "OPEN") || [];
+  if (openConflicts.length) {
+    l.title("Open source-package conflicts");
+    openConflicts.slice(0, 2).forEach((c) => l.text(`${short(c.topic, 60)}: ${short(c.resolution, 135)} [${short(c.sources.join("; "), 55)}]`, false, 8));
   }
+  if (a.deal.sourceConflicts?.some((c) => sourceConflictStatus(c, a.deal) === "RESOLVED")) l.text("Resolved source agreements are retained in the workbook and do not block the model.", false, 8, colors.muted);
   l.page("Market and competitive intelligence", subtitle);
   l.title("Independent market anchor");
-  l.table(["Labor reference", "Total", "Meaning"], [155, 90, 283], [
-    ["Lower public-rate reference", compact(m.aggressive), "Summed role-rate planning reference; not an executable staffing floor."],
-    ["Median public-rate reference", compact(m.expected), "Neutral public loaded-rate reference; not company cost or an automatically selected PTW."],
-    ["Upper public-rate reference", compact(m.conservative), "Labor-price stress reference; not a confidence bound."]
+  if (m.expected == null) l.text("A complete supporting total-value benchmark is not established. Fixed travel amounts are components; partial labor coverage cannot provide a whole-contract reference.");
+  else l.table(["Market reference", "Total", "Meaning"], [155, 90, 283], [
+    ["Lower public-rate reference", compact(m.aggressive), `${m.methodLabel}; not an executable staffing floor.`],
+    ["Median public-rate reference", compact(m.expected), "Supporting market reference; not company cost or an automatically selected PTW."],
+    ["Upper public-rate reference", compact(m.conservative), "Upper planning reference; not a confidence bound."]
   ]);
   l.text(`Comparable-award evidence: ${m.anchors.filter((r) => r.included && !r.opportunitySpecific).length} total-value anchors used. ${m.publicBenchmark.summary}`);
   const comparable = m.anchors.filter((r) => r.valueType === "TOTAL_AWARD_VALUE" || r.valueType === "CURRENT_AWARD_AMOUNT");
-  if (comparable.length) l.table(["Evidence / original", "Normalized / treatment"], [264, 264], comparable.slice(0, 5).map((r) => [`${r.evidenceId}: ${money(r.originalValue)}`, `${money(r.normalizedValue)}. ${r.included ? r.inclusionRationale : r.exclusionReasons.join(" ")}`]));
+  if (comparable.some((r) => r.included)) l.table(["Evidence / original", "Normalized / treatment"], [264, 264], comparable.filter((r) => r.included).slice(0, 2).map((r) => [`${r.evidenceId}: ${money(r.originalValue)}`, `${money(r.normalizedValue)}. ${r.included ? r.inclusionRationale : r.exclusionReasons.join(" ")}`]));
   l.title("Competitor intelligence");
   if (!a.competitors.length) l.text("No evidence-supported named competitor field has been established. General capabilities or vehicle membership do not demonstrate pursuit participation.");
   else l.table(["Company / role", "Pursuit-specific support / limitation"], [165, 363], a.competitors.map((c) => [`${c.name} / ${c.role.replaceAll("_", " ")}`, `${c.rationale} Sources: ${c.sourceRefs.join(", ")}. Bid intent remains unconfirmed unless explicitly documented.`]));
@@ -3071,21 +3220,20 @@ ${p.evaluationComplete ? "Evaluated basket represented" : "Component validation 
   l.text("No rival price range or bid intent is invented to fill a missing competitive field.");
   l.title("Labor crosswalk priorities");
   const roleRows = [...new Map(p.rows.map((r) => [r.title, r])).values()].sort((x, y) => p.rows.filter((r) => r.title === y.title).reduce((s, r) => s + r.target, 0) - p.rows.filter((r) => r.title === x.title).reduce((s, r) => s + r.target, 0));
-  if (roleRows.length) l.table(["High-impact role", "Mapping / validation"], [180, 348], roleRows.slice(0, 3).map((r) => [r.title, `${r.qualification || "Qualifications were not fully extracted."} ${r.rateLimitation} [${r.evidenceIds.join(", ")}]`]));
+  if (roleRows.length) l.table(["High-impact role", "Mapping / validation"], [180, 348], roleRows.slice(0, 2).map((r) => [r.title, `${short(r.qualification || "Qualifications were not fully extracted.", 110)} ${short(r.rateLimitation, 70)} [${r.evidenceIds.join(", ")}]`]));
   else l.text("A role-level public-rate model has not been established.");
   l.page("A price that reconciles", subtitle);
   l.text("Deterministic evaluation build. Fully burdened public labor proxies are not charged a second burden or fee.");
   const periodTotals = [...new Set(p.rows.map((r) => r.period))].map((period) => [period, ...["low", "target", "high"].map((key) => money(p.rows.filter((r) => r.period === period).reduce((s, r) => s + r[key], 0)))]);
   l.table(["Evaluated labor period", "Aggressive", "Recommended", "Defensive"], [207, 107, 107, 107], periodTotals.length ? periodTotals : [["No complete labor basis", "-", "-", "-"]]);
-  if (p.components.length) l.table(["Other evaluated component", "Included amount / treatment"], [264, 264], p.components.map((c) => [c.label, `${money(c.includedAmount)}. ${c.assumption || "Specified amount and documented indirect treatment."} Source: ${c.source}`]));
-  l.title("Calculated strategy cases");
-  l.table(["Case / total", "Why / condition"], [165, 363], p.scenarios.map((s) => [`${s.label}: ${compact(s.total)}${s.selected ? " - SELECTED" : ""}`, `${s.rationale} ${short(s.condition, 120)}`]));
+  l.text(`Priced labor hours ${p.pricedHours.toLocaleString("en-US")} / source hours ${p.totalHours.toLocaleString("en-US")}; missing ${p.unpricedRows.length} source rows. ${p.unpricedRows.length ? "Every subtotal excludes these unpriced rows; no full PTW target is established." : ""}`, true, 8);
+  if (p.components.length) l.table(["Other evaluated component", "Included amount / treatment"], [264, 264], p.components.map((c) => [c.label, `${money(c.includedAmount)}. ${short(c.assumption || "Specified amount and documented indirect treatment.", 130)} Source: ${short(c.source, 90)}`]));
   l.title("Calculation chain");
-  l.text(`Labor = row hours x selected loaded rate x performance-year factor. ${p.rows.reduce((s, r) => s + r.hours, 0).toLocaleString("en-US")} evaluated hours; no second FTE multiplication. Add ${money(p.components.reduce((s, c) => s + c.includedAmount, 0))} other evaluated components = ${money(p.target)}. ${p.evaluationComplete ? "Basket represented." : "Component validation remains open."}`);
+  l.text(`Labor = row hours x selected loaded rate x performance-year factor; no second FTE multiplication. Other components add ${money(p.components.reduce((s, c) => s + c.includedAmount, 0))}. ${p.target == null ? "Full target not established; strategy cards contain partial subtotals." : `Modeled target ${money(p.target)}.`} Full strategy cases reconcile in Competitive Strategies in the workbook.`, false, 8);
   l.text(`Extension: ${a.deal.evaluationPricing?.extensionRateRule || "UNKNOWN"} [${a.deal.evaluationPricing?.extensionSource || "Clause validation needed"}]. Full rate protections, conditions and recalculable formulas are in the workbook.`, false, 8);
   if (a.pricingScenario) {
     l.title("Separate analyst-entered offer model");
-    l.text(`Lower ${money(a.pricingScenario.low)}; target ${money(a.pricingScenario.target)}; upper ${money(a.pricingScenario.high)}. ${a.pricingScenario.inputs.evaluationBasis} Source: ${a.pricingScenario.inputs.basisSource}. This separate conditional model does not override the independent recommendation.`);
+    l.text(`Lower ${money(a.pricingScenario.low)}; target ${money(a.pricingScenario.target)}; upper ${money(a.pricingScenario.high)}. ${a.pricingScenario.inputs.evaluationBasis} Source: ${a.pricingScenario.inputs.basisSource}. ${a.pricingScenario.scopeReconciled === false ? "SOURCE SCOPE NOT RECONCILED. Review and reprice the source rows. " : ""}This separate conditional model does not override the independent recommendation.`);
   }
   l.page("Know when to change the position", subtitle);
   l.title("Isolated planning sensitivities");
@@ -3093,43 +3241,40 @@ ${p.evaluationComplete ? "Evaluated basket represented" : "Component validation 
   l.table(["Change", "Price effect", "Interpretation"], [170, 97, 261], executiveSensitivities.map((s) => [`${s.label}: ${s.change}`, `${s.delta >= 0 ? "+" : ""}${money(s.delta)}`, short(s.rationale, 125)]));
   l.text("Sensitivities are separate deterministic changes, not probabilities. Check overlap before combining them.", false, 8, colors.muted);
   l.title("Accountable validation actions");
-  l.table(["Owner", "Required action / decision consequence"], [115, 413], p.actions.map((a2) => [a2.owner, `${short(a2.action, 110)} ${short(a2.consequence, 70)}`]));
-  l.title("Material unresolved inputs");
-  (p.missing.length ? p.missing.slice(0, 3) : ["No evaluated-basket omission was recorded; rate and competition validation still remain."]).forEach((v) => l.text(short(v, 200)));
-  if (p.missing.length > 3) l.text(`${p.missing.length - 3} additional unresolved inputs are recorded in the workbook.`, false, 8, colors.amber);
-  l.title("Move conditions");
-  l.text("Lower: validated labor economics or reduced scope. Higher: specialist scarcity, corrected qualifications or additional evaluated obligations. Company costs alone do not establish government willingness to pay.");
+  l.table(["Owner", "Required action / decision consequence"], [115, 413], p.actions.map((a2) => [a2.owner, `${short(a2.action, 85)} ${short(a2.consequence, 55)}`]));
+  l.text(`Unresolved inputs: ${p.missing.length}. ${p.missing.slice(0, 2).map((v) => short(v, 125)).join(" ")} Full actions and source conflicts are in the workbook.`, false, 8, colors.amber);
+  l.text("Move conditions: lower with validated labor economics or reduced scope; higher with corrected specialist rates or additional evaluated obligations. Company cost alone does not establish government willingness to pay.", false, 8);
   l.page("Evidence, assumptions and limits", subtitle);
   l.text(`Analysis as of ${a.meta.analyzedAt}. Run ${a.id}. Market engine ${m.formulaVersion}; competitive engine ${p.version}. Human pricing judgment and bid approval remain required.`);
   l.title("Evidence and source lineage");
   const ids = /* @__PURE__ */ new Set([...p.rows.flatMap((r) => r.evidenceIds), ...p.components.flatMap((c) => c.evidenceIds), ...a.evidence.filter((e) => e.numeric?.valueType === "ESCALATION_RATE").map((e) => e.id)]);
   const used = a.evidence.filter((e) => ids.has(e.id) || e.type === "SOLICITATION_FACT").sort((x, y) => Number(y.type === "SOLICITATION_FACT") - Number(x.type === "SOLICITATION_FACT"));
-  l.table(["Evidence record", "Claim / locator / limitation"], [130, 398], used.slice(0, 4).map((e) => [`${e.id} / ${e.type.replaceAll("_", " ")}`, `${short(e.claim, 140)} Source: ${e.sourceLabel}; ${e.section || e.url || e.sourceRecordId || "Locator needed"}. ${e.retrievedAt ? `Retrieved ${e.retrievedAt}.` : ""}`]));
-  if (used.length > 4) l.text(`${used.length - 4} additional cited records, full source excerpts and frozen rate-distribution inputs are in the workbook.`, false, 8, colors.muted);
+  l.table(["Evidence record", "Claim / locator / limitation"], [130, 398], used.slice(0, 3).map((e) => [`${e.id} / ${e.type.replaceAll("_", " ")}`, `${short(e.claim, 140)} Source: ${e.sourceLabel}; ${e.section || e.url || e.sourceRecordId || "Locator needed"}. ${e.retrievedAt ? `Retrieved ${e.retrievedAt}.` : ""}`]));
+  if (used.length > 3) l.text(`${used.length - 3} additional cited records, full source excerpts and frozen rate-distribution inputs are in the workbook.`, false, 8, colors.muted);
   l.title("Planning assumptions");
-  p.assumptions.slice(0, 4).forEach((v) => l.text(v));
-  if (p.assumptions.length > 4) l.text("The complete assumption register is in Pricing Inputs. No labor benchmark is an executable cost floor; unquantified savings are excluded.", false, 8, colors.muted);
+  p.assumptions.slice(0, 3).forEach((v) => l.text(short(v, 200), false, 8));
+  if (p.assumptions.length > 3) l.text("The complete assumption register is in Pricing Inputs. No labor benchmark is an executable cost floor; unquantified savings are excluded.", false, 8, colors.muted);
   l.title("Research coverage");
   l.text((a.meta.connectors || []).map((c) => `${c.name}: ${c.status.replaceAll("_", " ")} (${c.recordsFound} records)`).join("; ") || "Source coverage is recorded in the evidence ledger.", false, 8);
   l.text(`Market-model confidence: ${m.confidence}. Competitive PTW confidence: ${p.confidence.overall} / provisional. High confidence in multiplication does not establish confidence in rival prices or premium tolerance.`, true, 9);
-  l.text("Historical reviews require a pre-decision evidence cutoff and exclusion of the actual result. This live-pilot brief records its analysis time; it does not certify a historical blind-test cutoff.", false, 8, colors.muted);
+  if (a.validation) l.text("Actuals are recorded separately. A scored historical review requires a pre-decision evidence cutoff and a matching measurement basis.", false, 8, colors.muted);
   const issues = assessmentIssues(a);
   if (issues.length) l.text(`${issues.length} assessment issues and source diagnostics are recorded in the workbook. Review consequential gaps before using this planning position.`, false, 8, colors.muted);
   if (a.ptwStrategy?.status === "DRAFT") {
     const s = a.ptwStrategy.strategy;
     const selected = s.options.find((o) => o.id === s.recommendation.selectedOptionId);
     l.page("Delivery-strategy hypotheses", subtitle);
-    l.text("Qualitative synthesis / unreviewed. Only the explicit role-rate scenarios on page 4 have numerical effects in the recommendation. Unquantified productivity, teaming and premium hypotheses remain separate.", true, 9);
+    l.text("Qualitative synthesis / unreviewed. Only the explicit role-rate scenarios in A price that reconciles have numerical effects in the recommendation. Unquantified productivity, teaming and premium hypotheses remain separate.", true, 9);
     l.title(`Selected delivery approach: ${selected?.name || "Review required"}`);
     l.text(s.recommendation.rationale.text);
     s.options.forEach((o) => {
       l.title(o.name);
-      l.text(`Win logic: ${o.winLogic.text}`);
-      l.text(`Evaluation advantage: ${o.evaluationAdvantage.text}`);
-      l.text(`Pricing mechanism: ${o.pricingLevers.map((v) => v.text).join(" ")}`);
-      l.text(`Risk: ${o.principalRisk.text}`);
+      l.text(`Win logic: ${short(o.winLogic.text, 330)}`);
+      l.text(`Evaluation advantage: ${short(o.evaluationAdvantage.text, 260)}`);
+      l.text(`Pricing mechanism: ${short(o.pricingLevers.map((v) => v.text).join(" "), 280)}`);
+      l.text(`Risk: ${short(o.principalRisk.text, 220)}`);
       const other = s.recommendation.alternatives.find((v) => v.optionId === o.id);
-      if (other) l.text(`Why not selected: ${other.reason.text}`);
+      if (other) l.text(`Why not selected: ${short(other.reason.text, 220)}`);
     });
     l.title("Change triggers");
     s.recommendation.changeTriggers.forEach((v) => l.text(`${v.kind}: ${v.text} Sources: ${v.evidenceIds.join(", ") || "Working assumption"}. Validate: ${v.validationAction}`));
@@ -3184,11 +3329,19 @@ function addCompetitiveWorkbook(workbook, analysis) {
     { label: "Evaluation posture", value: p.priceOrderFirst ? "PRICE_ORDERED" : "MARKET_ALIGNED", source: analysis.deal.evaluationMethod },
     { label: "Evaluation basket complete", value: p.evaluationComplete ? "YES" : "NO", source: analysis.deal.evaluationPricing?.source || "Re-extraction required" },
     { label: "Extension rate rule", value: analysis.deal.evaluationPricing?.extensionRateRule || "UNKNOWN", source: analysis.deal.evaluationPricing?.extensionSource || "Validation required" },
-    { label: "Recommendation status", value: p.status, source: p.rangeMeaning }
+    { label: "Recommendation status", value: p.status, source: p.rangeMeaning },
+    { label: "Total source labor hours", value: p.totalHours, source: "All validated extracted quantity rows, including unpriced rows" },
+    { label: "Priced labor hours", value: p.pricedHours, source: "Only rows with a relevant public rate proxy" },
+    { label: "Unpriced labor hours", value: p.totalHours - p.pricedHours, source: "Excluded from every partial subtotal" }
   ]);
   inputs.getCell("B2").numFmt = "0.0%";
   p.assumptions.forEach((source) => inputs.addRow({ label: "Planning assumption", source }));
   p.missing.forEach((source) => inputs.addRow({ label: "Unresolved input", source }));
+  const quantities = workbook.addWorksheet("Quantity Coverage");
+  quantities.columns = [{ header: "Row ID", key: "id", width: 18 }, { header: "Source labor category", key: "title", width: 42 }, { header: "Period", key: "period", width: 30 }, { header: "Evaluated hours", key: "hours", width: 24 }, { header: "Pricing status", key: "status", width: 24 }, { header: "Quantity locator", key: "source", width: 90 }];
+  const pricedIds = new Set(p.rows.map((r) => r.id));
+  model2.quantityRows.forEach((r) => quantities.addRow({ ...r, status: pricedIds.has(r.id) ? "PRICED" : "UNPRICED - EXCLUDED" }));
+  quantities.addRow({ title: "TOTAL SOURCE HOURS", hours: { formula: model2.quantityRows.length ? `SUM(D2:D${quantities.rowCount})` : "0", result: p.totalHours }, status: p.quantityComplete ? "QUANTITIES COMPLETE" : "QUANTITY VALIDATION OPEN" });
   const distributions = workbook.addWorksheet("Rate Distribution");
   distributions.columns = [{ header: "Evidence ID", key: "id", width: 30 }, { header: "Sample index", key: "index", width: 16 }, { header: "Loaded rate / hour", key: "rate", width: 24 }];
   const stats = workbook.addWorksheet("Rate Statistics");
@@ -3249,7 +3402,7 @@ function addCompetitiveWorkbook(workbook, analysis) {
   p.scenarios.forEach((s, i) => {
     const index = strategies.rowCount + 1;
     const column = ["J", "K", "L"][i];
-    strategies.addRow({ label: s.label, labor: { formula: `ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2, end)}),2)`, result: s.labor }, other: { formula: lastComponent > 1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : "0", result: s.nonLabor }, total: { formula: `ROUND(B${index}+C${index},2)`, result: s.total }, selected: s.selected ? "YES" : "NO", rationale: s.rationale, condition: `${p.status}; ${p.evaluationComplete ? "Basket represented" : "Component validation open"}. ${s.condition}` });
+    strategies.addRow({ label: `${s.label}${s.basis === "PARTIAL_SUBTOTAL" ? " / PARTIAL SUBTOTAL" : ""}`, labor: { formula: `ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2, end)}),2)`, result: s.labor }, other: { formula: lastComponent > 1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : "0", result: s.nonLabor }, total: { formula: `ROUND(B${index}+C${index},2)`, result: s.total }, selected: s.selected ? "YES" : "NO", rationale: s.rationale, condition: `${p.status}; ${s.basis}; ${p.evaluationComplete ? "Basket represented" : "Validation open"}. ${s.condition}` });
   });
   const decision = workbook.getWorksheet("Executive Decision");
   decision.addRows([
@@ -3259,6 +3412,8 @@ function addCompetitiveWorkbook(workbook, analysis) {
     { field: "Range meaning", value: p.rangeMeaning },
     { field: "Competitive recommendation status", value: p.status },
     { field: "Evaluated basket complete", value: p.evaluationComplete ? "YES" : "NO - see unresolved inputs" },
+    { field: "Priced / source labor hours", value: `${p.pricedHours} / ${p.totalHours}` },
+    { field: "Unpriced source rows", value: p.unpricedRows.length },
     ...Object.entries(p.confidence).map(([key, value]) => ({ field: `${key} confidence`, value })),
     { field: "Decision request", value: p.decisionRequest },
     { field: "Competitive rationale", value: p.rationale },
@@ -3270,7 +3425,7 @@ function addCompetitiveWorkbook(workbook, analysis) {
   p.sensitivities.forEach((s) => sensitivities.addRow({ category: "Sensitivity", label: s.label, change: s.change, delta: s.delta, reason: s.rationale }));
   p.actions.forEach((a) => sensitivities.addRow({ category: "Validation action", label: a.owner, change: a.action, reason: a.consequence }));
   p.missing.forEach((change) => sensitivities.addRow({ category: "Unresolved input", change }));
-  analysis.deal.sourceConflicts?.forEach((c) => sensitivities.addRow({ category: "Source conflict", label: c.topic, change: c.descriptions.join(" versus "), reason: `${c.resolution} ${c.sources.join("; ")}` }));
+  analysis.deal.sourceConflicts?.forEach((c) => sensitivities.addRow({ category: sourceConflictStatus(c, analysis.deal) === "RESOLVED" ? "Resolved source agreement" : "Open source conflict", label: c.topic, change: c.descriptions.join(" versus "), reason: `${c.resolution} ${c.sources.join("; ")}` }));
   const sources = workbook.addWorksheet("Source Snapshots");
   sources.columns = [{ header: "Snapshot / evidence", key: "id", width: 35 }, { header: "Retrieved / as of", key: "date", width: 30 }, { header: "Locator / fingerprint", key: "source", width: 110 }, { header: "Limitation", key: "limitation", width: 100 }];
   sources.addRow({ id: "Analysis cutoff", date: analysis.meta.analyzedAt, source: analysis.id, limitation: "Live analysis timestamp; not a certified historical pre-award evidence cutoff." });
@@ -3464,7 +3619,7 @@ var baseSchema = {
             feeAllowed: { type: "BOOLEAN" }
           }, required: ["id", "label", "category", "source", "evidenceIds", "indirectTreatment", "feeAllowed"] } }
         }, required: ["basis", "source", "completeness", "extensionRateRule", "components"] },
-        sourceConflicts: { type: "ARRAY", items: { type: "OBJECT", properties: { topic: { type: "STRING" }, descriptions: stringArray, sources: stringArray, resolution: { type: "STRING" } }, required: ["topic", "descriptions", "sources", "resolution"] } }
+        sourceConflicts: { type: "ARRAY", items: { type: "OBJECT", properties: { topic: { type: "STRING" }, descriptions: stringArray, sources: stringArray, resolution: { type: "STRING" }, status: { type: "STRING", enum: ["OPEN", "RESOLVED"] } }, required: ["topic", "descriptions", "sources", "resolution", "status"] } }
       },
       required: [
         "documentStatus",
@@ -3624,7 +3779,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
 - Keep evaluated price, estimated value, ceiling, initial obligation, current obligations, eventual spend, total award value, hourly ceiling rate, escalation rate, and budget context distinct.
 - CRITICAL: If a value represents the total deal or contract size, you MUST use valueType 'ESTIMATED_VALUE', 'TOTAL_AWARD_VALUE', or 'EVALUATED_PRICE', and YOU MUST set units exactly to 'TOTAL_USD'.
-- Classify the measurement basis using valueBasis exactly from: OPPORTUNITY_TOTAL, INDIVIDUAL_AWARD, PROGRAM_TOTAL, MULTIPLE_AWARD_POOL, ORDER_LIMIT, PAST_PERFORMANCE_THRESHOLD, BUDGET, UNKNOWN.
+- Classify the measurement basis using valueBasis exactly from: OPPORTUNITY_TOTAL, EVALUATED_COMPONENT, INDIVIDUAL_AWARD, PROGRAM_TOTAL, MULTIPLE_AWARD_POOL, ORDER_LIMIT, PAST_PERFORMANCE_THRESHOLD, BUDGET, UNKNOWN. EVALUATED_COMPONENT applies to travel, ODCs and other individual basket amounts, even when evaluated in price.
 - Program-wide funding, portfolio funding, annual funding, and multiple-award pools are context, not the expected value of one award.
 - Minimum/maximum order limitations and past-performance eligibility thresholds are not Market Position anchors.
 - For a stated individual-award range, return the low and high values as separate evidence items with the same rangeId and rangeBound LOW or HIGH.
@@ -3635,6 +3790,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
 - Read selected boxes on SF1449 visually. Merely printing WOSB/SDVOSB/8(a) on a standard form does not establish that set-aside. Extract the checked designation and NAICS from the controlling form/amendment, with a fact and evidence locator. If markings cannot be read, say Unknown rather than choosing a printed option.
 - Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
+- Mark source conflicts OPEN when clarification or an approved mapping is still required. Mark RESOLVED only when cited controlling language establishes the answer; matching checked set-aside boxes and an agreeing clause are resolved corroboration. Distinguish an abbreviated title from a different occupation. Fixed travel/ODC amounts are evaluated components, never a whole-contract evaluated-price estimate.
 - Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
 - Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
@@ -3860,7 +4016,7 @@ async function analyzeFiles(files) {
   const client = new OpenAIIntelligence(void 0, void 0, fetch, 17e4);
   let draft = await client.extract(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
-  classifyNumericEvidence(draft.evidence);
+  classifyNumericEvidence(draft.evidence, draft.deal);
   draft.gaps = normalizeGaps(draft.gaps);
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
@@ -4004,18 +4160,35 @@ function recalculateIncomingRun(raw) {
   }
   return enforceAuthoritativeAnalysis(raw);
 }
-function normalizeIncomingRun(raw) {
+function normalizeIncomingRun(raw, allowStoredScopeMismatch = false) {
   const analysis = recalculateIncomingRun(raw);
+  let pricingScenario;
+  if (raw.pricingScenario) {
+    const legacyUnlinked = raw.pricingScenario.scopeReconciled === false || analysis.deal.laborSignals.length && !raw.pricingScenario.inputs?.lines?.some((r) => r.sourceRowId);
+    if (legacyUnlinked) {
+      pricingScenario = { ...calculatePricingScenario(raw.pricingScenario.inputs), scopeReconciled: false };
+      analysis.meta.warnings = [.../* @__PURE__ */ new Set([...analysis.meta.warnings, "Saved offer scenario does not reconcile with source quantity rows. Review the prefilled Price Scenarios before using the saved offer totals."])];
+    } else {
+      try {
+        pricingScenario = calculateSourcePricingScenario(raw.pricingScenario.inputs, analysis);
+      } catch (error) {
+        if (!allowStoredScopeMismatch) throw error;
+        pricingScenario = { ...calculatePricingScenario(raw.pricingScenario.inputs), scopeReconciled: false };
+        analysis.meta.warnings = [.../* @__PURE__ */ new Set([...analysis.meta.warnings, "Saved offer scenario no longer reconciles with the source schedule. Reprice the prefilled source rows."])];
+      }
+    }
+  }
   return {
     ...analysis,
     ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy),
-    pricingScenario: raw.pricingScenario ? calculatePricingScenario(raw.pricingScenario.inputs) : void 0
+    validation: preserveValidation(analysis),
+    pricingScenario
   };
 }
 app.post("/api/ptw-strategy", async (req, res) => {
   try {
     if (!openAIConfigured()) return res.status(503).json({ error: "OPENAI_API_KEY is not configured for this deployment." });
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body, true);
     analysis.ptwStrategy = await synthesizePtwStrategy(analysis);
     res.json({ data: analysis });
   } catch (error) {
@@ -4025,7 +4198,7 @@ app.post("/api/ptw-strategy", async (req, res) => {
 app.get("/api/runs", async (req, res) => {
   try {
     const saved = await runStore.list(req.principal.workspace, "analysis");
-    res.json({ data: saved.map((item) => ({ ...normalizeIncomingRun(item.value), storageVersion: item.version })) });
+    res.json({ data: saved.map((item) => ({ ...normalizeIncomingRun(item.value, true), storageVersion: item.version })) });
   } catch (error) {
     res.status(503).json({ error: error instanceof Error ? error.message : "Saved analyses are unavailable." });
   }
@@ -4174,7 +4347,7 @@ app.post("/api/retry-connector", async (req, res) => {
 var displayValue = (value) => value === null ? "Insufficient evidence" : value;
 app.post("/api/export-brief", async (req, res) => {
   try {
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body, true);
     if (!analysis.deal?.title) return res.status(400).json({ error: "Analysis payload is required." });
     const workbook = new ExcelJS.Workbook();
     workbook.creator = "Federal Market Position";
@@ -4221,12 +4394,13 @@ app.post("/api/export-brief", async (req, res) => {
       priced.addRow({ label: "Evaluation basis", source: scenario.inputs.evaluationBasis });
       priced.addRow({ label: "Evaluation source", source: scenario.inputs.basisSource });
       priced.addRow({ label: "Calculation", source: scenario.formula });
-      priced.addRow({ label: "Status", source: "CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price." });
+      priced.addRow({ label: "Status", source: `CONDITIONAL. ${scenario.scopeReconciled === false ? "Source quantity scope NOT RECONCILED; reprice the prefilled source rows. " : ""}Analyst-entered offer scenarios; not proof of a winning price.` });
     } else if (analysis.competitivePosition?.scenarios.length) {
       const p = analysis.competitivePosition;
       p.rows.forEach((r) => priced.addRow({ label: `${r.title} / ${r.period}`, quantity: r.hours, lowUnitPrice: r.lowRate * r.factor, targetUnitPrice: r.recommendedRate * r.factor, highUnitPrice: r.highRate * r.factor, source: `${r.source}; ${r.evidenceIds.join(", ")}. ${r.protectionReason}` }));
+      p.unpricedRows.forEach((r) => priced.addRow({ label: `${r.title} / ${r.period}`, quantity: r.hours, source: `UNPRICED - excluded from partial subtotals. ${r.source}` }));
       p.components.forEach((c) => priced.addRow({ label: c.label, quantity: 1, lowUnitPrice: c.includedAmount, targetUnitPrice: c.includedAmount, highUnitPrice: c.includedAmount, source: `${c.source}. ${c.assumption}` }));
-      priced.addRow({ label: "EVALUATED PLANNING TOTALS", lowUnitPrice: p.scenarios[0].total, targetUnitPrice: p.scenarios[1].total, highUnitPrice: p.scenarios[2].total, source: `${p.status}. ${p.evaluationComplete ? "Evaluation basket represented" : "Component validation remains open"}. Recalculable formulas: Competitive Labor / Competitive Strategies.` });
+      priced.addRow({ label: p.status === "PARTIAL_MODEL" ? "PARTIAL PLANNING SUBTOTALS" : "EVALUATED PLANNING TOTALS", lowUnitPrice: p.scenarios[0].total, targetUnitPrice: p.scenarios[1].total, highUnitPrice: p.scenarios[2].total, source: `${p.status}. ${p.pricedHours} of ${p.totalHours} source labor hours priced. ${p.evaluationComplete ? "Evaluation basket represented" : "Validation remains open"}. Recalculable formulas: Competitive Labor / Competitive Strategies.` });
     } else priced.addRow({ label: "No complete calculation basis", source: analysis.competitivePosition?.missing.join(" ") || "Re-extract the quantity/rate and evaluated-basket inputs." });
     const strategy = workbook.addWorksheet("PTW Strategy");
     strategy.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "assessment", width: 100 }, { header: "Claim type", key: "kind", width: 18 }, { header: "Evidence IDs", key: "evidence", width: 36 }, { header: "Validation action", key: "validation", width: 80 }];
@@ -4344,7 +4518,7 @@ app.post("/api/export-brief", async (req, res) => {
 });
 app.post("/api/export-pdf", async (req, res) => {
   try {
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body, true);
     if (!analysis.deal?.title) return res.status(400).json({ error: "Analysis payload is required." });
     const buffer = await createExecutivePdf(analysis);
     if (!buffer.length) throw new Error("PDF generator returned an empty document.");

@@ -6,8 +6,9 @@ import { OpenAIIntelligence } from './openaiIntelligence';
 import { strategyResponseSchema } from './strategyResponseSchema';
 import { resolvedGap, supportedCompetitors } from '../domain/sourceConsistency';
 import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
+import { claimSupportIssue, readableDecisionText } from '../domain/governmentRules';
 
-export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.3.0';
+export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.4.0';
 type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition'>;
 
 function sourceInput(analysis: StrategyInput, compact=false) {
@@ -48,14 +49,18 @@ export function validateStrategy(raw: unknown, analysis: StrategyInput): PtwStra
     throw new Error(`Strategic prose cannot invent a price, adjustment, or win probability. Replace the literal "${numericClaim}" with its numeric evidence ID.`);
   }
   for (const {statement} of strategyStatements(result)) {
+    statement.text = readableDecisionText(statement.text);
+    statement.validationAction = readableDecisionText(statement.validationAction);
     if (statement.evidenceIds.some(id => !evidence.has(id))) throw new Error('Strategy cites an unknown evidence ID.');
     if (statement.kind !== 'ASSUMPTION' && !statement.evidenceIds.length) throw new Error('Facts and inferences require source evidence.');
     if (statement.kind !== 'FACT' && !statement.validationAction.trim()) throw new Error('Inferences and assumptions require a validation action.');
     if (statement.kind === 'FACT' && statement.evidenceIds.some(id => {
       const e = evidence.get(id)!;
-      return e.type === 'ANALYST_INFERENCE' || !(e.section || e.url || e.sourceRecordId)
+      return !['SOLICITATION_FACT','EXTERNAL_SOURCE'].includes(e.type) || !(e.section || e.url || e.sourceRecordId)
         || e.claim === 'Public market source used during grounded qualitative enrichment.';
     })) throw new Error('A fact needs a specific source claim and locator, not a generic source listing or inference.');
+    const supportIssue=claimSupportIssue(statement.text,statement.evidenceIds.map(id=>evidence.get(id)!),statement.kind);
+    if (supportIssue) throw new Error(supportIssue);
   }
   for (const rival of result.competitors) {
     const support = supportedCompetitors([{name:rival.name,sourceRefs:rival.intentBasis.evidenceIds} as OpportunityAnalysis['competitors'][number]],analysis.evidence,analysis.deal);
@@ -117,6 +122,7 @@ Return JSON matching this structure, with no extra keys:
 Every STATEMENT is {"text":"...","kind":"FACT|INFERENCE|ASSUMPTION","evidenceIds":["existing ID"],"validationAction":"specific action, or empty for a sourced fact"}.
 Produce 2–4 genuinely different delivery/competitive approaches, not low/medium/high percentages. Explain each option's economic mechanism, evaluation benefit, rival response, and sacrifice. When evidence is thin, formulate conditional hypotheses with validation actions.
 FACT and INFERENCE require evidence IDs. A generic list of web URLs is not proof of a specific fact. ASSUMPTION may have no citations but must name what is assumed and how to test it. Every inference needs validation. Source presence is not verification; all output remains unreviewed.
+Each citation must support the actual claim: an evaluation-order citation does not prove the full labor-category requirement, a due date does not establish a transition window, and facility clearance is distinct from personnel clearance. Use the supplied RULE evidence for specific instructions. If no matching instruction is supplied, use ASSUMPTION and a validation action. Refer to the provisional pricing model and supporting market benchmark in plain language; never emit internal JSON field names.
 Do not infer bid intent from agency history, capability, or vehicle membership. Use CONFIRMED only for an explicit documented intent-to-bid fact; otherwise POSSIBLE or UNKNOWN. Leave the competitor array empty if no specific company has source support.
 Respect LPTA versus tradeoff evaluation: a premium requires an evidenced, evaluable benefit and an explicit assumption about willingness to pay; it is never automatically justified. Identify compliance gates before recommending efficiencies. For expired/sole-source/noncompetitive opportunities, make applicability a prominent qualification and frame alternatives as validation/negotiation actions, not live competitive PTW.
 Use the authoritative setAside and NAICS fields; never infer eligibility from printed unchecked form choices. If the solicitation uses price-ordered evaluation with fallback branches, preserve the specific qualifying past-performance/clearance ratings and stopping rules. Staffing readiness is an execution condition; do not claim standalone evaluation credit unless it is a scored factor.

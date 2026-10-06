@@ -11,11 +11,13 @@ import { MARKET_POSITION_ENGINE_VERSION } from './engineConfig';
 import { calculateCompetitivePosition } from '../ptw/competitivePosition';
 import { reconcileSourceFacts } from '../sourceConsistency';
 import { resolvedGap } from '../sourceConsistency';
+import { readableDecisionText } from '../governmentRules';
+import { classifyNumericEvidence } from './evidenceClassification';
 
 const currencyClaim = /(?:\$\s?\d[\d,.]*(?:\s?(?:million|billion|m|b))?|\bUSD\s+\d[\d,.]*|\b\d+(?:\.\d+)?\s*(?:million|billion)\b|\b\d{1,3}(?:,\d{3}){2,}\b)/gi;
 
 function scrubText(value: string) {
-  return value.replace(currencyClaim, 'the calculated Market Position');
+  return readableDecisionText(value.replace(currencyClaim, 'the calculated Market Position'));
 }
 
 export function sanitizeNarrative(narrative?: Partial<DecisionNarrative>): DecisionNarrative {
@@ -131,6 +133,8 @@ export function createLegacyPosition(position: Partial<MarketPosition> = {}): Ma
 
 export function enforceAuthoritativeAnalysis(analysis: OpportunityAnalysis): OpportunityAnalysis {
   analysis = reconcileSourceFacts({ ...analysis, gaps: normalizeGaps(analysis.gaps) });
+  analysis = {...analysis,evidence:analysis.evidence.map(e=>({...e,numeric:e.numeric ? {...e.numeric} : undefined}))};
+  classifyNumericEvidence(analysis.evidence,analysis.deal);
   const analyzedAt = analysis.meta?.analyzedAt;
   if (!analyzedAt || Number.isNaN(Date.parse(analyzedAt))) {
     throw new Error('Analysis metadata must include a valid analyzedAt date.');

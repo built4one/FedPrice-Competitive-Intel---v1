@@ -102,7 +102,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       <div className="mt-8 max-w-3xl">
         <p className="text-xs font-black uppercase tracking-[.18em] text-blue-600">New analysis · automatic opportunity intake</p>
         <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">Start with what you already have.</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-500">Upload the solicitation, paste its SAM.gov URL, or enter the solicitation number. Federal Market Position identifies the opportunity, fills official metadata such as NAICS and agency, retrieves accessible SAM.gov documents, and analyzes the complete package automatically.</p>
+        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-500">Upload the solicitation, paste its SAM.gov URL, or enter the solicitation number. Federal Market Position analyzes the files you provide and checks available public metadata. Add a SAM.gov reference to retrieve accessible official documents. Review package coverage after analysis.</p>
       </div>
 
       <div className="mt-8 max-w-3xl space-y-5">
@@ -163,7 +163,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
       </div>
     </> : <div className="mx-auto mt-16 max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
       <div className="flex items-start gap-3"><Loader2 className="mt-0.5 h-5 w-5 animate-spin text-blue-600" /><div className="flex-1"><div className="flex items-center justify-between gap-3"><p className="text-sm font-black">Building the opportunity intelligence package</p><span className="font-mono text-xs font-bold text-slate-400">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span></div><p className="mt-2 text-xs leading-5 text-slate-500">{statusText}</p></div></div>
-      <div className="mt-6 grid gap-2 sm:grid-cols-2">{['Identify opportunity', 'Retrieve official documents', 'Read the complete package', 'Search comparable evidence', 'Calculate Market Position'].map((label) => <div key={label} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600"><span className="h-2 w-2 rounded-full bg-blue-500" />{label}</div>)}</div>
+      <div className="mt-6 grid gap-2 sm:grid-cols-2">{['Identify opportunity', 'Check accessible official material', 'Read available source files', 'Search comparable evidence', 'Calculate Market Position'].map((label) => <div key={label} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600"><span className="h-2 w-2 rounded-full bg-blue-500" />{label}</div>)}</div>
       <div className="mt-6 flex justify-end"><button onClick={() => abortRef.current?.abort()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50">CANCEL ANALYSIS</button></div>
     </div>}
   </div>;

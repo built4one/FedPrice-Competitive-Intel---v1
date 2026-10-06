@@ -1,14 +1,22 @@
 import type { DealProfile, EvidenceItem, DataGap } from '../types';
-import { benchmarkRole, laborFamily, laborRoleMatch, requiresClearance } from './laborMatching';
+import { benchmarkRole, laborFamily, laborRoleMatch, qualificationMatch, requiresClearance, roleMappingIssue } from './laborMatching';
 
 export function laborCoverage(deal: DealProfile, evidence: EvidenceItem[]) {
   const rates = evidence.filter(e => e.numeric?.valueType === 'HOURLY_CEILING_RATE' && e.numeric.units === 'USD_PER_HOUR' && e.numeric.originalValue > 0);
   return (deal.laborSignals || []).map(signal => {
+    const mappingIssue = roleMappingIssue(signal);
     const matches = rates.filter(e => {
       const n = e.numeric!;
-      return (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title)
+      const requested = benchmarkRole(signal);
+      // The adapter validates detailed categories before shortening the family name.
+      // Older snapshots can demonstrate the same match with their frozen source records.
+      const validatedFamily = n.benchmarkFamily === laborFamily(requested)
+        && n.matchedLaborCategory === signal.title
+        && (n.validatedBenchmarkRole === requested && !n.rateRecords?.length || Boolean(n.rateRecords?.length && n.rateRecords.every(r=>
+          laborRoleMatch(requested,r.category)>=.8 && qualificationMatch(signal,{min_years_experience:r.experience,education_level:r.education,worksite:r.worksite}))));
+      return !mappingIssue && (!n.matchedLaborCategory || n.matchedLaborCategory === signal.title)
         && (!requiresClearance(signal.clearance) || n.clearanceRequired)
-        && laborRoleMatch(benchmarkRole(signal), n.benchmarkFamily || n.scopeText || e.claim) >= 0.8
+        && (validatedFamily || laborRoleMatch(requested, n.benchmarkFamily || n.scopeText || e.claim) >= 0.8)
         && (!signal.titleConflict || Boolean(n.benchmarkFamily && laborFamily(benchmarkRole(signal)) === n.benchmarkFamily));
     });
     const values = matches.map(e => e.numeric!.originalValue).sort((a,b)=>a-b);
@@ -20,7 +28,7 @@ export function laborCoverage(deal: DealProfile, evidence: EvidenceItem[]) {
         ? proxyMapped
           ? 'Provisional role-family ceiling-rate proxy; validate the mapped family, qualifications, clearance level, and worksite before final pricing use.'
           : 'Public ceiling-rate proxy; verify exact qualifications, clearance level, and worksite.'
-        : 'No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping.' };
+        : mappingIssue || 'No defensible role/clearance rate match. Supply a cited comparable rate or analyst-approved mapping.' };
   });
 }
 

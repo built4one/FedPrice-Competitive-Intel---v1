@@ -59,6 +59,7 @@ export function extractPeriodMonths(value?: string): number | undefined {
 }
 
 export function determineCalculationRole(numeric: NumericEvidence, asOfDate: string): CalculationRole {
+  if (numeric.valueBasis === 'EVALUATED_COMPONENT') return 'COMPONENT';
   if (!Number.isFinite(numeric.originalValue) || numeric.originalValue <= 0) return 'EXCLUDED';
   if (numeric.currency !== 'USD' && numeric.units !== 'PERCENT') return 'EXCLUDED';
   if (numeric.sharedAcrossAwards) return 'EXCLUDED';

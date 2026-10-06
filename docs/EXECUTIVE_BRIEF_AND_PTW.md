@@ -1,6 +1,6 @@
 # Federal Market Position: executive output and PTW decision model
 
-The executive brief leads with a selected provisional market planning price. Supporting public-rate benchmarks remain separate from that recommendation and from company costs. This release changes the existing analysis workflow and its exports; it does not add IBM integrations.
+The executive brief leads with a selected provisional market planning price when the complete quantity/rate basis exists. Otherwise it leads with model incompleteness and clearly labeled partial subtotals. Supporting public-rate benchmarks remain separate from that recommendation and from company costs. This release changes the existing analysis workflow and its exports; it does not add IBM integrations.
 
 ## Six core sections
 
@@ -32,7 +32,7 @@ SF1449 and security forms retain visual checkbox context. Crosswalks preserve pr
 
 Named rivals require a claim-specific source linking the company to the pursuit or documented predecessor. General industry capability and generic web source lists are insufficient. Bidding intent still requires explicit evidence.
 
-The workbook includes Government Decision, Pricing Inputs, Rate Distribution, Rate Statistics, Rate Source Records, Competitive Labor, Evaluated Components, Competitive Strategies, Sensitivity and Actions and Source Snapshots. Formula cells include cached results and request recalculation when opened. All retrieved matched rate values are preserved; detailed rate records are bounded to 40 examples per category, with source-sample fingerprints and sampling limitations.
+The workbook includes Government Decision, Pricing Inputs, Rate Distribution, Rate Statistics, Rate Source Records, Quantity Coverage, Competitive Labor, Evaluated Components, Competitive Strategies, Sensitivity and Actions and Source Snapshots. Formula cells include cached results and request recalculation when opened. All retrieved matched rate values are preserved; detailed rate records are bounded to 40 examples per category, with source-sample fingerprints and sampling limitations.
 
 ## Phase 2: company position
 
@@ -45,3 +45,18 @@ Type checking, existing application/export/auth tests and new calculation tests 
 The four original Navy procurement source files were not supplied in this implementation conversation. The synthetic fixture is not a fresh real-package extraction test or an executive-readiness certification. Rerun the four-file package and independently inspect eligibility, quantities, duty mappings, extension, required travel and source-selection branches before executive use.
 
 Saved runs without the new evaluation and qualification fields are recalculated but remain explicitly partial. Re-upload the source package to obtain those fields. Prior qualitative strategy drafts are invalidated by the new synthesis version and must be regenerated.
+
+## October 6 correction release
+
+- Fixed evaluated travel and other individual basket amounts are COMPONENT records, including previously saved evidence mislabeled EVALUATED_PRICE. They cannot become whole-contract price anchors. Market engine: market-position-v3.3.0.
+- Qualified senior/SME GSA matches retain their original requested role and detailed source categories across the family-name crosswalk. Generic and junior samples still fail senior requirements; exact clearance/certification relevance remains a separate limitation.
+- Quantity Coverage retains every valid extracted row. Competitive Labor includes priced rows only. Partial strategy subtotals disclose excluded hours and have no selected full target. Quantity confidence is independent of rate coverage. The selected rationale describes actual lower-quartile/median choices, including all-median cases.
+- A substantive personnel-security/cybersecurity conflict blocks automatic role pricing. Matching small-business checkboxes and the agreeing clause are resolved corroboration; open role and timing issues remain explicit.
+- Sourced requirement and pricing instructions become individually citable RULE records. Claim checks reject unrelated citations for facility clearance, past-performance ratings, required labor coverage, eligibility and transition timing. Strategy version: ptw-strategy-0.4.0. These topic checks support analyst review; they do not certify every claim's semantic entailment.
+- Price Scenarios starts with all source quantity rows, available period-adjusted planning rates and evaluated components. Unpriced rates stay blank. Analyst rates and assumptions can change; source quantity rows must reconcile before a full-scope scenario is saved. Earlier unlinked/mismatched offers are retained as explicitly unreconciled conditional scenarios and do not replace the independent model.
+- UI model badges, both exports and retrospective comparison use the same completeness distinctions. Partial price models and ceiling/obligation actuals cannot produce a scored full-price comparison.
+- Supporting evidence is searchable and grouped by claim type. The PDF uses section names rather than fragile page references, with condensed executive content and full lineage in the workbook.
+
+The attached latest workbook was used as a temporary local regression input, including its frozen public rate records. It retained 96 rows and 1,050,240 hours; the correction priced 84 rows / 986,880 hours. Cloud Application Admin lacks a defensible rate match, and the conflicting IT Infrastructure/Personnel Security role remains unpriced (12 rows / 63,360 hours together). This is a correction of the supplied output, not a fresh extraction of the original four procurement files. Local production export routes returned valid PDF and XLSX files; the six core PDF pages and workbook reconciled these quantities and partial subtotals.
+
+A protected-browser Vercel sign-in prevented live interface interaction in this session. No deployment protection or credentials were changed. Fresh source-package analysis and both exports in a signed-in session remain the final pilot acceptance check; this release does not certify executive bid readiness.

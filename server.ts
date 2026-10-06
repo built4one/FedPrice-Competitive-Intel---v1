@@ -5,7 +5,8 @@ import express from 'express';
 import multer from 'multer';
 import ExcelJS from 'exceljs';
 import mammoth from 'mammoth';
-import { calculatePricingScenario } from './src/domain/ptw/pricingScenario.js';
+import { calculatePricingScenario, calculateSourcePricingScenario } from './src/domain/ptw/pricingScenario.js';
+import { preserveValidation } from './src/domain/ptw/validation.js';
 import { calculateCompetitivePosition } from './src/domain/ptw/competitivePosition.js';
 import { reconcileSourceFacts } from './src/domain/sourceConsistency.js';
 import { assessEligibility, IneligibleSolicitationError } from './src/server/eligibility.js';
@@ -194,7 +195,7 @@ const baseSchema = {
             indirectPct:{type:'NUMBER'},indirectTreatment:{type:'STRING',enum:['NOT_ALLOWED','KNOWN','UNKNOWN']},feeAllowed:{type:'BOOLEAN'},
           },required:['id','label','category','source','evidenceIds','indirectTreatment','feeAllowed']}},
         },required:['basis','source','completeness','extensionRateRule','components']},
-        sourceConflicts:{type:'ARRAY',items:{type:'OBJECT',properties:{topic:{type:'STRING'},descriptions:stringArray,sources:stringArray,resolution:{type:'STRING'}},required:['topic','descriptions','sources','resolution']}},
+        sourceConflicts:{type:'ARRAY',items:{type:'OBJECT',properties:{topic:{type:'STRING'},descriptions:stringArray,sources:stringArray,resolution:{type:'STRING'},status:{type:'STRING',enum:['OPEN','RESOLVED']}},required:['topic','descriptions','sources','resolution','status']}},
       },
       required: [
         'documentStatus', 'eligibilityReason', 'eligibilitySource', 'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
@@ -301,7 +302,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Extract a numeric evidence object only when the document explicitly states the value. Preserve its section and excerpt.
 - Keep evaluated price, estimated value, ceiling, initial obligation, current obligations, eventual spend, total award value, hourly ceiling rate, escalation rate, and budget context distinct.
 - CRITICAL: If a value represents the total deal or contract size, you MUST use valueType 'ESTIMATED_VALUE', 'TOTAL_AWARD_VALUE', or 'EVALUATED_PRICE', and YOU MUST set units exactly to 'TOTAL_USD'.
-- Classify the measurement basis using valueBasis exactly from: OPPORTUNITY_TOTAL, INDIVIDUAL_AWARD, PROGRAM_TOTAL, MULTIPLE_AWARD_POOL, ORDER_LIMIT, PAST_PERFORMANCE_THRESHOLD, BUDGET, UNKNOWN.
+- Classify the measurement basis using valueBasis exactly from: OPPORTUNITY_TOTAL, EVALUATED_COMPONENT, INDIVIDUAL_AWARD, PROGRAM_TOTAL, MULTIPLE_AWARD_POOL, ORDER_LIMIT, PAST_PERFORMANCE_THRESHOLD, BUDGET, UNKNOWN. EVALUATED_COMPONENT applies to travel, ODCs and other individual basket amounts, even when evaluated in price.
 - Program-wide funding, portfolio funding, annual funding, and multiple-award pools are context, not the expected value of one award.
 - Minimum/maximum order limitations and past-performance eligibility thresholds are not Market Position anchors.
 - For a stated individual-award range, return the low and high values as separate evidence items with the same rangeId and rangeBound LOW or HIGH.
@@ -312,6 +313,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Never invent an incumbent, competitor, amount, staffing level, source, normalization factor, or evidence ID.
 - Read selected boxes on SF1449 visually. Merely printing WOSB/SDVOSB/8(a) on a standard form does not establish that set-aside. Extract the checked designation and NAICS from the controlling form/amendment, with a fact and evidence locator. If markings cannot be read, say Unknown rather than choosing a printed option.
 - Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
+- Mark source conflicts OPEN when clarification or an approved mapping is still required. Mark RESOLVED only when cited controlling language establishes the answer; matching checked set-aside boxes and an agreeing clause are resolved corroboration. Distinguish an abbreviated title from a different occupation. Fixed travel/ODC amounts are evaluated components, never a whole-contract evaluated-price estimate.
 - Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
 - Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
@@ -531,7 +533,7 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
   const client = new OpenAIIntelligence(undefined, undefined, fetch, 170_000);
   let draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
-  classifyNumericEvidence(draft.evidence);
+  classifyNumericEvidence(draft.evidence, draft.deal);
   draft.gaps = normalizeGaps(draft.gaps);
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
@@ -685,10 +687,26 @@ function recalculateIncomingRun(raw: any): OpportunityAnalysis {
   return enforceAuthoritativeAnalysis(raw as OpportunityAnalysis);
 }
 
-function normalizeIncomingRun(raw: any): OpportunityAnalysis {
+function normalizeIncomingRun(raw: any, allowStoredScopeMismatch=false): OpportunityAnalysis {
   const analysis = recalculateIncomingRun(raw);
+  let pricingScenario:OpportunityAnalysis['pricingScenario'];
+  if (raw.pricingScenario) {
+    const legacyUnlinked=raw.pricingScenario.scopeReconciled===false || analysis.deal.laborSignals.length && !raw.pricingScenario.inputs?.lines?.some((r:any)=>r.sourceRowId);
+    if (legacyUnlinked) {
+      pricingScenario={...calculatePricingScenario(raw.pricingScenario.inputs),scopeReconciled:false};
+      analysis.meta.warnings=[...new Set([...analysis.meta.warnings,'Saved offer scenario does not reconcile with source quantity rows. Review the prefilled Price Scenarios before using the saved offer totals.'])];
+    } else {
+      try {pricingScenario=calculateSourcePricingScenario(raw.pricingScenario.inputs,analysis);}
+      catch(error) {
+        if(!allowStoredScopeMismatch)throw error;
+        pricingScenario={...calculatePricingScenario(raw.pricingScenario.inputs),scopeReconciled:false};
+        analysis.meta.warnings=[...new Set([...analysis.meta.warnings,'Saved offer scenario no longer reconciles with the source schedule. Reprice the prefilled source rows.'])];
+      }
+    }
+  }
   return {...analysis, ptwStrategy: preserveCurrentStrategy(analysis, analysis.ptwStrategy),
-    pricingScenario: raw.pricingScenario ? calculatePricingScenario(raw.pricingScenario.inputs) : undefined};
+    validation:preserveValidation(analysis),
+    pricingScenario};
 }
 
 // A separate bounded request lets intake and strategy retry independently.
@@ -696,7 +714,7 @@ function normalizeIncomingRun(raw: any): OpportunityAnalysis {
 app.post('/api/ptw-strategy', async (req, res) => {
   try {
     if (!openAIConfigured()) return res.status(503).json({error: 'OPENAI_API_KEY is not configured for this deployment.'});
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body,true);
     analysis.ptwStrategy = await synthesizePtwStrategy(analysis);
     res.json({data: analysis});
   } catch (error) {
@@ -707,7 +725,7 @@ app.post('/api/ptw-strategy', async (req, res) => {
 app.get('/api/runs', async (req, res) => {
   try {
     const saved = await runStore.list<OpportunityAnalysis>(req.principal.workspace, 'analysis');
-    res.json({ data: saved.map((item) => ({ ...normalizeIncomingRun(item.value), storageVersion: item.version })) });
+    res.json({ data: saved.map((item) => ({ ...normalizeIncomingRun(item.value,true), storageVersion: item.version })) });
   } catch (error) {
     res.status(503).json({ error: error instanceof Error ? error.message : 'Saved analyses are unavailable.' });
   }
@@ -869,7 +887,7 @@ const displayValue = (value: number | null) => value === null ? 'Insufficient ev
 
 app.post('/api/export-brief', async (req, res) => {
   try {
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body,true);
     if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Federal Market Position';
@@ -920,12 +938,13 @@ app.post('/api/export-brief', async (req, res) => {
       priced.addRow({label:'Evaluation basis',source:scenario.inputs.evaluationBasis});
       priced.addRow({label:'Evaluation source',source:scenario.inputs.basisSource});
       priced.addRow({label:'Calculation',source:scenario.formula});
-      priced.addRow({label:'Status',source:'CONDITIONAL. Analyst-entered offer scenarios; not proof of a winning price.'});
+      priced.addRow({label:'Status',source:`CONDITIONAL. ${scenario.scopeReconciled===false?'Source quantity scope NOT RECONCILED; reprice the prefilled source rows. ':''}Analyst-entered offer scenarios; not proof of a winning price.`});
     } else if (analysis.competitivePosition?.scenarios.length) {
       const p=analysis.competitivePosition;
       p.rows.forEach(r=>priced.addRow({label:`${r.title} / ${r.period}`,quantity:r.hours,lowUnitPrice:r.lowRate*r.factor,targetUnitPrice:r.recommendedRate*r.factor,highUnitPrice:r.highRate*r.factor,source:`${r.source}; ${r.evidenceIds.join(', ')}. ${r.protectionReason}`}));
+      p.unpricedRows.forEach(r=>priced.addRow({label:`${r.title} / ${r.period}`,quantity:r.hours,source:`UNPRICED - excluded from partial subtotals. ${r.source}`}));
       p.components.forEach(c=>priced.addRow({label:c.label,quantity:1,lowUnitPrice:c.includedAmount,targetUnitPrice:c.includedAmount,highUnitPrice:c.includedAmount,source:`${c.source}. ${c.assumption}`}));
-      priced.addRow({label:'EVALUATED PLANNING TOTALS',lowUnitPrice:p.scenarios[0].total,targetUnitPrice:p.scenarios[1].total,highUnitPrice:p.scenarios[2].total,source:`${p.status}. ${p.evaluationComplete?'Evaluation basket represented':'Component validation remains open'}. Recalculable formulas: Competitive Labor / Competitive Strategies.`});
+      priced.addRow({label:p.status==='PARTIAL_MODEL'?'PARTIAL PLANNING SUBTOTALS':'EVALUATED PLANNING TOTALS',lowUnitPrice:p.scenarios[0].total,targetUnitPrice:p.scenarios[1].total,highUnitPrice:p.scenarios[2].total,source:`${p.status}. ${p.pricedHours} of ${p.totalHours} source labor hours priced. ${p.evaluationComplete?'Evaluation basket represented':'Validation remains open'}. Recalculable formulas: Competitive Labor / Competitive Strategies.`});
     } else priced.addRow({label:'No complete calculation basis',source:analysis.competitivePosition?.missing.join(' ') || 'Re-extract the quantity/rate and evaluated-basket inputs.'});
     const strategy = workbook.addWorksheet('PTW Strategy');
     strategy.columns = [{header:'Section',key:'section',width:38},{header:'Assessment',key:'assessment',width:100},{header:'Claim type',key:'kind',width:18},{header:'Evidence IDs',key:'evidence',width:36},{header:'Validation action',key:'validation',width:80}];
@@ -1038,7 +1057,7 @@ app.post('/api/export-brief', async (req, res) => {
 
 app.post('/api/export-pdf', async (req, res) => {
   try {
-    const analysis = normalizeIncomingRun(req.body);
+    const analysis = normalizeIncomingRun(req.body,true);
     if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
     const buffer = await createExecutivePdf(analysis);
     if (!buffer.length) throw new Error('PDF generator returned an empty document.');

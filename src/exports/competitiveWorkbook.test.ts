@@ -33,3 +33,18 @@ test('invalid component indirects recalculate at the disclosed zero assumption',
   assert.equal(w.getWorksheet('Evaluated Components')!.getCell('C2').value,0);
   assert.equal((w.getWorksheet('Evaluated Components')!.getCell('D2').value as ExcelJS.CellFormulaValue).result,20000);
 });
+
+test('partial workbook retains unpriced source quantities and separates subtotals from the executive target',()=>{
+  const a=pricedServicesFixture();a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-1');
+  const authoritative=enforceAuthoritativeAnalysis(a),w=new ExcelJS.Workbook();
+  w.addWorksheet('Executive Decision').columns=[{header:'Field',key:'field'},{header:'Value',key:'value'}];
+  addCompetitiveWorkbook(w,authoritative);
+  const quantities=w.getWorksheet('Quantity Coverage')!;
+  assert.equal(quantities.rowCount,98);
+  assert.equal((quantities.getCell('D98').value as ExcelJS.CellFormulaValue).result,1050240);
+  assert.equal(quantities.getCell('E2').value,'UNPRICED - EXCLUDED');
+  assert.equal(w.getWorksheet('Competitive Labor')!.rowCount,91);
+  assert.match(String(w.getWorksheet('Competitive Strategies')!.getCell('A3').value),/PARTIAL SUBTOTAL/);
+  assert.equal(w.getWorksheet('Competitive Strategies')!.getCell('E3').value,'NO');
+  assert.equal(w.getWorksheet('Executive Decision')!.getCell('B2').value,'No complete quantity/rate basis');
+});

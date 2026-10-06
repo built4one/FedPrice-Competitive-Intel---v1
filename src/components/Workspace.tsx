@@ -1,9 +1,11 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
 import DecisionCenter from './decision/DecisionCenter';
 import PricingScenarioPanel from './decision/PricingScenarioPanel';
 import { requestPtwStrategy } from '../client/ptwStrategy';
+import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
+import { comparisonReady, validationPrediction } from '../domain/ptw/validation';
 
 interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'pricing' | 'validation';
@@ -25,6 +27,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
   const [generatingStrategy, setGeneratingStrategy] = useState(false);
   const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
+  const pricing = useMemo(()=>calculateCompetitivePosition(analysis),[analysis]);
 
   const downloadExport = async (endpoint: string, extension: 'pdf' | 'xlsx') => {
     setExporting(extension === 'pdf' ? 'pdf' : 'excel');
@@ -97,7 +100,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">PTW INTELLIGENCE</span>
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">QUALITATIVE: {analysis.meta.researchStatus?.replaceAll('_',' ')}</span>
-          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${analysis.marketPosition.rangeStatus === 'SUPPORTED' ? 'bg-emerald-100 text-emerald-700' : analysis.marketPosition.rangeStatus === 'DIRECTIONAL' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>NUMERIC: {analysis.marketPosition.rangeStatus.replaceAll('_', ' ')}</span>
+          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${pricing.evaluationComplete ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>PRICING MODEL: {pricing.evaluationComplete ? 'BASKET COMPLETE' : pricing.status==='PROVISIONAL' ? 'COMPONENT VALIDATION OPEN' : pricing.status.replaceAll('_',' ')}</span>
         </div>
         <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1>
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
@@ -119,7 +122,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
 
     <div className="mt-8">
       {tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />}
-      {tab === 'pricing' && <PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} />}
+      {tab === 'pricing' && <div key={`${analysis.id}-${analysis.meta.analyzedAt}`}><PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} /></div>}
       {tab === 'deal' && <DealView analysis={analysis} />}
       {tab === 'market-evidence' && <div className="space-y-10"><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
       {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
@@ -246,7 +249,30 @@ function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) {
 }
 
 
-function EvidenceView({ evidence, gaps }: { evidence: EvidenceItem[]; gaps: OpportunityAnalysis['gaps'] }) { return <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><div className="flex items-end justify-between"><div><h2 className="text-sm font-black">Evidence ledger</h2><p className="mt-1 text-xs text-slate-400">Facts, external sources, and inference stay separate.</p></div><strong className="text-xs">{(evidence || []).length} items</strong></div><div className="mt-5 space-y-3">{(evidence || []).filter(Boolean).map((item) => <article key={item.id} className="rounded-xl border border-slate-200 p-4"><div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-400">{item.id}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-black">{item.confidence}%</span></div><p className="mt-3 text-sm font-semibold leading-6">{item.claim}</p><p className="mt-2 text-xs text-slate-400">{item.sourceLabel}{item.section ? ` · ${item.section}` : ''}</p>{item.url && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>}</article>)}</div></section><section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><div className="flex items-center gap-2"><AlertTriangle className="h-4 w-4 text-amber-700" /><h2 className="text-sm font-black text-amber-950">Decision gaps</h2></div><div className="mt-4 space-y-3">{(gaps || []).filter(Boolean).map((gap,index) => <div key={index} className="rounded-xl bg-white/80 p-4"><span className="text-[10px] font-black text-amber-700">{gap.priority}</span><h3 className="mt-1 text-sm font-black">{gap.question}</h3><p className="mt-2 text-xs leading-5 text-slate-600">{gap.impact}</p></div>)}</div></section></div>; }
+function EvidenceView({ evidence, gaps }: { evidence: EvidenceItem[]; gaps: OpportunityAnalysis['gaps'] }) {
+  const [query,setQuery]=useState('');
+  const filtered=evidence.filter(e=>`${e.id} ${e.sourceLabel} ${e.claim} ${e.section || ''}`.toLowerCase().includes(query.toLowerCase()));
+  const groups:EvidenceItem['type'][]=['SOLICITATION_FACT','EXTERNAL_SOURCE','ANALYST_INFERENCE','DATA_GAP'];
+  return <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]">
+    <section className="rounded-2xl border border-slate-200 bg-white p-5">
+      <h2 className="text-sm font-black">Evidence ledger · {evidence.length} items</h2>
+      <label className="mt-4 block text-xs font-semibold">Find a claim or source<input type="search" value={query} onChange={e=>setQuery(e.target.value)} className="mt-2 w-full rounded-lg border border-slate-200 p-3 text-sm" placeholder="Role, evidence ID, source or rule" /></label>
+      <div className="mt-4 space-y-3">{groups.map(type=>{
+        const items=filtered.filter(e=>e.type===type);
+        return items.length ? <details key={type} open={Boolean(query)} className="rounded-xl border border-slate-200">
+          <summary className="cursor-pointer p-4 text-sm font-bold">{type.replaceAll('_',' ')} · {items.length}</summary>
+          <div className="max-h-[600px] space-y-3 overflow-y-auto border-t border-slate-100 p-4">{items.map(item=><article key={item.id} className="rounded-lg bg-slate-50 p-4">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-500">{item.id}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-bold">{item.confidence}% source confidence</span></div>
+            <p className="mt-3 text-sm font-semibold leading-6">{item.claim}</p><p className="mt-2 text-xs text-slate-500">{item.sourceLabel}{item.section ? ` · ${item.section}` : ''}</p>
+            {item.excerpt && <details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold text-blue-700">Source excerpt</summary><p className="mt-2 whitespace-pre-wrap leading-5 text-slate-600">{item.excerpt}</p></details>}
+            {item.url && /^https?:\/\//i.test(item.url) && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>}
+          </article>)}</div>
+        </details> : null;
+      })}{!filtered.length && <p className="text-sm text-slate-500">No matching evidence.</p>}</div>
+    </section>
+    <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><h2 className="text-sm font-black text-amber-950">Decision gaps · {gaps.length}</h2><div className="mt-4 max-h-[650px] space-y-3 overflow-y-auto">{gaps.map((gap,index)=><details key={index} open={index<3} className="rounded-xl bg-white/80 p-4"><summary className="cursor-pointer text-sm font-bold"><span className="mr-2 text-[10px] text-amber-700">{gap.priority}</span>{gap.question}</summary><p className="mt-2 text-xs leading-5 text-slate-600">{gap.impact}</p></details>)}</div></section>
+  </div>;
+}
 
 function List({title,values}:{title:string;values:string[]}) { return <div><h3 className="text-xs font-black uppercase tracking-wide text-blue-300">{title}</h3><ul className="mt-3 space-y-2">{values.map((value,index)=><li key={index} className="text-xs leading-5 text-slate-300">• {value}</li>)}</ul></div>; }
 function EvidenceBadge({type}:{type:EvidenceItem['type']}) { const style=type==='SOLICITATION_FACT'?'bg-blue-100 text-blue-700':type==='EXTERNAL_SOURCE'?'bg-emerald-100 text-emerald-700':type==='ANALYST_INFERENCE'?'bg-amber-100 text-amber-800':'bg-slate-100 text-slate-600'; return <span className={`rounded px-2 py-1 text-[9px] font-black ${style}`}>{type?.replaceAll('_',' ')}</span>; }
@@ -332,19 +358,20 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
     if (!onUpdate) return;
     const val = Number(actualAward);
     if (!val || val <= 0) return;
-    const position = analysis.marketPosition;
-    const comparableToPrediction = comparable &&
+    const position = validationPrediction(analysis);
+    const comparableToPrediction = comparable && comparisonReady(analysis,actualValueType) &&
       position.expected !== null &&
       position.aggressive !== null &&
       position.conservative !== null;
     const snapshot = JSON.stringify({
       runId: analysis.id,
       analyzedAt: analysis.meta.analyzedAt,
-      formulaVersion: position.formulaVersion,
+      formulaVersion: position.version,
+      basis:position.basis,
       aggressive: position.aggressive,
       expected: position.expected,
       conservative: position.conservative,
-      evidenceIds: position.anchors.flatMap((anchor) => anchor.evidenceIds).sort(),
+      evidenceIds: analysis.evidence.map(e=>e.id).sort(),
     });
     const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(snapshot));
     const predictionHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -383,6 +410,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
           <div>
             <h2 className="text-sm font-black">Retrospective Validation Harness</h2>
             <p className="mt-1 text-xs text-slate-500">Freeze the prediction and compare only like-for-like award measurements.</p>
+            {!comparisonReady(analysis,actualValueType) && <p role="status" className="mt-2 text-xs text-amber-800">Comparison is unavailable while the evaluated basket is incomplete or the actual is a ceiling/obligation. You can record actuals; partial subtotals will not be scored as a full-price prediction.</p>}
           </div>
           {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">FROZEN & RECORDED</span>}
         </div>
@@ -406,8 +434,8 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
                </select>
              </div>
              <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
-               <input type="checkbox" checked={comparable} onChange={e => setComparable(e.target.checked)} disabled={!!analysis.validation} className="mt-1" />
-               I verified that this actual value covers the same scope, period, and measurement basis as the predicted Market Position.
+               <input type="checkbox" checked={comparable && comparisonReady(analysis,actualValueType)} onChange={e => setComparable(e.target.checked)} disabled={!!analysis.validation || !comparisonReady(analysis,actualValueType)} className="mt-1" />
+               I verified that this actual value covers the same scope, period, and measurement basis as the {validationPrediction(analysis).basis.toLowerCase()}.
              </label>
              <div>
                <label className="block text-[10px] font-black uppercase text-slate-400">Winning Vendor (Optional)</label>
@@ -419,7 +447,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
              </div>
              {!analysis.validation && (
                <button onClick={runValidation} className="mt-2 w-full rounded bg-[#10243e] py-2.5 text-xs font-black text-white hover:bg-slate-800">
-                 FREEZE & RECORD COMPARISON
+                 {comparisonReady(analysis,actualValueType)?'FREEZE & RECORD COMPARISON':'RECORD ACTUAL · COMPARISON UNAVAILABLE'}
                </button>
              )}
           </div>

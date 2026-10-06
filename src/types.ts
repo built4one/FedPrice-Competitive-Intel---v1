@@ -29,6 +29,7 @@ export type NumericValueType =
 export type NumericUnits = 'TOTAL_USD' | 'USD_PER_HOUR' | 'PERCENT' | 'OTHER';
 export type NumericValueBasis =
   | 'OPPORTUNITY_TOTAL'
+  | 'EVALUATED_COMPONENT'
   | 'INDIVIDUAL_AWARD'
   | 'PROGRAM_TOTAL'
   | 'MULTIPLE_AWARD_POOL'
@@ -65,7 +66,7 @@ export interface EvaluationPricing {
   extensionRateRule: 'FINAL_OPTION_RATES' | 'ESCALATE' | 'UNKNOWN' | 'NOT_APPLICABLE';
   extensionSource?: string; rateBaseYear?: number;
 }
-export interface SourceConflict { topic: string; descriptions: string[]; sources: string[]; resolution: string; }
+export interface SourceConflict { topic: string; descriptions: string[]; sources: string[]; resolution: string; status?: 'OPEN' | 'RESOLVED'; }
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
 
 export interface NumericEvidence {
@@ -102,6 +103,8 @@ export interface NumericEvidence {
   clearanceRequired?: boolean;
   laborMatchScore?: number;
   benchmarkFamily?: string;
+  /** Original requested role whose source records passed the adapter's grade and qualification filters. */
+  validatedBenchmarkRole?: string;
   qualificationFit?: 'FILTERED_PROXY' | 'UNVALIDATED';
   rateDistribution?: number[];
   rateSampleFingerprint?: string;

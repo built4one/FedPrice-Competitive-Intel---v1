@@ -1,6 +1,7 @@
 import type ExcelJS from 'exceljs';
 import type { OpportunityAnalysis } from '../types';
 import { buildLaborModel } from '../domain/ptw/laborModel';
+import { sourceConflictStatus } from '../domain/sourceConsistency';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
@@ -19,10 +20,19 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
     {label:'Evaluation basket complete',value:p.evaluationComplete?'YES':'NO',source:analysis.deal.evaluationPricing?.source || 'Re-extraction required'},
     {label:'Extension rate rule',value:analysis.deal.evaluationPricing?.extensionRateRule || 'UNKNOWN',source:analysis.deal.evaluationPricing?.extensionSource || 'Validation required'},
     {label:'Recommendation status',value:p.status,source:p.rangeMeaning},
+    {label:'Total source labor hours',value:p.totalHours,source:'All validated extracted quantity rows, including unpriced rows'},
+    {label:'Priced labor hours',value:p.pricedHours,source:'Only rows with a relevant public rate proxy'},
+    {label:'Unpriced labor hours',value:p.totalHours-p.pricedHours,source:'Excluded from every partial subtotal'},
   ]);
   inputs.getCell('B2').numFmt='0.0%';
   p.assumptions.forEach(source=>inputs.addRow({label:'Planning assumption',source}));
   p.missing.forEach(source=>inputs.addRow({label:'Unresolved input',source}));
+
+  const quantities=workbook.addWorksheet('Quantity Coverage');
+  quantities.columns=[{header:'Row ID',key:'id',width:18},{header:'Source labor category',key:'title',width:42},{header:'Period',key:'period',width:30},{header:'Evaluated hours',key:'hours',width:24},{header:'Pricing status',key:'status',width:24},{header:'Quantity locator',key:'source',width:90}];
+  const pricedIds=new Set(p.rows.map(r=>r.id));
+  model.quantityRows.forEach(r=>quantities.addRow({...r,status:pricedIds.has(r.id)?'PRICED':'UNPRICED - EXCLUDED'}));
+  quantities.addRow({title:'TOTAL SOURCE HOURS',hours:{formula:model.quantityRows.length ? `SUM(D2:D${quantities.rowCount})` : '0',result:p.totalHours},status:p.quantityComplete?'QUANTITIES COMPLETE':'QUANTITY VALIDATION OPEN'});
 
   const distributions=workbook.addWorksheet('Rate Distribution');
   distributions.columns=[{header:'Evidence ID',key:'id',width:30},{header:'Sample index',key:'index',width:16},{header:'Loaded rate / hour',key:'rate',width:24}];
@@ -57,7 +67,7 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   const strategies=workbook.addWorksheet('Competitive Strategies');
   strategies.columns=[{header:'Strategy',key:'label',width:30},{header:'Labor USD',key:'labor',width:26},{header:'Other evaluated USD',key:'other',width:26},{header:'Total USD',key:'total',width:28},{header:'Selected',key:'selected',width:16},{header:'Decision rationale',key:'rationale',width:100},{header:'Conditions / interpretation',key:'condition',width:100}];
   const end=labor.rowCount,lastComponent=components.rowCount;
-  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i];strategies.addRow({label:s.label,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${p.evaluationComplete?'Basket represented':'Component validation open'}. ${s.condition}`});});
+  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i];strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
   const decision=workbook.getWorksheet('Executive Decision')!;
   decision.addRows([
     {field:'Selected provisional PTW target',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},
@@ -66,6 +76,8 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
     {field:'Range meaning',value:p.rangeMeaning},
     {field:'Competitive recommendation status',value:p.status},
     {field:'Evaluated basket complete',value:p.evaluationComplete?'YES':'NO - see unresolved inputs'},
+    {field:'Priced / source labor hours',value:`${p.pricedHours} / ${p.totalHours}`},
+    {field:'Unpriced source rows',value:p.unpricedRows.length},
     ...Object.entries(p.confidence).map(([key,value])=>({field:`${key} confidence`,value})),
     {field:'Decision request',value:p.decisionRequest},
     {field:'Competitive rationale',value:p.rationale},
@@ -77,7 +89,7 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   p.sensitivities.forEach(s=>sensitivities.addRow({category:'Sensitivity',label:s.label,change:s.change,delta:s.delta,reason:s.rationale}));
   p.actions.forEach(a=>sensitivities.addRow({category:'Validation action',label:a.owner,change:a.action,reason:a.consequence}));
   p.missing.forEach(change=>sensitivities.addRow({category:'Unresolved input',change}));
-  analysis.deal.sourceConflicts?.forEach(c=>sensitivities.addRow({category:'Source conflict',label:c.topic,change:c.descriptions.join(' versus '),reason:`${c.resolution} ${c.sources.join('; ')}`}));
+  analysis.deal.sourceConflicts?.forEach(c=>sensitivities.addRow({category:sourceConflictStatus(c,analysis.deal)==='RESOLVED'?'Resolved source agreement':'Open source conflict',label:c.topic,change:c.descriptions.join(' versus '),reason:`${c.resolution} ${c.sources.join('; ')}`}));
   const sources=workbook.addWorksheet('Source Snapshots');
   sources.columns=[{header:'Snapshot / evidence',key:'id',width:35},{header:'Retrieved / as of',key:'date',width:30},{header:'Locator / fingerprint',key:'source',width:110},{header:'Limitation',key:'limitation',width:100}];
   sources.addRow({id:'Analysis cutoff',date:analysis.meta.analyzedAt,source:analysis.id,limitation:'Live analysis timestamp; not a certified historical pre-award evidence cutoff.'});

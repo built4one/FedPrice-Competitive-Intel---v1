@@ -1,10 +1,11 @@
 import type { ConfidenceLevel, EvaluatedPriceComponent, OpportunityAnalysis } from '../../types';
-import { buildLaborModel, dollars, laborTotal, type LaborCalculationRow } from './laborModel';
+import { buildLaborModel, dollars, laborTotal, type LaborCalculationRow, type LaborQuantityRow } from './laborModel';
+import { sourceConflictStatus } from '../sourceConsistency';
 
-export const COMPETITIVE_POSITION_VERSION = 'competitive-position-1.0.0';
+export const COMPETITIVE_POSITION_VERSION = 'competitive-position-1.1.0';
 export interface CompetitiveScenario {
   id: 'AGGRESSIVE' | 'RECOMMENDED' | 'DEFENSIVE'; label: string; labor: number; nonLabor: number;
-  total: number; selected: boolean; rationale: string; condition: string;
+  total: number; selected: boolean; rationale: string; condition: string; basis: 'PARTIAL_SUBTOTAL' | 'MODELED_BASKET';
 }
 export interface PricedLaborRow extends LaborCalculationRow {
   recommendedRate: number; protectionReason: string; low: number; target: number; high: number;
@@ -20,6 +21,7 @@ export interface CompetitivePosition {
   scenarios: CompetitiveScenario[]; missing: string[]; assumptions: string[];
   confidence: {quantities:ConfidenceLevel;rateRelevance:ConfidenceLevel;competition:ConfidenceLevel;execution:'NOT_ASSESSED';overall:ConfidenceLevel};
   sensitivities: PriceSensitivity[]; actions: DecisionAction[]; ceilingExplanation: string;
+  unpricedRows: LaborQuantityRow[]; totalHours: number; pricedHours: number; quantityComplete: boolean;
 }
 
 function isPriceOrdered(analysis: Pick<OpportunityAnalysis,'deal'|'evidence'>) {
@@ -45,7 +47,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const priceOrderFirst = isPriceOrdered(analysis);
   const missing = [...model.missing];
   if(model.rows.some(r=>r.assumedHours)) missing.push('Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.');
-  analysis.deal.sourceConflicts?.forEach(c=>missing.push(`Resolve ${c.topic}: ${c.descriptions.join(' versus ')}. ${c.resolution}`));
+  analysis.deal.sourceConflicts?.filter(c=>sourceConflictStatus(c,analysis.deal)==='OPEN').forEach(c=>missing.push(`Resolve ${c.topic}: ${c.descriptions.join(' versus ')}. ${c.resolution}`));
   const assumptions = [...model.assumptions,
     'All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.',
     'No public lower-quartile rate establishes an executable staffing floor or a competitor bid.',
@@ -86,12 +88,18 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const aggressive = laborTotal(rows,'lowRate'), defensive = laborTotal(rows,'highRate');
   const central = dollars(rows.reduce((a,r)=>a+r.hours*r.recommendedRate*r.factor,0));
   const hasBasis = model.complete;
+  const lowerRoles = new Set(rows.filter(r=>r.recommendedRate!==r.medianRate).map(r=>r.title));
+  const medianRoles = new Set(rows.filter(r=>r.recommendedRate===r.medianRate).map(r=>r.title));
+  const selectionRationale = lowerRoles.size
+    ? `Apply lower-quartile rates to ${lowerRoles.size} role(s) and median rates to ${medianRoles.size} role(s), based on the documented protection choices.`
+    : `Every priced role uses its public median. No lower-quartile reduction is applied${priceOrderFirst ? ' because each role currently requires rate protection' : ''}.`;
+  const basis = hasBasis ? 'MODELED_BASKET' as const : 'PARTIAL_SUBTOTAL' as const;
   const evaluationComplete = hasBasis && pricing?.completeness === 'COMPLETE' && !missing.length;
   const target = hasBasis ? dollars(central+nonLabor) : null;
   const scenarios: CompetitiveScenario[] = rows.length ? [
-    {id:'AGGRESSIVE',label:'Aggressive',labor:aggressive,nonLabor,total:dollars(aggressive+nonLabor),selected:false,rationale:'Lower-quartile role rates test the lowest public-rate planning posture.',condition:'Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor.'},
-    {id:'RECOMMENDED',label:'Recommended',labor:central,nonLabor,total:dollars(central+nonLabor),selected:true,rationale:priceOrderFirst ? 'Apply lower-quartile pressure to better-supported roles; protect senior, specialist and weakly mapped roles at median rates.' : 'Use median role economics until quantified source-selection benefits or competitor evidence supports another position.',condition:'Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target.'},
-    {id:'DEFENSIVE',label:'Defensive stress case',labor:defensive,nonLabor,total:dollars(defensive+nonLabor),selected:false,rationale:'Upper-quartile role rates test higher labor-price exposure.',condition:priceOrderFirst ? 'Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves.' : 'A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay.'},
+    {id:'AGGRESSIVE',label:'Aggressive',labor:aggressive,nonLabor,total:dollars(aggressive+nonLabor),selected:false,basis,rationale:'Lower-quartile role rates test the lowest public-rate planning posture.',condition:'Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor.'},
+    {id:'RECOMMENDED',label:hasBasis?'Recommended':'Working median / protected case',labor:central,nonLabor,total:dollars(central+nonLabor),selected:hasBasis,basis,rationale:selectionRationale,condition:'Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target.'},
+    {id:'DEFENSIVE',label:'Defensive stress case',labor:defensive,nonLabor,total:dollars(defensive+nonLabor),selected:false,basis,rationale:'Upper-quartile role rates test higher labor-price exposure.',condition:priceOrderFirst ? 'Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves.' : 'A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay.'},
   ] : [];
   const shift = dollars(rows.reduce((a,r)=>a+r.hours*r.factor,0));
   const byRole = [...new Set(rows.map(r=>r.title))].map(title=>({title,delta:dollars(rows.filter(r=>r.title===title).reduce((a,r)=>a+r.hours*r.factor*10,0))})).sort((a,b)=>b.delta-a.delta);
@@ -117,6 +125,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     rationale:priceOrderFirst ? 'Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage.' : 'Recommend a provisional market-aligned position. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.',
     decisionRequest:target == null ? 'Resolve the missing quantity/rate basis; use the priced rows as partial working material.' : 'Adopt the selected provisional market planning target, subject to the listed validation actions. This is not company bid approval or a prediction of the winning price.',
     rows,components,scenarios,missing:[...new Set(missing)],assumptions:[...new Set(assumptions)],
-    confidence:{quantities:model.complete && rows.every(r=>!r.assumedHours && !r.source.includes('needs validation')) ? 'HIGH' : 'LOW',rateRelevance:rows.some(r=>r.proxy || r.sampleSize<5 || !r.qualification || r.evidenceIds.some(id=>analysis.evidence.find(e=>e.id===id)?.numeric?.qualificationFit==='UNVALIDATED')) ? 'LOW' : 'MEDIUM',competition:'LOW',execution:'NOT_ASSESSED',overall:'LOW'},
+    unpricedRows:model.quantityRows.filter(r=>!rows.some(priced=>priced.id===r.id)),totalHours:model.totalHours,pricedHours:model.pricedHours,quantityComplete:model.quantityComplete,
+    confidence:{quantities:model.quantityComplete && model.quantityRows.every(r=>!r.source.includes('needs validation')) ? 'HIGH' : 'LOW',rateRelevance:!hasBasis || rows.some(r=>r.proxy || r.sampleSize<5 || !r.qualification || r.evidenceIds.some(id=>analysis.evidence.find(e=>e.id===id)?.numeric?.qualificationFit==='UNVALIDATED')) ? 'LOW' : 'MEDIUM',competition:'LOW',execution:'NOT_ASSESSED',overall:'LOW'},
     sensitivities,actions,ceilingExplanation};
 }

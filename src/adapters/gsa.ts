@@ -89,7 +89,7 @@ export async function queryGsaCalc(laborSignals: LaborSignal[]): Promise<Adapter
         scopeText: signal.title, sourceDate: retrievedAt.slice(0,10), matchedLaborCategory: signal.title,
         lowerRate: quantile(rates,0.25), upperRate: quantile(rates,0.75), rateSampleSize: matches.length,
         rateSampleComplete: result.complete, clearanceRequired: result.clearance, laborMatchScore: proxyUsed ? 0.60 : 0.85,
-        benchmarkFamily: mappedFamily, qualificationFit: 'UNVALIDATED',
+        benchmarkFamily: mappedFamily, validatedBenchmarkRole: requestedRole, qualificationFit: 'UNVALIDATED',
         rateDistribution: rates, rateSampleFingerprint:createHash('sha256').update(JSON.stringify(matches)).digest('hex'),
         rateRecords: matches.slice(0,40).map(r => ({id:String(r.id),category:r.labor_category,vendor:r.vendor_name || '',contract:r.idv_piid || '',rate:Number(r.current_price),experience:r.min_years_experience == null ? undefined : Number(r.min_years_experience),education:r.education_level || undefined,worksite:r.worksite || undefined,clearance:String(r.security_clearance ?? 'unknown')})),
         technologySecurityLocation: `${proxyUsed ? `Provisional ${mappedFamily} family mapping; validate qualifications. ` : ''}${result.clearance ? 'Clearance required; exact level and worksite must be validated.' : 'Clearance and worksite not constrained.'}`,

@@ -56,6 +56,14 @@ export function benchmarkRole(signal: LaborSignal) {
   return signal.pwsTitle || signal.title;
 }
 
+export function roleMappingIssue(signal: LaborSignal): string | undefined {
+  const text = `${signal.title} ${signal.pwsTitle || ''} ${signal.titleConflict || ''}`;
+  if (signal.titleConflict && /personnel security|background investigations?/i.test(text)
+    && /cyber|infrastructure security|information security/i.test(text))
+    return 'Personnel/background-investigation security and cybersecurity are different occupations. Resolve the conflicting source role before selecting a rate proxy.';
+  return undefined;
+}
+
 export function qualificationMatch(signal: LaborSignal, record: {min_years_experience?: string | number | null; worksite?: string | null; education_level?: string | null;}) {
   const years = Number(record.min_years_experience);
   if (signal.minExperienceYears != null && record.min_years_experience != null && Number.isFinite(years)
