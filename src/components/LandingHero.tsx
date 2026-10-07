@@ -4,7 +4,7 @@ export default function LandingHero({ runCount, onStart, onOpenRuns }: Props) {
   const stages = [
     ['01', 'Solicitation facts', 'Extract scope, evaluation, staffing, and pricing signals.'],
     ['02', 'Market intelligence', 'Map competitors, incumbent posture, public evidence, and gaps.'],
-    ['03', 'Decision Center', 'Produce the evidence-weighted range, readiness, drivers, and methodology.'],
+    ['03', 'Decision Center', 'Produce the evidence-weighted range, recommendation confidence, drivers, and methodology.'],
   ];
   return <div>
     <section className="relative overflow-hidden bg-[#0a182b] text-white">
@@ -18,6 +18,6 @@ export default function LandingHero({ runCount, onStart, onOpenRuns }: Props) {
         <div className="self-end rounded-2xl border border-white/10 bg-white/[.06] p-5 shadow-2xl backdrop-blur"><div className="mb-5 flex items-center justify-between"><span className="text-xs font-bold uppercase tracking-[.16em] text-slate-400">Golden path</span><span className="rounded-full bg-emerald-400/10 px-2 py-1 text-[10px] font-bold text-emerald-300">MARKET-FIRST</span></div><div className="space-y-3">{stages.map(([number, title, description]) => <div key={number} className="grid grid-cols-[34px_1fr] gap-3 rounded-xl border border-white/10 bg-slate-950/20 p-3"><span className="font-mono text-xs font-bold text-blue-300">{number}</span><span><strong className="block text-sm">{title}</strong><span className="mt-1 block text-xs leading-5 text-slate-400">{description}</span></span></div>)}</div></div>
       </div>
     </section>
-    <section className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[[FileSearch,'Solicitation-grounded'],[Database,'Evidence ledger'],[Gauge,'Evidence readiness'],[Layers3,'Deterministic scenarios']].map(([Icon,label]) => { const C=Icon as typeof FileSearch; return <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><C className="h-5 w-5 text-blue-600" /><p className="mt-4 text-sm font-black">{String(label)}</p></div>; })}</div></section>
+    <section className="mx-auto max-w-7xl px-4 py-12 sm:px-6 lg:px-8"><div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">{[[FileSearch,'Solicitation-grounded'],[Database,'Evidence ledger'],[Gauge,'Evidence recommendation confidence'],[Layers3,'Deterministic scenarios']].map(([Icon,label]) => { const C=Icon as typeof FileSearch; return <div key={String(label)} className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm"><C className="h-5 w-5 text-blue-600" /><p className="mt-4 text-sm font-black">{String(label)}</p></div>; })}</div></section>
   </div>;
 }

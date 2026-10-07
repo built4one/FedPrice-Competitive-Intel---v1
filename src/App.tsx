@@ -25,6 +25,8 @@ export default function App() {
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [notice, setNotice] = useState('');
   const [view, setView] = useState<View>('home');
+  const [example,setExample]=useState<OpportunityAnalysis|null>(null);
+  const [examples,setExamples]=useState<Array<{id:string;title:string;automatedPass:boolean}>>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -45,8 +47,10 @@ export default function App() {
     }).catch((error) => setNotice(error.message)).finally(() => setLoadingRuns(false));
   }, [session?.user?.username, session?.user?.workspace]);
 
-  const selected = useMemo(() => runs.find((run) => run?.id === selectedId), [runs, selectedId]);
-  const openRun = (id: string) => { setSelectedId(id); setView('workspace'); };
+  useEffect(()=>{fetch('/validation/index.json').then(r=>r.ok?r.json():[]).then(v=>setExamples(Array.isArray(v)?v.filter(x=>x.automatedPass):[])).catch(()=>{});},[]);
+  const openExample=async(id:string)=>{try{const r=await fetch(`/validation/${id}.json`);if(!r.ok)throw new Error('Example unavailable');setExample(await r.json());setView('workspace');}catch(e){setNotice('The recorded test case could not be opened.');}};
+  const selected = useMemo(() => example || runs.find((run) => run?.id === selectedId), [runs, selectedId,example]);
+  const openRun = (id: string) => { setExample(null); setSelectedId(id); setView('workspace'); };
 
   const saveRun = async (run: OpportunityAnalysis) => {
     const response = await fetch('/api/runs', {
@@ -135,7 +139,7 @@ export default function App() {
     {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}</div>}
     <main>
       {loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
-        {view === 'home' && <LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />}
+        {view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-teal-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{e.title}</button>)}</div></details></section>}</>}
         {view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />}
         {view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />}
         {view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />}

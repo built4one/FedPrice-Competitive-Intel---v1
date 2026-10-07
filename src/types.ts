@@ -60,11 +60,20 @@ export interface EvaluatedPriceComponent {
   indirectPct?: number; indirectTreatment: 'NOT_ALLOWED' | 'KNOWN' | 'UNKNOWN';
   feeAllowed: boolean;
 }
+/** Separate assumptions are never promoted to sourced numeric evidence. */
+export interface PlanningInput {
+  id: string; label: string; kind: 'LABOR_RATE' | 'UNIT_PRICE' | 'TOTAL';
+  quantity: number; unit: string; quantitySource: string;
+  low: number; central: number; high: number;
+  basis: 'DOCUMENTED' | 'ANALOGY' | 'PLANNING_ASSUMPTION';
+  rationale: string; evidenceIds: string[]; lowerCondition: string; upperCondition: string;
+}
 export interface EvaluationPricing {
   basis: string; source: string; completeness: 'COMPLETE' | 'PARTIAL';
   components: EvaluatedPriceComponent[];
   extensionRateRule: 'FINAL_OPTION_RATES' | 'ESCALATE' | 'UNKNOWN' | 'NOT_APPLICABLE';
   extensionSource?: string; rateBaseYear?: number;
+  unitLines?: Array<{id:string;label:string;quantity:number;unit:string;source:string}>;
 }
 export interface SourceConflict { topic: string; descriptions: string[]; sources: string[]; resolution: string; status?: 'OPEN' | 'RESOLVED'; }
 export interface PricingSignal { signal: string; implication: string; section?: string; confidence: number; }
@@ -131,7 +140,7 @@ export interface EvidenceItem {
 export interface DataGap { question: string; impact: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; }
 
 export interface EvaluationScheme {
-  method: 'LPTA' | 'TRADE_OFF' | 'HIGHEST_TECH_RATED' | 'UNKNOWN';
+  method: 'SEALED_BID' | 'LPTA' | 'TRADE_OFF' | 'HIGHEST_TECH_RATED' | 'UNKNOWN';
   priceWeight: 'DOMINANT' | 'SIGNIFICANT' | 'EQUAL' | 'LOW' | 'NONE' | 'UNKNOWN';
   far522178Included: boolean;
   unbalancedPricingChecked: boolean;
@@ -166,6 +175,7 @@ export interface DealProfile {
   pricingSignals: PricingSignal[];
   evaluationPricing?: EvaluationPricing;
   sourceConflicts?: SourceConflict[];
+  planningInputs?: PlanningInput[];
 }
 
 export interface RecommendationDriver {

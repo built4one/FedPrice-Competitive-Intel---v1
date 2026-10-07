@@ -51,12 +51,12 @@ test('the rationale describes an all-median protected case when no role receives
   const a=pricedServicesFixture();a.deal.laborSignals.forEach(s=>s.minExperienceYears=8);
   const p=calculateCompetitivePosition(a);
   assert.ok(p.rows.every(r=>r.protectionReason !== 'Role is unprotected; assume aggressive market posture.'));
-  assert.match(p.scenarios[1].rationale,/Every priced role uses its expected market posture/);
+  assert.match(p.scenarios[1].rationale,/Protect median economics/);
 });
 
 test('prefilled offers retain the full schedule, allow rate edits, and reject missing quantities or prices',()=>{
   const a=pricedServicesFixture();
-  a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-1');
+  a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-2');
   const draft=pricingDraft(a);
   assert.equal(draft.lines.length,97);assert.equal(draft.lines.filter(r=>r.targetUnitPrice==='').length,6);
   const inputs={...draft,completenessConfirmed:true,lines:draft.lines.map(r=>({...r,quantity:Number(r.quantity),lowUnitPrice:Number(r.lowUnitPrice || 100),targetUnitPrice:Number(r.targetUnitPrice || 150),highUnitPrice:Number(r.highUnitPrice || 200)}))};
@@ -88,6 +88,6 @@ test('partial labor totals and ceiling actuals cannot enter a scored full-price 
   const a=pricedServicesFixture();assert.equal(comparisonReady(a,'EVALUATED_PRICE'),true);assert.equal(comparisonReady(a,'CONTRACT_CEILING'),false);
   const p=a.competitivePosition!;
   a.validation={frozenAt:a.meta.analyzedAt,predictionHash:'synthetic',predictedExpected:p.target,predictedAggressive:p.rangeLow,predictedConservative:p.rangeHigh,actualValue:p.target!,actualValueType:'EVALUATED_PRICE',comparableToPrediction:true,actualAwardee:'',inRange:true,expectedErrorPct:0,retrospectiveNotes:''};
-  a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-1');
+  a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-2');
   assert.equal(comparisonReady(a,'EVALUATED_PRICE'),false);assert.equal(preserveValidation(a)!.comparableToPrediction,false);assert.equal(preserveValidation(a)!.inRange,null);
 });

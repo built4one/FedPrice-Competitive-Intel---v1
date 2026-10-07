@@ -52,10 +52,10 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
     n.rateRecords?.forEach(r=>records.addRow({evidence:e.id,...r}));
   }
   const labor=workbook.addWorksheet('Competitive Labor');
-  labor.columns=[{header:'Row ID',key:'id',width:16},{header:'Labor category',key:'title',width:38},{header:'Period',key:'period',width:27},{header:'Total evaluated hours',key:'hours',width:24},{header:'Lower loaded rate',key:'lowRate',width:22},{header:'Median loaded rate',key:'medianRate',width:22},{header:'Upper loaded rate',key:'highRate',width:22},{header:'Selected loaded rate',key:'selectedRate',width:22},{header:'Escalation factor',key:'factor',width:22},{header:'Aggressive labor',key:'low',width:24},{header:'Recommended labor',key:'target',width:24},{header:'Defensive labor',key:'high',width:24},{header:'Rate-protection reason',key:'reason',width:100},{header:'Quantity source',key:'source',width:85},{header:'Rate evidence IDs',key:'evidence',width:40},{header:'Qualification / mapping limitation',key:'limitation',width:100},{header:'Protect median: 1 / lower: 0',key:'protect',width:30}];
+  labor.columns=[{header:'Row ID',key:'id',width:16},{header:'Labor category',key:'title',width:38},{header:'Period',key:'period',width:27},{header:'Total evaluated hours',key:'hours',width:24},{header:'Lower loaded rate',key:'lowRate',width:22},{header:'Median loaded rate',key:'medianRate',width:22},{header:'Upper loaded rate',key:'highRate',width:22},{header:'Selected loaded rate',key:'selectedRate',width:22},{header:'Escalation factor',key:'factor',width:22},{header:'Aggressive labor',key:'low',width:24},{header:'Recommended labor',key:'target',width:24},{header:'Defensive labor',key:'high',width:24},{header:'Rate-protection reason',key:'reason',width:100},{header:'Quantity source',key:'source',width:85},{header:'Rate evidence IDs',key:'evidence',width:40},{header:'Qualification / mapping limitation',key:'limitation',width:100},{header:'Selected basis: median 1 / lower 0',key:'protect',width:30}];
   p.rows.forEach(r=>{
     const index=labor.rowCount+1;
-    const rate=(column:string,result:number)=>{const refs=r.evidenceIds.map(id=>statRows.get(id)).filter((v):v is number=>v!=null).map(n=>`'Rate Statistics'!${column}${n}`);return refs.length ? {formula:`MEDIAN(${refs.join(',')})`,result} : result;};
+    const rate=(column:string,result:number)=>{if(r.assumedRate)return result;const refs=r.evidenceIds.map(id=>statRows.get(id)).filter((v):v is number=>v!=null).map(n=>`'Rate Statistics'!${column}${n}`);return refs.length ? {formula:`MEDIAN(${refs.join(',')})`,result} : result;};
     const factorFormula=r.rateYearWeights.map(w=>`${w.weight}*(1+'Pricing Inputs'!$B$2)^${w.year}`).join('+');
     labor.addRow({id:r.id,title:r.title,period:r.period,hours:r.hours,lowRate:rate('C',r.lowRate),medianRate:rate('D',r.medianRate),highRate:rate('E',r.highRate),
       selectedRate:{formula:`IF(Q${index}=1,F${index},E${index})`,result:r.recommendedRate},
@@ -63,20 +63,22 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
       low:{formula:`ROUND(D${index}*E${index}*I${index},2)`,result:r.low},
       target:{formula:`ROUND(D${index}*H${index}*I${index},2)`,result:r.target},
       high:{formula:`ROUND(D${index}*G${index}*I${index},2)`,result:r.high},
-      reason:r.protectionReason,source:r.source,evidence:r.evidenceIds.join(', '),limitation:`${r.qualification} ${r.rateLimitation}`,protect:r.protectionReason.includes('unprotected')?0:1});
+      reason:r.protectionReason,source:r.source,evidence:r.evidenceIds.join(', '),limitation:`${r.qualification} ${r.rateLimitation}`,protect:r.recommendedRate===r.lowRate?0:1});
   });
   const components=workbook.addWorksheet('Evaluated Components');
-  components.columns=[{header:'Evaluated component',key:'label',width:40},{header:'Specified USD',key:'amount',width:24},{header:'Indirect fraction',key:'indirect',width:23},{header:'Included USD',key:'total',width:24},{header:'Treatment / assumption',key:'treatment',width:100},{header:'Source locator',key:'source',width:80},{header:'Evidence IDs',key:'evidence',width:40}];
-  p.components.forEach(c=>{const row=components.rowCount+1;const indirect=c.indirectTreatment==='KNOWN' && c.indirectPct!=null && Number.isFinite(c.indirectPct) && c.indirectPct>=0 && c.indirectPct<=100 ? c.indirectPct/100 : 0;components.addRow({label:c.label,amount:c.amount,indirect,total:{formula:`ROUND(B${row}*(1+C${row}),2)`,result:c.includedAmount},treatment:c.assumption || `${c.indirectTreatment}; fee ${c.feeAllowed?'requires validation':'not added'}`,source:c.source,evidence:c.evidenceIds.join(', ')});});
+  components.columns=[{header:'Evaluated component',key:'label',width:40},{header:'Specified USD',key:'amount',width:24},{header:'Indirect fraction',key:'indirect',width:23},{header:'Included USD',key:'total',width:24},{header:'Treatment / assumption',key:'treatment',width:100},{header:'Source locator',key:'source',width:80},{header:'Evidence IDs',key:'evidence',width:40},{header:'Lower component USD',key:'low',width:25},{header:'Upper component USD',key:'high',width:25}];
+  p.components.forEach(c=>{const row=components.rowCount+1;const indirect=c.indirectTreatment==='KNOWN' && c.indirectPct!=null && Number.isFinite(c.indirectPct) && c.indirectPct>=0 && c.indirectPct<=100 ? c.indirectPct/100 : 0;const assumptionIndex=p.planningRows.findIndex(p=>p.id===c.id);const ar=assumptionIndex+2;const unit=assumptionIndex>=0 && p.planningRows[assumptionIndex].kind!=='LABOR_RATE';components.addRow({label:c.label,amount:unit?{formula:`ROUND('Bounded Assumptions'!C${ar}*'Bounded Assumptions'!F${ar},2)`,result:c.amount}:c.amount,indirect,total:{formula:`ROUND(B${row}*(1+C${row}),2)`,result:c.includedAmount},low:unit?{formula:`ROUND('Bounded Assumptions'!C${ar}*'Bounded Assumptions'!E${ar},2)`,result:c.lowAmount}:c.lowAmount??c.includedAmount,high:unit?{formula:`ROUND('Bounded Assumptions'!C${ar}*'Bounded Assumptions'!G${ar},2)`,result:c.highAmount}:c.highAmount??c.includedAmount,treatment:c.assumption || `${c.indirectTreatment}; fee ${c.feeAllowed?'requires validation':'not added'}`,source:c.source,evidence:c.evidenceIds.join(', ')});});
   const strategies=workbook.addWorksheet('Competitive Strategies');
   strategies.columns=[{header:'Strategy',key:'label',width:30},{header:'Labor USD',key:'labor',width:26},{header:'Other evaluated USD',key:'other',width:26},{header:'Total USD',key:'total',width:28},{header:'Selected',key:'selected',width:16},{header:'Decision rationale',key:'rationale',width:100},{header:'Conditions / interpretation',key:'condition',width:100}];
+  // Whole-value evidence is an alternate basis, never added to a bottom-up basket.
+  if(!p.rows.length && !p.components.length && p.target!=null)components.addRow({label:'Qualified whole-basket reference',amount:p.target,indirect:0,total:p.target,low:p.rangeLow,high:p.rangeHigh,treatment:p.assumptions.join(' '),source:analysis.deal.evaluationPricing?.source});
   const end=labor.rowCount,lastComponent=components.rowCount;
-  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i];strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!D2:D${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
+  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i],componentColumn=['H','D','I'][i];strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!${componentColumn}2:${componentColumn}${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
   const decision=workbook.getWorksheet('Executive Decision')!;
   decision.addRows([
-    {field:'Selected provisional PTW target',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},
-    {field:'Planning scenario lower',value:p.rangeLow == null ? 'Not established' : {formula:"'Competitive Strategies'!D2",result:p.rangeLow}},
-    {field:'Planning scenario upper',value:p.rangeHigh == null ? 'Not established' : {formula:"'Competitive Strategies'!D4",result:p.rangeHigh}},
+    {field:'Recommended PTW',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},
+    {field:'Competitive corridor lower',value:p.rangeLow == null ? 'Not established' : {formula:"'Competitive Strategies'!D2",result:p.rangeLow}},
+    {field:'Competitive corridor upper',value:p.rangeHigh == null ? 'Not established' : {formula:"'Competitive Strategies'!D4",result:p.rangeHigh}},
     {field:'Range meaning',value:p.rangeMeaning},
     {field:'Competitive recommendation status',value:p.status},
     {field:'Evaluated basket complete',value:p.evaluationComplete?'YES':'NO - see unresolved inputs'},
@@ -85,9 +87,18 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
     ...Object.entries(p.confidence).map(([key,value])=>({field:`${key} confidence`,value})),
     {field:'Decision request',value:p.decisionRequest},
     {field:'Competitive rationale',value:p.rationale},
+    {field:'Recommendation Confidence',value:p.confidenceLabel},
+    {field:'How to use this recommendation',value:p.confidenceReason},
+    {field:'Price based on assumptions',value:`${Math.round(p.assumptionShare*100)}%`},
     {field:'Ceiling interpretation',value:p.ceilingExplanation},
     {field:'Phase 2 - Company position',value:'Requires authorized company inputs. Company cost, margin, execution floor and IBM advantages are not established by public rate proxies.'},
   ]);
+  const judgment=workbook.addWorksheet('Pricing Judgment');
+  judgment.columns=[{header:'Factor',key:'factor',width:30},{header:'Finding',key:'finding',width:90},{header:'Effect on recommendation',key:'effect',width:95},{header:'Sources',key:'evidenceIds',width:50}];
+  p.judgment.forEach(j=>judgment.addRow({...j,evidenceIds:j.evidenceIds.join('; ')}));
+  const assumptions=workbook.addWorksheet('Bounded Assumptions');
+  assumptions.columns=[{header:'Input',key:'label',width:45},{header:'Kind',key:'kind',width:22},{header:'Quantity',key:'quantity',width:20},{header:'Unit',key:'unit',width:25},{header:'Lower unit',key:'low',width:20},{header:'Central unit',key:'central',width:20},{header:'Upper unit',key:'high',width:20},{header:'Basis',key:'basis',width:30},{header:'Rationale',key:'rationale',width:100},{header:'Quantity source',key:'quantitySource',width:80},{header:'Lower condition',key:'lowerCondition',width:80},{header:'Upper condition',key:'upperCondition',width:80},{header:'Evidence',key:'sources',width:50}];
+  p.planningRows.forEach(r=>assumptions.addRow({...r,sources:r.evidenceIds.join('; ')}));
   const sensitivities=workbook.addWorksheet('Sensitivity and Actions');
   sensitivities.columns=[{header:'Category',key:'category',width:23},{header:'Input / owner',key:'label',width:38},{header:'Change / action',key:'change',width:100},{header:'Price delta USD',key:'delta',width:26},{header:'Interpretation',key:'reason',width:100}];
   p.sensitivities.forEach(s=>sensitivities.addRow({category:'Sensitivity',label:s.label,change:s.change,delta:s.delta,reason:s.rationale}));

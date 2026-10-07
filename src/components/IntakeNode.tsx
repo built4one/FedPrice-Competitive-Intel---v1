@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowLeft, CheckCircle2, FileText, Loader2, Search, ShieldCheck, UploadCloud, X } from 'lucide-react';
 import type { OpportunityAnalysis } from '../types';
-import { requestPtwStrategy } from '../client/ptwStrategy';
 
 interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => Promise<void>; }
 
@@ -84,12 +83,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
           'For faster analysis, uploaded packages are processed in one pass. Enter a SAM.gov URL or solicitation number at intake when automatic official-package completion is required.',
         ];
       }
-      setStatusText('Comparing competitive approaches, evaluation tradeoffs, and validation actions.');
-      try { analysis = await requestPtwStrategy(analysis, controller.signal); }
-      catch (failure) {
-        if (controller.signal.aborted) throw failure;
-        analysis.meta.warnings.push('Strategic assessment did not complete. The source evidence is preserved; retry strategy synthesis from the decision workspace.');
-      }
+      setStatusText('Recommendation calculated. Saving the decision and its assumptions.');
       setPendingAnalysis(analysis);
       setStatusText('Saving the completed evidence and assessment.');
       await onSuccess(analysis);

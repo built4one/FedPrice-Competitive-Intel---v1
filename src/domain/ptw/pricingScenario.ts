@@ -48,10 +48,13 @@ export function pricingDraft(analysis: OpportunityAnalysis) {
       const priced=rows.get(r.id);
       return {sourceRowId:r.id,label:`${r.title} / ${r.period}`,quantity:String(r.hours),
         lowUnitPrice:priced ? String(priced.lowRate*r.factor) : '',targetUnitPrice:priced ? String(priced.recommendedRate*r.factor) : '',highUnitPrice:priced ? String(priced.highRate*r.factor) : '',
-        source:`${r.source}; ${priced ? `Public planning proxies: ${priced.evidenceIds.join(', ')}; factor ${r.factor}. Validate fully burdened offered rates.` : 'Rate or role mapping unresolved: enter a cited analyst assumption.'}`};
+        source:`${r.source}; ${priced ? `${priced.assumedRate?'Explicit planning assumption':'Public planning proxies'}: ${priced.evidenceIds.join(', ')}; factor ${r.factor}. Validate fully burdened offered rates.` : 'Rate or role mapping unresolved: enter a cited analyst assumption.'}`};
     }),...(analysis.deal.evaluationPricing?.components || []).map(c=>{
       const modeled=p.components.find(v=>v.id===c.id);
-      return {sourceRowId:`COMP-${c.id}`,label:c.label,quantity:'1',lowUnitPrice:modeled ? String(modeled.includedAmount) : '',targetUnitPrice:modeled ? String(modeled.includedAmount) : '',highUnitPrice:modeled ? String(modeled.includedAmount) : '',source:`${c.source}; ${c.evidenceIds.join(', ')}. ${modeled?.assumption || 'Validate all applicable component costs and fees.'}`};
+      return {sourceRowId:`COMP-${c.id}`,label:c.label,quantity:'1',lowUnitPrice:modeled ? String(modeled.lowAmount??modeled.includedAmount) : '',targetUnitPrice:modeled ? String(modeled.includedAmount) : '',highUnitPrice:modeled ? String(modeled.highAmount??modeled.includedAmount) : '',source:`${c.source}; ${c.evidenceIds.join(', ')}. ${modeled?.assumption || 'Validate all applicable component costs and fees.'}`};
+    }),...(analysis.deal.evaluationPricing?.unitLines||[]).map(l=>{
+      const input=p.planningRows.find(i=>i.id===l.id);
+      return {sourceRowId:`UNIT-${l.id}`,label:l.label,quantity:String(l.quantity),lowUnitPrice:input?String(input.low):'',targetUnitPrice:input?String(input.central):'',highUnitPrice:input?String(input.high):'',source:`${l.source}. ${input?.rationale||'Unit price requires validation.'}`};
     })],
   };
 }
@@ -60,7 +63,7 @@ export function calculateSourcePricingScenario(raw:unknown, analysis:Opportunity
   const scenario=calculatePricingScenario(raw);
   const expected=pricingDraft(analysis).lines;
   if (expected.length) {
-    if (!calculateCompetitivePosition(analysis).quantityComplete) throw new Error('Complete the source quantity schedule before saving a full-scope offer scenario.');
+    if (!calculateCompetitivePosition(analysis).basisReconstructed) throw new Error('Complete the source quantity schedule before saving a full-scope offer scenario.');
     for (const row of expected) {
       const matches=scenario.inputs.lines.filter(r=>r.sourceRowId===row.sourceRowId);
       if (matches.length!==1 || matches[0].quantity!==Number(row.quantity)) throw new Error(`Retain the source quantity row ${row.label}; edit its rates or re-analyze a corrected source schedule.`);

@@ -10,6 +10,7 @@ export interface LaborQuantityRow {
 export interface LaborCalculationRow extends LaborQuantityRow {
   lowRate: number; medianRate: number; highRate: number; evidenceIds: string[]; proxy: boolean;
   qualification: string; rateLimitation: string; sampleSize: number;
+  assumedRate?: boolean; assumptionBasis?: string;
 }
 export interface LaborModel {
   rows: LaborCalculationRow[]; quantityRows: LaborQuantityRow[]; missing: string[]; assumptions: string[];
@@ -30,7 +31,12 @@ export function buildLaborModel(deal: DealProfile, evidence: EvidenceItem[]): La
   const startFacts=deal.facts.filter(f=>/ordering period|performance (?:start|period)|start date/i.test(f.label)).map(f=>f.value).join(' ');
   const openingYear=Number((startFacts || deal.periodOfPerformance).match(/\b20\d{2}\b/)?.[0]);
   const baseYear=deal.evaluationPricing?.rateBaseYear;
-  const openingExponent=baseYear!=null && Number.isFinite(openingYear) && openingYear>0 ? Math.max(0,openingYear-baseYear) : 0;
+  // Contract Year 1 is an ordinal, never the calendar year AD 1.
+  const calendarBase = baseYear != null && Number.isInteger(baseYear) && baseYear >= 1900 && baseYear <= 2200;
+  const openingExponent = calendarBase && openingYear >= 1900 && openingYear <= 2200 && Math.abs(openingYear-baseYear!) <= 15
+    ? Math.max(0,openingYear-baseYear!) : 0;
+  if (baseYear != null && !calendarBase) assumptions.push(`Rate base "${baseYear}" is a contract-year label; treat it as opening-period rates, with zero historical escalation.`);
+  if (calendarBase && openingYear && Math.abs(openingYear-baseYear!) > 15) missing.push('Rate calendar years are more than 15 years apart; use opening-period rates provisionally and verify the rate date.');
   if(baseYear!=null && !openingYear) missing.push('Confirm the opening performance year to reconcile the explicit labor rate base year.');
   if(openingExponent) assumptions.push(`The opening performance year ${openingYear} follows the stated rate base year ${baseYear}; apply ${openingExponent} opening-year escalation step(s).`);
   if (!months || !positive(months)) quantityGap('Confirm the complete evaluated performance period.');
@@ -49,7 +55,7 @@ export function buildLaborModel(deal: DealProfile, evidence: EvidenceItem[]): La
     if (!periods.length) {quantityGap(`${s.title}: no documented quantity/period basis.`);continue;}
     let end = 0;
     for (const [index,p] of periods.entries()) {
-      if (!Number.isFinite(p.startMonth) || p.startMonth < 0 || Math.abs(p.startMonth-end) > .01 || !positive(p.months)
+      if (!Number.isFinite(p.startMonth) || p.startMonth < 0 || Math.abs(p.startMonth-end) > .01 || !positive(p.months) || p.months > 600
         || !Number.isFinite(p.quantity) || p.quantity < 0 || (months && p.startMonth+p.months > months+.01)) {
         quantityGap(`${s.title} / ${p.label}: period coverage or quantity is invalid.`);continue;
       }
@@ -75,6 +81,9 @@ export function buildLaborModel(deal: DealProfile, evidence: EvidenceItem[]): La
       if (extension && (!deal.evaluationPricing || deal.evaluationPricing.extensionRateRule === 'UNKNOWN'))
         assumptions.push('Extension rate language remains unconfirmed: the planning case continues annual escalation; compare with final-option rates before relying on total evaluated price.');
       if (finalOption) assumptions.push(`Extension uses final-option rates without another annual uplift. Source: ${deal.evaluationPricing?.extensionSource || deal.evaluationPricing?.source}.`);
+      if (!Number.isFinite(factor) || factor <= 0 || factor > 20) {
+        quantityGap(`${s.title} / ${p.label}: escalation is outside the valid planning domain.`); continue;
+      }
       const quantityRow: LaborQuantityRow = {id:`LAB-${quantityRows.length+1}`,title:s.title,period:p.label,hours,fte:p.quantity,months:p.months,
         exponent:openingExponent+Math.floor(rateStart/12),factor,source:p.section || s.section || 'Extracted schedule; locator needs validation',
         assumedHours,rateYearWeights:[...weights].map(([year,weight])=>({year,weight}))};

@@ -69,7 +69,7 @@ test('serves valid PDF and Excel downloads through the production export routes'
   await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()) as any);
   assert.equal(workbook.getWorksheet('Competitive Labor')!.rowCount,97);
   assert.equal((workbook.getWorksheet('Competitive Strategies')!.getCell('D3').value as ExcelJS.CellFormulaValue).result,expected);
-  priced.evidence = priced.evidence.filter(e => e.id !== 'SYN-RATE-1');
+  priced.evidence = priced.evidence.filter(e => e.id !== 'SYN-RATE-2');
   const partialResponse = await fetch(`http://127.0.0.1:${port}/api/export-brief`, {
     method: 'POST', headers: {'content-type':'application/json', cookie}, body: JSON.stringify(priced),
   });

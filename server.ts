@@ -1,3 +1,4 @@
+import { completePlanningInputs } from './src/server/planningInputs.js';
 import 'dotenv/config';
 import crypto from 'node:crypto';
 import path from 'node:path';
@@ -190,6 +191,7 @@ const baseSchema = {
         evaluationPricing: {type:'OBJECT',properties:{
           basis:{type:'STRING'},source:{type:'STRING'},completeness:{type:'STRING',enum:['COMPLETE','PARTIAL']},
           extensionRateRule:{type:'STRING',enum:['FINAL_OPTION_RATES','ESCALATE','UNKNOWN','NOT_APPLICABLE']},extensionSource:{type:'STRING'},rateBaseYear:{type:'NUMBER'},
+          unitLines:{type:'ARRAY',items:{type:'OBJECT',properties:{id:{type:'STRING'},label:{type:'STRING'},quantity:{type:'NUMBER'},unit:{type:'STRING'},source:{type:'STRING'}},required:['id','label','quantity','unit','source']}},
           components:{type:'ARRAY',items:{type:'OBJECT',properties:{
             id:{type:'STRING'},label:{type:'STRING'},category:{type:'STRING',enum:['TRAVEL','ODC','MATERIALS','OTHER']},amount:{type:'NUMBER'},source:{type:'STRING'},evidenceIds:stringArray,
             indirectPct:{type:'NUMBER'},indirectTreatment:{type:'STRING',enum:['NOT_ALLOWED','KNOWN','UNKNOWN']},feeAllowed:{type:'BOOLEAN'},
@@ -199,7 +201,7 @@ const baseSchema = {
         evaluationScheme: {
           type: 'OBJECT',
           properties: {
-            method: { type: 'STRING', enum: ['LPTA', 'TRADE_OFF', 'HIGHEST_TECH_RATED', 'UNKNOWN'] },
+            method: { type: 'STRING', enum: ['SEALED_BID', 'LPTA', 'TRADE_OFF', 'HIGHEST_TECH_RATED', 'UNKNOWN'] },
             priceWeight: { type: 'STRING', enum: ['DOMINANT', 'SIGNIFICANT', 'EQUAL', 'LOW', 'NONE', 'UNKNOWN'] },
             far522178Included: { type: 'BOOLEAN' },
             unbalancedPricingChecked: { type: 'BOOLEAN' },
@@ -328,7 +330,9 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
 - Mark source conflicts OPEN when clarification or an approved mapping is still required. Mark RESOLVED only when cited controlling language establishes the answer; matching checked set-aside boxes and an agreeing clause are resolved corroboration. Distinguish an abbreviated title from a different occupation. Fixed travel/ODC amounts are evaluated components, never a whole-contract evaluated-price estimate.
 - Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
-- Extract the EvaluationScheme accurately. Detect if the method is LPTA, TRADE_OFF, HIGHEST_TECH_RATED, or UNKNOWN. Determine the priceWeight compared to technical factors. Flag if FAR 52.217-8 (Option to Extend Services) is evaluated. Flag if unbalanced pricing, price realism, or cost realism are explicitly evaluated. Provide source section references.
+- Populate evaluationPricing.unitLines for EVERY non-labor evaluated price line with a blank offered price (equipment, subscriptions, construction lump sums, transaction services, square-foot or monthly facility services): preserve the complete evaluated quantity, unit and source. Do not create unitLines for labor already represented in laborSignals, nor specified fixed components. A construction lump sum is one complete defined project, not a program ceiling. A monthly service quantity must cover all evaluated months/options. Never omit the line because its bid price is blank.
+- rateBaseYear is a four-digit CALENDAR year only. Year 1, Base Year and Option Year 1 are contract ordinals, not years AD 1. Leave rateBaseYear absent for such labels.
+- Extract the EvaluationScheme accurately. Detect if the method is SEALED_BID (FAR Part 14, lowest responsive/responsible bid), LPTA, TRADE_OFF, HIGHEST_TECH_RATED, or UNKNOWN. Determine the priceWeight compared to technical factors. Flag if FAR 52.217-8 (Option to Extend Services) is evaluated. Flag if unbalanced pricing, price realism, or cost realism are explicitly evaluated. Provide source section references.
 - Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
 - For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.
@@ -544,7 +548,7 @@ ${JSON.stringify(official)}`);
 }
 
 export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
-  const client = new OpenAIIntelligence(undefined, undefined, fetch, 170_000);
+  const client = new OpenAIIntelligence(undefined, undefined, fetch, 110_000);
   let draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
   classifyNumericEvidence(draft.evidence, draft.deal);
@@ -559,7 +563,7 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
   const fileNames = files.map(f => f.originalname);
   const connectorWork = runConnectorSet(draft.deal, undefined, false, fileNames);
   const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== 'false'
-    ? new OpenAIIntelligence(undefined, undefined, fetch, 90_000).research<Partial<AiAnalysisDraft>>(`Research the public federal market for this opportunity using web search.
+    ? new OpenAIIntelligence(undefined, undefined, fetch, 60_000).research<Partial<AiAnalysisDraft>>(`Research the public federal market for this opportunity using web search.
 Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
 Improve only qualitative claims supported by current public sources. Match these JSON shapes exactly:
 marketAssessment: {posture:string,summary:string,basis:string[],drivers:{name:string,assessment:string,evidenceIds:string[],inference:boolean}[]}
@@ -641,6 +645,8 @@ Do not infer company-specific costs, staffing, or bids.`)
     }
   }
 
+  try { warnings.push(...await completePlanningInputs(draft.deal,draft.evidence)); }
+  catch(error) { warnings.push(`Bounded price completion needs a retry: ${error instanceof Error?error.message:String(error)}`); }
   draft.gaps = normalizeGaps([...draft.gaps, ...laborCoverageGaps(draft.deal, draft.evidence)]);
   const analyzedAt = new Date().toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
@@ -906,8 +912,11 @@ app.post('/api/export-brief', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Federal Market Position';
 
-    const summary = workbook.addWorksheet('Executive Decision');
+    const decision = workbook.addWorksheet('Executive Decision');
+    decision.columns = [{header:'Decision',key:'field',width:36},{header:'Recommendation',key:'value',width:95}];
+    const summary = workbook.addWorksheet('Market Benchmarks');
     summary.columns = [{ header: 'Field', key: 'field', width: 34 }, { header: 'Value', key: 'value', width: 92 }];
+    decision.addRows([{field:'Opportunity',value:analysis.deal.title},{field:'Solicitation',value:analysis.deal.solicitationNumber}]);
     summary.addRows([
       { field: 'Opportunity', value: analysis.deal.title },
       { field: 'Agency', value: analysis.deal.agency },
@@ -921,7 +930,7 @@ app.post('/api/export-brief', async (req, res) => {
       { field: 'Confidence', value: analysis.marketPosition.confidence },
       { field: 'Public Benchmark Status', value: analysis.marketPosition.publicBenchmark.status },
       { field: 'Public Benchmark Expected', value: displayValue(analysis.marketPosition.publicBenchmark.expected) },
-      { field: 'Evidence Readiness', value: `${analysis.marketPosition.evidenceReadiness.score}/100` },
+      { field: 'Recommendation Confidence', value: analysis.competitivePosition?.confidenceLabel || 'LIMITED' },
       { field: 'Formula Version', value: analysis.marketPosition.formulaVersion },
       { field: 'Calculation Basis', value: analysis.marketPosition.methodLabel },
       { field: 'Strategy Status', value: analysis.ptwStrategy?.status || 'NOT_GENERATED' },
@@ -957,7 +966,7 @@ app.post('/api/export-brief', async (req, res) => {
       const p=analysis.competitivePosition;
       p.rows.forEach(r=>priced.addRow({label:`${r.title} / ${r.period}`,quantity:r.hours,lowUnitPrice:r.lowRate*r.factor,targetUnitPrice:r.recommendedRate*r.factor,highUnitPrice:r.highRate*r.factor,source:`${r.source}; ${r.evidenceIds.join(', ')}. ${r.protectionReason}`}));
       p.unpricedRows.forEach(r=>priced.addRow({label:`${r.title} / ${r.period}`,quantity:r.hours,source:`UNPRICED - excluded from partial subtotals. ${r.source}`}));
-      p.components.forEach(c=>priced.addRow({label:c.label,quantity:1,lowUnitPrice:c.includedAmount,targetUnitPrice:c.includedAmount,highUnitPrice:c.includedAmount,source:`${c.source}. ${c.assumption}`}));
+      p.components.forEach(c=>priced.addRow({label:c.label,quantity:1,lowUnitPrice:c.lowAmount??c.includedAmount,targetUnitPrice:c.includedAmount,highUnitPrice:c.highAmount??c.includedAmount,source:`${c.source}. ${c.assumption}`}));
       priced.addRow({label:p.status==='PARTIAL'?'PARTIAL PLANNING SUBTOTALS':'EVALUATED PLANNING TOTALS',lowUnitPrice:p.scenarios[0].total,targetUnitPrice:p.scenarios[1].total,highUnitPrice:p.scenarios[2].total,source:`${p.status}. ${p.pricedHours} of ${p.totalHours} source labor hours priced. ${p.evaluationComplete?'Evaluation basket represented':'Validation remains open'}. Recalculable formulas: Competitive Labor / Competitive Strategies.`});
     } else priced.addRow({label:'No complete calculation basis',source:analysis.competitivePosition?.missing.join(' ') || 'Re-extract the quantity/rate and evaluated-basket inputs.'});
     const strategy = workbook.addWorksheet('PTW Strategy');

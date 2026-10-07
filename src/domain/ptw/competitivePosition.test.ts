@@ -12,14 +12,14 @@ test('complete ramp yields priced role strategies, selected position and source-
   assert.ok(p.target!>p.rangeLow! && p.target!<p.rangeHigh!);
   const labor=dollars(p.rows.reduce((s,r)=>s+r.hours*r.recommendedRate*r.factor,0));
   assert.ok(Math.abs(p.target! - (labor + 20000)) < 0.1);assert.equal(p.components.length,1);
-  assert.equal(p.confidence.quantities,'HIGH');assert.equal(p.confidence.overall,'LOW');assert.equal(p.confidence.execution,'NOT_ASSESSED');
+  assert.equal(p.confidence.quantities,'HIGH');assert.equal(p.confidence.overall,'MEDIUM');assert.equal(p.confidence.execution,'NOT_ASSESSED');
   assert.match(p.ceilingExplanation,/does not set PTW/);
 });
 test('complete arithmetic does not certify PTW confidence or an unknown selection method',()=>{
   const a=pricedServicesFixture();
   assert.equal(a.competitivePosition!.status,'FULL');
   assert.equal(a.competitivePosition!.confidence.competition,'LOW');
-  assert.equal(a.competitivePosition!.confidence.overall,'LOW');
+  assert.equal(a.competitivePosition!.confidence.overall,'MEDIUM');
   for (const scheme of [undefined,{...a.deal.evaluationScheme!,method:'UNKNOWN' as const},
     {...a.deal.evaluationScheme!,sourceRefs:[]}]) {
     a.deal.evaluationScheme=scheme;

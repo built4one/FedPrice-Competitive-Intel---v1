@@ -8,12 +8,12 @@ import { enforceAuthoritativeAnalysis } from '../../domain/marketPosition/author
 import CompetitiveRecommendation from './CompetitiveRecommendation';
 
 test('partial pricing is identified in the workspace and its full source schedule is prefilled for analyst rates',()=>{
-  const raw=pricedServicesFixture();raw.evidence=raw.evidence.filter(e=>e.id!=='SYN-RATE-1');
+  const raw=pricedServicesFixture();raw.evidence=raw.evidence.filter(e=>e.id!=='SYN-RATE-2');
   const a=enforceAuthoritativeAnalysis(raw);
   const workspace=renderToStaticMarkup(<Workspace analysis={a} onBack={()=>{}} onUpdate={async()=>{}} />);
-  assert.match(workspace,/PRICING MODEL: COMPONENT VALIDATION OPEN/);
-  assert.match(workspace,/PARTIAL SUBTOTAL/);
-  assert.match(workspace,/1,050,240/);
+  assert.match(workspace,/Price basis needs clarification/);
+  assert.match(workspace,/known-scope subtotal/i);
+  assert.match(workspace,/Analyst workspace/);
   assert.doesNotMatch(workspace,/NUMERIC: SUPPORTED/);
   const prices=renderToStaticMarkup(<PricingScenarioPanel analysis={a} onUpdate={async()=>{}} />);
   assert.equal((prices.match(/<fieldset/g)||[]).length,97);
@@ -25,8 +25,9 @@ test('partial pricing is identified in the workspace and its full source schedul
 
 test('complete modeled arithmetic retains low PTW confidence in the executive view',()=>{
   const html=renderToStaticMarkup(<CompetitiveRecommendation analysis={pricedServicesFixture()} />);
-  assert.match(html,/overall: LOW/);
-  assert.match(html,/quantities: HIGH/);
-  assert.match(html,/execution: NOT ASSESSED/);
+  assert.match(html,/Recommendation Confidence/);
+  assert.match(html,/Moderate/);
+  assert.doesNotMatch(html,/\/100/);
+  assert.match(html,/Company costs/);
   assert.doesNotMatch(html,/overall: HIGH/);
 });

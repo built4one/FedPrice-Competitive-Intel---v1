@@ -51,113 +51,61 @@ class Layout {
 }
 
 function buildBrief(l:Layout){
-  const {analysis:a,doc:d}=l;const p=a.competitivePosition!;const m=a.marketPosition;
+  const {analysis:a,doc:d}=l,p=a.competitivePosition!;
   const subtitle=[a.deal.solicitationNumber,a.deal.agency,new Date(a.meta.analyzedAt).toISOString().slice(0,10)].filter(Boolean).join(' | ');
-  l.page('Where to price. Why. What must hold.',subtitle);
-  l.text(short(a.deal.title,155),true,11);
-  const heroY=l.y;
-  d.roundedRect(margin,heroY,contentWidth,107,5).fill(colors.navy);
-  d.font(boldFont).fontSize(8).fillColor('#B9DDDB').text(p.evaluationComplete ? 'RECOMMENDED TOTAL EVALUATED PRICE' : 'PROVISIONAL PRICE OF MODELED BASKET',margin+16,heroY+15,{width:320,lineBreak:false});
-  d.font(boldFont).fontSize(p.target==null?24:34).fillColor('white').text(compact(p.target),margin+16,heroY+35,{width:300,lineBreak:false});
-  d.font(regularFont).fontSize(9).fillColor('white').text(`${p.status.replaceAll('_',' ')} | ${p.confidence.overall} PTW confidence`,margin+16,heroY+83,{width:300,lineBreak:false});
-  d.font(regularFont).fontSize(9).fillColor('#D4E6E7').text(`Planning scenario range\n${compact(p.rangeLow)} - ${compact(p.rangeHigh)}\n${p.evaluationComplete?'Evaluated basket represented':p.status==='PARTIAL'?'Partial labor coverage':'Component validation remains open'}`,margin+327,heroY+24,{width:185,lineGap:5});
-  l.y=heroY+119;
-  l.text(`Decision requested: ${p.decisionRequest}`,true,9);
-  l.text(`Rate coverage: ${p.pricedHours.toLocaleString('en-US')} of ${p.totalHours.toLocaleString('en-US')} source hours priced; ${p.unpricedRows.length} unpriced rows.`,true,9);
-  l.table(['Aggressive','Protected working case','Defensive stress case'],[176,176,176],[p.scenarios.length ? p.scenarios.map(s=>`${compact(s.total)}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`) : ['Not established','Not established','Not established']]);
-  l.title('Why we recommend this position');l.text(p.rationale);
-  l.text(`${p.priceOrderFirst?'Rate protection':'Market alignment'}: ${p.scenarios.find(s=>s.id==='RECOMMENDED')?.rationale || 'Resolve the missing calculation basis before selecting a numerical target.'}`);
-  l.text(`Supporting total-value benchmark: ${compact(m.aggressive)} / ${compact(m.expected)} / ${compact(m.conservative)}. The ${m.methodLabel.toLowerCase()} references are distinct from the selected competitive planning case.`);
-  l.text(`Critical condition: ${short(p.missing[0] || p.scenarios.find(s=>s.selected)?.condition || 'Analyst validation remains required.',260)}`,true,9,colors.amber);
-  l.text(`Confidence: quantities ${p.confidence.quantities}; rate relevance ${p.confidence.rateRelevance}; competition ${p.confidence.competition}; company execution NOT ASSESSED. The numerical range is a planning scenario envelope, not a statistical interval.` ,false,8,colors.muted);
-  l.text('Phase 2 - Company position: add authorized company costs, workforce, supplier commitments and margin requirements separately. No IBM costs, internal advantages or executable floor are established by this Phase 1 brief.',false,8,colors.muted);
-
-  l.page('Understand the government decision',subtitle);
+  l.page('Your competitive position',subtitle);
   l.text(a.deal.title,true,11);
-  l.table(['Source fact / extracted rule','Pricing implication'],[264,264],[
-    [`${a.deal.contractType}; ${a.deal.awardStructure}; ${a.deal.periodOfPerformance}.`,'Use the complete evaluated basket; task-order revenue and program ceilings are separate measurements.'],
-    [`Set-aside: ${a.deal.setAside || 'Not established - validate selected form boxes'}. NAICS: ${a.deal.naics || 'Unknown'}.`,'Define the eligible field from the controlling solicitation/amendment.'],
-    [short(a.deal.evaluationMethod,170),p.priceOrderFirst ? 'Compete on evaluated price while preserving every scored non-price and compliance gate.' : 'Validate scored benefits and government willingness to pay before proposing a premium.'],
-    [a.deal.evaluationPricing?.basis || 'Evaluation basket requires source confirmation',`Source: ${short(a.deal.evaluationPricing?.source || 'Not supplied',100)}. ${p.evaluationComplete ? 'All modeled evaluated components are represented.' : 'Provisional totals retain the assumptions listed in A price that reconciles and the workbook.'}`],
-  ]);
-  const evalRules=governmentRules(a.deal,a.evidence);
-  const briefGates=[evalRules.find(r=>/substantial confidence|past.performance/i.test(r.detail)),evalRules.find(r=>/facility (?:security )?clearance/i.test(r.detail) && /Top Secret|TOP SECRET/i.test(r.detail)),evalRules.find(r=>/all personnel|personnel require|all contractor personnel/i.test(`${r.name} ${r.detail}`))].filter((r):r is typeof evalRules[number]=>Boolean(r));
-  const displayedRules=briefGates.length ? briefGates : evalRules.slice(0,3);
-  l.title('Scored factors and mandatory gates');
-  if(!evalRules.length)l.text('Specific rating thresholds, evaluation branches and compliance gates remain unestablished. Validate the controlling instructions.');
-  displayedRules.forEach(r=>l.text(`${r.name}: ${short(r.detail,310)} [${short(r.source,80)}]`,false,8));
-  if(evalRules.length>3)l.text('Additional source rules and full evaluation branches are preserved in Government Decision in the workbook.',false,8,colors.muted);
+  const y=l.y;
+  d.roundedRect(margin,y,contentWidth,111,5).fill(colors.navy);
+  d.font(boldFont).fontSize(9).fillColor('#B9DDDB').text('RECOMMENDED PTW',margin+16,y+15,{width:contentWidth-32,lineBreak:false});
+  d.font(boldFont).fontSize(p.target==null?22:31).fillColor('white').text(money(p.target),margin+16,y+36,{width:contentWidth-32,lineBreak:false});
+  d.font(regularFont).fontSize(10).fillColor('#D4E6E7').text(`Competitive corridor: ${money(p.rangeLow)} - ${money(p.rangeHigh)}`,margin+16,y+82,{width:contentWidth-32,lineBreak:false});
+  l.y=y+125;
+  l.title('Why this position?');l.text(p.rationale);
+  l.text(p.judgment.find(j=>j.factor==='Labor and unit-price evidence')!.finding,false,9);
+  l.title(`Recommendation Confidence: ${p.confidenceLabel}`);l.text(p.confidenceReason);
+  l.title('What could move it?');
+  const movers=[...p.sensitivities].sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).slice(0,2);
+  if(movers.length)l.table(['Input change','Evaluated-price effect'],[380,148],movers.map(s=>[`${s.label}: ${s.change}`,`${s.delta>=0?'+':''}${money(s.delta)}`]));
+  else l.text('The lower and upper cases represent the stated alternative pricing assumptions; validate the highest-value item first.');
+  l.title('What should we do next?');l.text(`${p.actions[0].owner}: ${p.actions[0].action}`,true,9);
+  l.text('Market decision support; not a win probability. Company costs, margin and final bid approval remain separate.',false,8,colors.muted);
 
-  l.title('Ceiling and evaluated-price distinction');l.text(short(p.ceilingExplanation,225),false,8);
-  const openConflicts=a.deal.sourceConflicts?.filter(c=>sourceConflictStatus(c,a.deal)==='OPEN') || [];
-  if(openConflicts.length){l.title('Open source-package conflicts');openConflicts.slice(0,2).forEach(c=>l.text(`${short(c.topic,60)}: ${short(c.resolution,135)} [${short(c.sources.join('; '),55)}]`,false,8));}
-  if(a.deal.sourceConflicts?.some(c=>sourceConflictStatus(c,a.deal)==='RESOLVED'))l.text('Resolved source agreements are retained in the workbook and do not block the model.',false,8,colors.muted);
+  l.page('The government buying logic',subtitle);
+  l.table(['Controlling fact','Extracted basis'],[140,388],[['Set-aside / NAICS',`${a.deal.setAside||'Unconfirmed'} / ${a.deal.naics||'Unconfirmed'}`],['Contract / period',`${a.deal.contractType}; ${a.deal.periodOfPerformance}`],['Evaluation',a.deal.evaluationMethod],['Evaluated price',`${a.deal.evaluationPricing?.basis||'Validate the formula'}. Source: ${a.deal.evaluationPricing?.source||'Unresolved'}`],['Extension rule',`${a.deal.evaluationPricing?.extensionRateRule||'UNKNOWN'}; ${a.deal.evaluationPricing?.extensionSource||'Confirm applicability'}`]]);
+  l.title('Scored factors, thresholds and mandatory gates');
+  const rules=governmentRules(a.deal,a.evidence);
+  // Never truncate a decision branch or threshold to fit a fixed page count.
+  const selected=rules.filter(r=>/evaluat|rating|confidence|clearance|set.aside|technical|award|acceptable|lowest|price/i.test(r.name+' '+r.detail));
+  const seen=new Set<string>();
+  (selected.length?selected:rules).forEach(r=>{if(seen.has(r.detail.toLowerCase()))return;seen.add(r.detail.toLowerCase());l.text(`${r.name}: ${r.detail} [${r.source}]`,false,8);});
+  if(!rules.length)l.text('Confirm the controlling evaluation instructions; no additional scored factors have been invented.');
+  l.text(p.ceilingExplanation,false,8,colors.muted);
 
-  l.page('Market and competitive intelligence',subtitle);
-  l.title('Independent market anchor');
-  if(m.expected==null)l.text('A complete supporting total-value benchmark is not established. Fixed travel amounts are components; partial labor coverage cannot provide a whole-contract reference.');
-  else l.table(['Market reference','Total','Meaning'],[155,90,283],[
-    ['Lower public-rate reference',compact(m.aggressive),`${m.methodLabel}; not an executable staffing floor.`],
-    ['Median public-rate reference',compact(m.expected),'Supporting market reference; not company cost or an automatically selected PTW.'],
-    ['Upper public-rate reference',compact(m.conservative),'Upper planning reference; not a confidence bound.'],
-  ]);
-  l.text(`Comparable-award evidence: ${m.anchors.filter(r=>r.included && !r.opportunitySpecific).length} total-value anchors used. ${m.publicBenchmark.summary}`);
-  const comparable=m.anchors.filter(r=>r.valueType==='TOTAL_AWARD_VALUE' || r.valueType==='CURRENT_AWARD_AMOUNT');
-  if(comparable.some(r=>r.included))l.table(['Evidence / original','Normalized / treatment'],[264,264],comparable.filter(r=>r.included).slice(0,2).map(r=>[`${r.evidenceId}: ${money(r.originalValue)}`,`${money(r.normalizedValue)}. ${r.included ? r.inclusionRationale : r.exclusionReasons.join(' ')}`]));
-  l.title('Competitor intelligence');
-  if(!a.competitors.length)l.text('No evidence-supported named competitor field has been established. General capabilities or vehicle membership do not demonstrate pursuit participation.');
-  else l.table(['Company / role','Pursuit-specific support / limitation'],[165,363],a.competitors.map(c=>[`${c.name} / ${c.role.replaceAll('_',' ')}`,`${c.rationale} Sources: ${c.sourceRefs.join(', ')}. Bid intent remains unconfirmed unless explicitly documented.`]));
-  l.title('Competitive hypotheses to validate');
-  l.text(p.priceOrderFirst ? 'If enough lower-priced eligible offers satisfy the required non-price ratings, a more expensive staffing posture may never reach the qualifying cohort. Establish eligible rivals and their relevant past performance before increasing confidence.' : 'A premium is supportable only where a scored advantage is demonstrated and the government has reason to value it. Market proximity alone does not prove premium tolerance.');
-  l.text('No rival price range or bid intent is invented to fill a missing competitive field.');
-  l.title('Labor crosswalk priorities');
-  const roleRows=[...new Map(p.rows.map(r=>[r.title,r])).values()].sort((x,y)=>p.rows.filter(r=>r.title===y.title).reduce((s,r)=>s+r.target,0)-p.rows.filter(r=>r.title===x.title).reduce((s,r)=>s+r.target,0));
-  if(roleRows.length)l.table(['High-impact role','Mapping / validation'],[180,348],roleRows.slice(0,2).map(r=>[r.title,`${short(r.qualification || 'Qualifications were not fully extracted.',110)} ${short(r.rateLimitation,70)} [${r.evidenceIds.join(', ')}]`]));
-  else l.text('A role-level public-rate model has not been established.');
-
-  l.page('A price that reconciles',subtitle);
-  l.text('Deterministic evaluation build. Fully burdened public labor proxies are not charged a second burden or fee.');
-  const periodTotals=[...new Set(p.rows.map(r=>r.period))].map(period=>[period,...['low','target','high'].map(key=>money(p.rows.filter(r=>r.period===period).reduce((s,r)=>s+r[key as 'low'|'target'|'high'],0)))]);
-  l.table(['Evaluated labor period','Aggressive','Recommended','Defensive'],[207,107,107,107],periodTotals.length?periodTotals:[['No complete labor basis','-','-','-']]);
-  l.text(`Priced labor hours ${p.pricedHours.toLocaleString('en-US')} / source hours ${p.totalHours.toLocaleString('en-US')}; missing ${p.unpricedRows.length} source rows. ${p.unpricedRows.length?'Every subtotal excludes these unpriced rows; no full PTW target is established.':''}`,true,8);
-  if(p.components.length)l.table(['Other evaluated component','Included amount / treatment'],[264,264],p.components.map(c=>[c.label,`${money(c.includedAmount)}. ${short(c.assumption || 'Specified amount and documented indirect treatment.',130)} Source: ${short(c.source,90)}`]));
+  l.page('Why the numbers hold together',subtitle);
+  l.table(['Calculated case','Evaluated price','Use'],[155,118,255],p.scenarios.map(s=>[s.label,money(s.total),s.selected?'Selected working competitive position':s.condition]));
+  l.text(`Source labor hours: ${p.totalHours.toLocaleString('en-US')}; priced hours: ${p.pricedHours.toLocaleString('en-US')}; ${p.unpricedRows.length} unpriced source rows. Bounded price assumptions account for ${Math.round(p.assumptionShare*100)}% of the modeled total.`,true,9);
+  l.title('Pricing judgment');
+  p.judgment.forEach(j=>l.text(`${j.factor}: ${j.finding} ${j.effect}`,false,8));
   l.title('Calculation chain');
-  l.text(`Labor = row hours x selected loaded rate x performance-year factor; no second FTE multiplication. Other components add ${money(p.components.reduce((s,c)=>s+c.includedAmount,0))}. ${p.target==null?'Full target not established; strategy cards contain partial subtotals.':`Modeled target ${money(p.target)}.`} Full strategy cases reconcile in Competitive Strategies in the workbook.`,false,8);
-  l.text(`Extension: ${a.deal.evaluationPricing?.extensionRateRule || 'UNKNOWN'} [${a.deal.evaluationPricing?.extensionSource || 'Clause validation needed'}]. Full rate protections, conditions and recalculable formulas are in the workbook.`,false,8);
-  if(a.pricingScenario){l.title('Separate analyst-entered offer model');l.text(`Lower ${money(a.pricingScenario.low)}; target ${money(a.pricingScenario.target)}; upper ${money(a.pricingScenario.high)}. ${a.pricingScenario.inputs.evaluationBasis} Source: ${a.pricingScenario.inputs.basisSource}. ${a.pricingScenario.scopeReconciled===false?'SOURCE SCOPE NOT RECONCILED. Review and reprice the source rows. ':''}This separate conditional model does not override the independent recommendation.`);}
+  l.text('Labor rows = evaluated hours × selected loaded rate × documented period factor. Unit-price lines = evaluated quantity × selected unit-price assumption. Specified fixed components are added once. There is no second labor burden or profit. The workbook preserves row formulas, source records and the complete assumption register.',false,8);
+  if(p.components.length)l.text(`Other evaluated components: ${p.components.map(c=>`${c.label}: ${money(c.includedAmount)}`).join('; ')}.`,false,8);
+  l.text(p.rangeMeaning,false,8,colors.muted);
 
-  l.page('Know when to change the position',subtitle);
-  l.title('Isolated planning sensitivities');
-  const executiveSensitivities=p.sensitivities.filter((s,i)=>i===0 || i===1 || /escalation|Role protection/.test(s.label));
-  l.table(['Change','Price effect','Interpretation'],[170,97,261],executiveSensitivities.map(s=>[`${s.label}: ${s.change}`,`${s.delta>=0?'+':''}${money(s.delta)}`,short(s.rationale,125)]));
-  l.text('Sensitivities are separate deterministic changes, not probabilities. Check overlap before combining them.',false,8,colors.muted);
-  l.title('Accountable validation actions');
-  l.table(['Owner','Required action / decision consequence'],[115,413],p.actions.map(a=>[a.owner,`${short(a.action,85)} ${short(a.consequence,55)}`]));
-  l.text(`Unresolved inputs: ${p.missing.length}. ${p.missing.slice(0,2).map(v=>short(v,125)).join(' ')} Full actions and source conflicts are in the workbook.`,false,8,colors.amber);
-  l.text('Move conditions: lower with validated labor economics or reduced scope; higher with corrected specialist rates or additional evaluated obligations. Company cost alone does not establish government willingness to pay.',false,8);
-
-  l.page('Evidence, assumptions and limits',subtitle);
-  l.text(`Analysis as of ${a.meta.analyzedAt}. Run ${a.id}. Market engine ${m.formulaVersion}; competitive engine ${p.version}. Human pricing judgment and bid approval remain required.`);
-  l.title('Evidence and source lineage');
-  const ids=new Set([...p.rows.flatMap(r=>r.evidenceIds),...p.components.flatMap(c=>c.evidenceIds),...a.evidence.filter(e=>e.numeric?.valueType==='ESCALATION_RATE').map(e=>e.id)]);
-  const used=a.evidence.filter(e=>ids.has(e.id) || e.type==='SOLICITATION_FACT').sort((x,y)=>Number(y.type==='SOLICITATION_FACT')-Number(x.type==='SOLICITATION_FACT'));
-  l.table(['Evidence record','Claim / locator / limitation'],[130,398],used.slice(0,3).map(e=>[`${e.id} / ${e.type.replaceAll('_',' ')}`,`${short(e.claim,140)} Source: ${e.sourceLabel}; ${e.section || e.url || e.sourceRecordId || 'Locator needed'}. ${e.retrievedAt ? `Retrieved ${e.retrievedAt}.` : ''}`]));
-  if(used.length>3)l.text(`${used.length-3} additional cited records, full source excerpts and frozen rate-distribution inputs are in the workbook.` ,false,8,colors.muted);
-  l.title('Planning assumptions');p.assumptions.slice(0,3).forEach(v=>l.text(short(v,200),false,8));
-  if(p.assumptions.length>3)l.text('The complete assumption register is in Pricing Inputs. No labor benchmark is an executable cost floor; unquantified savings are excluded.',false,8,colors.muted);
-  l.title('Research coverage');l.text((a.meta.connectors || []).map(c=>`${c.name}: ${c.status.replaceAll('_',' ')} (${c.recordsFound} records)`).join('; ') || 'Source coverage is recorded in the evidence ledger.',false,8);
-  l.text(`Market-model confidence: ${m.confidence}. Competitive PTW confidence: ${p.confidence.overall} / provisional. High confidence in multiplication does not establish confidence in rival prices or premium tolerance.`,true,9);
-  if(a.validation)l.text('Actuals are recorded separately. A scored historical review requires a pre-decision evidence cutoff and a matching measurement basis.',false,8,colors.muted);
-  const issues=assessmentIssues(a);if(issues.length)l.text(`${issues.length} assessment issues and source diagnostics are recorded in the workbook. Review consequential gaps before using this planning position.`,false,8,colors.muted);
-  if(a.ptwStrategy?.status==='DRAFT'){
-    const s=a.ptwStrategy.strategy;const selected=s.options.find(o=>o.id===s.recommendation.selectedOptionId);
-    l.page('Delivery-strategy hypotheses',subtitle);
-    l.text('Qualitative synthesis / unreviewed. Only the explicit role-rate scenarios in A price that reconciles have numerical effects in the recommendation. Unquantified productivity, teaming and premium hypotheses remain separate.',true,9);
-    l.title(`Selected delivery approach: ${selected?.name || 'Review required'}`);l.text(s.recommendation.rationale.text);
-    s.options.forEach(o=>{l.title(o.name);l.text(`Win logic: ${short(o.winLogic.text,330)}`);l.text(`Evaluation advantage: ${short(o.evaluationAdvantage.text,260)}`);l.text(`Pricing mechanism: ${short(o.pricingLevers.map(v=>v.text).join(' '),280)}`);l.text(`Risk: ${short(o.principalRisk.text,220)}`);
-      const other=s.recommendation.alternatives.find(v=>v.optionId===o.id);if(other)l.text(`Why not selected: ${short(other.reason.text,220)}`);});
-    l.title('Change triggers');s.recommendation.changeTriggers.forEach(v=>l.text(`${v.kind}: ${v.text} Sources: ${v.evidenceIds.join(', ') || 'Working assumption'}. Validate: ${v.validationAction}`));
-  }
+  l.page('Assumptions, evidence and next actions',subtitle);
+  l.table(['Owner','Next action / consequence'],[115,413],p.actions.map(x=>[x.owner,`${x.action} ${x.consequence}`]));
+  l.title('Most influential assumptions');
+  const assumptionItems=p.planningRows.slice(0,4).map(i=>`${i.label}: ${money(i.low)} / ${money(i.central)} / ${money(i.high)} per ${i.unit}. ${i.basis}. ${i.rationale}`);
+  (assumptionItems.length?assumptionItems:p.assumptions.slice(0,3)).forEach(x=>l.text(x,false,8));
+  l.text('Full lower/upper conditions and quantities are in Bounded Assumptions; every role, unit line and component is retained in the workbook.',false,8,colors.muted);
+  l.title('Source and calculation lineage');
+  l.text(`Run ${a.id}. Analysis: ${a.meta.analyzedAt}. Recommendation engine: ${p.version}.`,false,8);
+  l.text(`Confidence drivers: quantity/evaluation ${p.confidence.quantities}; rate relevance ${p.confidence.rateRelevance}; competitive evidence ${p.confidence.competition}. Company execution is not assessed in Phase 1.`,false,8);
+  l.text((a.meta.connectors||[]).map(c=>`${c.name}: ${c.status.replaceAll('_',' ')} (${c.recordsFound} records)`).join('; ')||'Source coverage is retained in the workbook.',false,8);
+  const conflicts=a.deal.sourceConflicts?.filter(c=>sourceConflictStatus(c,a.deal)==='OPEN')||[];
+  if(conflicts.length){l.title('Unresolved source conflicts');conflicts.forEach(c=>l.text(`${c.topic}: ${c.resolution} [${c.sources.join('; ')}]`,false,8));}
+  if(p.missing.length)l.text(`${p.missing.length} validation items are preserved in the workbook. First: ${p.missing[0]}`,false,8,colors.amber);
+  l.text('Phase 2 adds authorized company economics, workforce, suppliers and margin requirements. Public price proxies do not establish an executable company cost floor.',false,8,colors.muted);
 }
 
 function footers(doc:PDFKit.PDFDocument){const r=doc.bufferedPageRange();for(let i=r.start;i<r.start+r.count;i++){doc.switchToPage(i);doc.moveTo(margin,728).lineTo(pageWidth-margin,728).strokeColor(colors.line).lineWidth(.6).stroke();doc.font(regularFont).fontSize(7).fillColor(colors.muted).text('PROVISIONAL DECISION SUPPORT - ANALYST REVIEW AND COMPANY BID APPROVAL REQUIRED',margin,738,{width:contentWidth-55,lineBreak:false});doc.font(boldFont).fontSize(7).text(`${i+1}/${r.count}`,pageWidth-margin-45,738,{width:45,align:'right',lineBreak:false});}}

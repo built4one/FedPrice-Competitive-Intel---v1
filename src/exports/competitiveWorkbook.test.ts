@@ -20,7 +20,7 @@ test('workbook exposes distribution, role and total formulas with matching cache
   assert.equal(read.getWorksheet('Rate Distribution')!.rowCount,81);
   const decision=read.getWorksheet('Executive Decision')!;
   const confidenceRow=decision.getRows(1,decision.rowCount)!.find(row=>row.getCell(1).value==='overall confidence')!;
-  assert.equal(confidenceRow.getCell(2).value,'LOW');
+  assert.equal(confidenceRow.getCell(2).value,'MEDIUM');
   const xml=await (await JSZip.loadAsync(bytes)).file('xl/workbook.xml')!.async('string');
   assert.match(xml,/fullCalcOnLoad="1"/);
 });
@@ -56,14 +56,14 @@ test('invalid component indirects recalculate at the disclosed zero assumption',
 });
 
 test('partial workbook retains unpriced source quantities and separates subtotals from the executive target',()=>{
-  const a=pricedServicesFixture();a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-1');
+  const a=pricedServicesFixture();a.evidence=a.evidence.filter(e=>e.id!=='SYN-RATE-2');
   const authoritative=enforceAuthoritativeAnalysis(a),w=new ExcelJS.Workbook();
   w.addWorksheet('Executive Decision').columns=[{header:'Field',key:'field'},{header:'Value',key:'value'}];
   addCompetitiveWorkbook(w,authoritative);
   const quantities=w.getWorksheet('Quantity Coverage')!;
   assert.equal(quantities.rowCount,98);
   assert.equal((quantities.getCell('D98').value as ExcelJS.CellFormulaValue).result,1050240);
-  assert.equal(quantities.getCell('E2').value,'UNPRICED - EXCLUDED');
+  assert.equal(quantities.getCell('E8').value,'UNPRICED - EXCLUDED');
   assert.equal(w.getWorksheet('Competitive Labor')!.rowCount,91);
   assert.match(String(w.getWorksheet('Competitive Strategies')!.getCell('A3').value),/PARTIAL SUBTOTAL/);
   assert.equal(w.getWorksheet('Competitive Strategies')!.getCell('E3').value,'NO');

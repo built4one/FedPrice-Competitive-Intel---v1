@@ -3,6 +3,8 @@ import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { OpportunityAnalysis } from '../../types';
 import DecisionCenter from './DecisionCenter';
+import AnalystDetails from './AnalystDetails';
+import {pricedServicesFixture} from '../../testFixtures/pricedServices';
 import { ptwStrategyFixture } from '../../testFixtures/ptwStrategy';
 import { synthesizePtwStrategy } from '../../server/ptwSynthesis';
 
@@ -90,27 +92,18 @@ const analysis: OpportunityAnalysis = {
   },
 };
 
-test('Decision Center displays the exact authoritative scenario-engine values', () => {
-  const html = renderToStaticMarkup(<DecisionCenter analysis={analysis} />);
-  assert.match(html, /\$100,000,000/);
-  assert.match(html, /\$200,000,000/);
-  assert.match(html, /\$300,000,000/);
-  assert.doesNotMatch(html, /Opportunity score/i);
-  assert.doesNotMatch(html, /targetPrice|rangeLow|rangeHigh/);
-  assert.doesNotMatch(html, /Plan around|Aggressive|Conservative/);
-  assert.match(html, /The competitive decision comes first/);
-  assert.match(html, /Central reference/);
+test('executive view displays the recomputed PTW and corridor without readiness scores',()=>{
+  const a=pricedServicesFixture(),p=a.competitivePosition!;
+  const html=renderToStaticMarkup(<DecisionCenter analysis={a}/>);
+  for(const n of [p.target,p.rangeLow,p.rangeHigh])assert.ok(html.includes(new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n!)));
+  for(const question of ['Where should we price?','Why this position?','Recommendation Confidence','What could move it?','What should we do next?'])assert.ok(html.includes(question));
+  assert.doesNotMatch(html,/readiness|\/100|Central reference/i);
 });
-
-test('decision brief presents distinct strategies, rejection rationale, sources, and change triggers before market values', async () => {
-  const {analysis,strategy} = ptwStrategyFixture();
-  analysis.ptwStrategy = await synthesizePtwStrategy(analysis,{interpret:async <T,>() => strategy as T});
-  const html = renderToStaticMarkup(<DecisionCenter analysis={analysis} />);
-  assert.ok(html.indexOf(strategy.options[0].name) < html.indexOf('Central reference'));
-  assert.ok(html.includes(strategy.options[1].name));
-  assert.ok(html.includes(strategy.recommendation.alternatives[0].reason.text));
-  assert.ok(html.includes(strategy.recommendation.changeTriggers[0].text));
-  assert.match(html,/SOL-EVAL/);
-  assert.match(html,/Analyst review required/);
-  assert.doesNotMatch(html,/Plan around/);
+test('supporting strategy remains in the analyst workspace instead of competing with the recommendation',async()=>{
+  const {analysis,strategy}=ptwStrategyFixture();
+  analysis.ptwStrategy=await synthesizePtwStrategy(analysis,{interpret:async<T,>()=>strategy as T});
+  const executive=renderToStaticMarkup(<DecisionCenter analysis={analysis}/>);
+  assert.ok(!executive.includes(strategy.options[0].name));
+  const detail=renderToStaticMarkup(<AnalystDetails analysis={analysis}/>);
+  assert.ok(detail.includes(strategy.options[0].name));assert.ok(detail.includes(strategy.recommendation.alternatives[0].reason.text));
 });

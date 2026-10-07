@@ -8,7 +8,7 @@ import { synthesizePtwStrategy } from '../server/ptwSynthesis';
 import { pricedServicesFixture } from '../testFixtures/pricedServices';
 import { normalizePdfText } from '../server/pdfText';
 
-test('creates a decision-first leadership brief with six core sections', async () => {
+test('creates a decision-first leadership brief with four core decision sections', async () => {
   const buffer = await createExecutivePdf(opportunityAnalysisFixture());
   if (process.env.WRITE_PDF_FIXTURE === '1') {
     await mkdir('tmp/pdfs', { recursive: true });
@@ -17,7 +17,7 @@ test('creates a decision-first leadership brief with six core sections', async (
   assert.equal(buffer.subarray(0, 4).toString('ascii'), '%PDF');
   assert.ok(buffer.length > 5_000);
   const source = buffer.toString('latin1');
-  assert.ok((source.match(/\/Type\s*\/Page\b/g)?.length || 0)>=6);
+  assert.ok((source.match(/\/Type\s*\/Page\b/g)?.length || 0)>=4);
 });
 
 test('priced executive brief puts selected price before strategy and freezes no invented IBM economics',async()=>{
@@ -25,10 +25,10 @@ test('priced executive brief puts selected price before strategy and freezes no 
   if(process.env.WRITE_PDF_FIXTURE==='1'){await mkdir('tmp/pdfs',{recursive:true});await writeFile('tmp/pdfs/priced-services.pdf',buffer);}
   const parsed=await normalizePdfText({originalname:'executive-brief.pdf',mimetype:'application/pdf',size:buffer.length,buffer});
   const text=parsed.buffer.toString();
-  assert.match(text,/RECOMMENDED TOTAL EVALUATED PRICE/);assert.match(text,/PHASE 1/);assert.match(text,/Phase 2/);
-  assert.ok(text.indexOf('RECOMMENDED TOTAL EVALUATED PRICE')<text.indexOf('Market and competitive intelligence'));
-  assert.match(text,/20,000/);assert.match(text,/No evidence-supported named competitor/);assert.doesNotMatch(text,/No priced scenario|IBM execution floor/);
-  assert.match(text,/LOW PTW confidence/);
+  assert.match(text,/RECOMMENDED PTW/);assert.match(text,/PHASE 1/);assert.match(text,/Phase 2/);
+  assert.ok(text.indexOf('RECOMMENDED PTW')<text.indexOf('Pricing judgment'));
+  assert.match(text,/20,000/);assert.match(text,/Pursuit-specific rival field remains unconfirmed/);assert.doesNotMatch(text,/No priced scenario|IBM execution floor/);
+  assert.match(text,/Recommendation Confidence: MODERATE/);
   assert.doesNotMatch(text,/HIGH PTW confidence/);
 });
 
