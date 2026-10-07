@@ -5,6 +5,7 @@ import Workspace from '../Workspace';
 import PricingScenarioPanel from './PricingScenarioPanel';
 import { pricedServicesFixture } from '../../testFixtures/pricedServices';
 import { enforceAuthoritativeAnalysis } from '../../domain/marketPosition/authoritative';
+import CompetitiveRecommendation from './CompetitiveRecommendation';
 
 test('partial pricing is identified in the workspace and its full source schedule is prefilled for analyst rates',()=>{
   const raw=pricedServicesFixture();raw.evidence=raw.evidence.filter(e=>e.id!=='SYN-RATE-1');
@@ -20,4 +21,12 @@ test('partial pricing is identified in the workspace and its full source schedul
   assert.match(prices,/Rate or role mapping unresolved/);
   assert.match(prices,/readonly=""/i);
   assert.match(prices,/Sources and assumptions 97/);
+});
+
+test('complete modeled arithmetic retains low PTW confidence in the executive view',()=>{
+  const html=renderToStaticMarkup(<CompetitiveRecommendation analysis={pricedServicesFixture()} />);
+  assert.match(html,/overall: LOW/);
+  assert.match(html,/quantities: HIGH/);
+  assert.match(html,/execution: NOT ASSESSED/);
+  assert.doesNotMatch(html,/overall: HIGH/);
 });

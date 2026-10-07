@@ -28,6 +28,8 @@ test('priced executive brief puts selected price before strategy and freezes no 
   assert.match(text,/RECOMMENDED TOTAL EVALUATED PRICE/);assert.match(text,/PHASE 1/);assert.match(text,/Phase 2/);
   assert.ok(text.indexOf('RECOMMENDED TOTAL EVALUATED PRICE')<text.indexOf('Market and competitive intelligence'));
   assert.match(text,/20,000/);assert.match(text,/No evidence-supported named competitor/);assert.doesNotMatch(text,/No priced scenario|IBM execution floor/);
+  assert.match(text,/LOW PTW confidence/);
+  assert.doesNotMatch(text,/HIGH PTW confidence/);
 });
 
 test('strategic decision brief adds complete strategy pages before the market appendix', async () => {

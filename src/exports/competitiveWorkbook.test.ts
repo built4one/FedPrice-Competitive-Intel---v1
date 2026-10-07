@@ -18,6 +18,9 @@ test('workbook exposes distribution, role and total formulas with matching cache
   assert.equal((read.getWorksheet('Evaluated Components')!.getCell('D2').value as ExcelJS.CellFormulaValue).result,20000);
   assert.match((read.getWorksheet('Rate Statistics')!.getCell('C2').value as ExcelJS.CellFormulaValue).formula,/PERCENTILE.INC/);
   assert.equal(read.getWorksheet('Rate Distribution')!.rowCount,81);
+  const decision=read.getWorksheet('Executive Decision')!;
+  const confidenceRow=decision.getRows(1,decision.rowCount)!.find(row=>row.getCell(1).value==='overall confidence')!;
+  assert.equal(confidenceRow.getCell(2).value,'LOW');
   const xml=await (await JSZip.loadAsync(bytes)).file('xl/workbook.xml')!.async('string');
   assert.match(xml,/fullCalcOnLoad="1"/);
 });
