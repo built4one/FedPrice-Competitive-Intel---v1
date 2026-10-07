@@ -69,4 +69,14 @@ test('serves valid PDF and Excel downloads through the production export routes'
   await workbook.xlsx.load(Buffer.from(await response.arrayBuffer()) as any);
   assert.equal(workbook.getWorksheet('Competitive Labor')!.rowCount,97);
   assert.equal((workbook.getWorksheet('Competitive Strategies')!.getCell('D3').value as ExcelJS.CellFormulaValue).result,expected);
+  priced.evidence = priced.evidence.filter(e => e.id !== 'SYN-RATE-1');
+  const partialResponse = await fetch(`http://127.0.0.1:${port}/api/export-brief`, {
+    method: 'POST', headers: {'content-type':'application/json', cookie}, body: JSON.stringify(priced),
+  });
+  assert.equal(partialResponse.status, 200);
+  const partialWorkbook = new ExcelJS.Workbook();
+  await partialWorkbook.xlsx.load(Buffer.from(await partialResponse.arrayBuffer()) as any);
+  const offers = partialWorkbook.getWorksheet('Conditional Offer Scenarios')!;
+  assert.equal(offers.getRow(offers.rowCount).getCell(1).value, 'PARTIAL PLANNING SUBTOTALS');
+  assert.equal(partialWorkbook.getWorksheet('Competitive Strategies')!.getCell('E3').value, 'NO');
 });
