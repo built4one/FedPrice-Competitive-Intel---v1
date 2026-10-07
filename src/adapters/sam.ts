@@ -415,29 +415,41 @@ export async function resolveSamOpportunityPackage(referenceValue: string, uploa
   }
 
   const links = (found.opportunity.resourceLinks || []).slice(0, maxAutoFiles);
-  for (let offset = 0; offset < links.length; offset += 4) {
-    const batch = await Promise.all(links.slice(offset, offset + 4).map(link => downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes)));
-    for (const retrieved of batch) {
-      if (retrieved.file && usedBytes + retrieved.file.size > maxAutoPackageBytes) {
-        documents.push({ ...retrieved.document, retrievalStatus: 'TOO_LARGE', message: 'Document exceeds the remaining automatic package budget.' });
-        continue;
-      }
-      documents.push(retrieved.document);
-      if (retrieved.file) {
-        files.push(retrieved.file);
-        usedBytes += retrieved.file.size;
-      }
-    }
-  }
-  if ((found.opportunity.resourceLinks || []).length > links.length) {
+  
+  if (uploadedFiles.length > 0) {
     documents.push({
-      name: `${(found.opportunity.resourceLinks || []).length - links.length} additional SAM document(s)`,
+      name: `${links.length} SAM document(s)`,
       url: found.opportunity.noticeId ? `https://sam.gov/opp/${found.opportunity.noticeId}/view` : 'https://sam.gov/opportunities',
       provided: false,
       type: 'document',
       retrievalStatus: 'SKIPPED',
-      message: `Automatic intake is limited to ${maxAutoFiles} SAM attachments per run.`,
+      message: 'Automatic download skipped because analyst provided files.',
     });
+  } else {
+    for (let offset = 0; offset < links.length; offset += 4) {
+      const batch = await Promise.all(links.slice(offset, offset + 4).map(link => downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes)));
+      for (const retrieved of batch) {
+        if (retrieved.file && usedBytes + retrieved.file.size > maxAutoPackageBytes) {
+          documents.push({ ...retrieved.document, retrievalStatus: 'TOO_LARGE', message: 'Document exceeds the remaining automatic package budget.' });
+          continue;
+        }
+        documents.push(retrieved.document);
+        if (retrieved.file) {
+          files.push(retrieved.file);
+          usedBytes += retrieved.file.size;
+        }
+      }
+    }
+    if ((found.opportunity.resourceLinks || []).length > links.length) {
+      documents.push({
+        name: `${(found.opportunity.resourceLinks || []).length - links.length} additional SAM document(s)`,
+        url: found.opportunity.noticeId ? `https://sam.gov/opp/${found.opportunity.noticeId}/view` : 'https://sam.gov/opportunities',
+        provided: false,
+        type: 'document',
+        retrievalStatus: 'SKIPPED',
+        message: `Automatic intake is limited to ${maxAutoFiles} SAM attachments per run.`,
+      });
+    }
   }
 
   const retrievedCount = documents.filter((item) => item.retrievalStatus === 'RETRIEVED').length;

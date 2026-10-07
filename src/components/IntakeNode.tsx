@@ -43,15 +43,23 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
     const body = new FormData();
     if (reference?.trim()) body.append('opportunityRef', reference.trim());
     files.forEach((file) => body.append('files', file));
-    const response = await fetch('/api/analyze-solicitation', { method: 'POST', body, signal: controller.signal });
-    const payload = await response.json().catch(() => ({}));
+    let payload: any = {};
+    let rawText = '';
+    try {
+      rawText = await response.text();
+      payload = JSON.parse(rawText);
+    } catch {
+      // Vercel hard crash
+    }
     if (!response.ok) {
       if (response.status === 404) throw new Error('The analysis service is unavailable in this published app.');
       if (response.status === 413) throw new Error('An uploaded file is too large for the hosted analysis endpoint.');
       if (response.status === 502) throw new Error(payload.error || 'SAM.gov could not assemble the opportunity package. Upload the official solicitation and retry.');
       if (response.status === 503) throw new Error(payload.error || 'The production analysis service is not configured. Verify the server-side keys.');
       if ([408, 504].includes(response.status)) throw new Error('The analysis exceeded the hosting time limit. No completed run was saved.');
-      throw new Error(payload.error || `Analysis failed with server status ${response.status}.`);
+      
+      const serverErr = payload.error || (rawText.length < 100 ? rawText : 'Vercel Serverless Function Crash (OOM or Timeout)');
+      throw new Error(`Analysis failed with server status ${response.status}: ${serverErr}`);
     }
     return payload.data as OpportunityAnalysis;
   };
