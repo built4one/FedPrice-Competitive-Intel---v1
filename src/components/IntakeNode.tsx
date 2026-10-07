@@ -43,6 +43,7 @@ export default function IntakeNode({ onBack, onSuccess }: Props) {
     const body = new FormData();
     if (reference?.trim()) body.append('opportunityRef', reference.trim());
     files.forEach((file) => body.append('files', file));
+    const response = await fetch('/api/analyze-solicitation', { method: 'POST', body, signal: controller.signal });
     let payload: any = {};
     let rawText = '';
     try {
