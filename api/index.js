@@ -468,37 +468,66 @@ function reconcileSourceFacts(input) {
   };
 }
 
-// src/domain/ptw/competitivePosition.ts
-var COMPETITIVE_POSITION_VERSION = "competitive-position-1.1.0";
-function isPriceOrdered(analysis) {
-  const evaluationText = [
-    analysis.deal.evaluationMethod,
-    ...analysis.deal.requirements.filter((r) => r.category === "EVALUATION").map((r) => r.detail),
-    ...analysis.evidence.filter((e) => e.type === "SOLICITATION_FACT" && /evaluat|section m/i.test(`${e.claim} ${e.section}`)).map((e) => `${e.claim} ${e.excerpt || ""}`)
-  ].join(" ");
-  const affirmativeText = evaluationText.replace(/\b(?:not|non)[\s-]+LPTA\b/gi, "");
-  return /\bLPTA\b|lowest.price technically acceptable|rank(?:ed|ing)?[^.]{0,80}(?:price|lowest)|price.ordered|lowest.price first|price ranking.*first/i.test(affirmativeText);
+// src/domain/ptw/bidTransform.ts
+function determineBidTransform(deal) {
+  const scheme = deal.evaluationScheme;
+  if (!scheme) {
+    return {
+      discountPct: 0,
+      rationale: "No evaluation scheme detected. Using undiscounted public ceiling rates as a conservative baseline."
+    };
+  }
+  if (scheme.method === "LPTA" || scheme.priceWeight === "DOMINANT") {
+    return {
+      discountPct: 15,
+      rationale: "Price-dominant evaluation (LPTA or dominant weight). Assuming an aggressive 15% competitive discount from public ceiling rates."
+    };
+  }
+  if (scheme.method === "TRADE_OFF" && scheme.priceWeight === "SIGNIFICANT") {
+    return {
+      discountPct: 10,
+      rationale: "Best-value tradeoff with significant price weight. Assuming a standard 10% competitive discount from public ceiling rates."
+    };
+  }
+  if (scheme.method === "HIGHEST_TECH_RATED" || scheme.priceWeight === "LOW" || scheme.priceWeight === "NONE") {
+    return {
+      discountPct: 5,
+      rationale: "Qualifications-led or technical-dominant evaluation. Assuming a minimal 5% discount from public ceiling rates, favoring delivery margin."
+    };
+  }
+  return {
+    discountPct: 8,
+    rationale: "Unknown specific evaluation weighting. Assuming an 8% default competitive discount from public ceiling rates."
+  };
 }
+function applyBidTransform(rate, transform) {
+  return rate * (1 - transform.discountPct / 100);
+}
+
+// src/domain/ptw/competitivePosition.ts
+var COMPETITIVE_POSITION_VERSION = "competitive-position-1.2.0";
 function protectRole(analysis, row) {
   const s = analysis.deal.laborSignals.find((s2) => s2.title === row.title);
   const specialization = [s.pwsTitle || s.title, s.duties || "", s.certifications?.join(" ") || ""].join(" ");
-  if (s.titleConflict) return "Protect median economics while the source-role conflict is resolved; test alternative mappings.";
-  if ((s.minExperienceYears ?? 0) >= 5 || /\bsenior\b|\bprincipal\b|\blead\b|project manager|program manager|architect|e.discovery|conditional access|information assurance|cloud application|configuration manager|network (?:engineer|analyst)|virtual desktop/i.test(specialization))
-    return "Protect the public median as a planning assumption for documented seniority, specialist responsibilities or operational bottlenecks; recruiting economics remain unvalidated.";
-  if (row.proxy || row.sampleSize < 5) return "Protect median economics because the proxy mapping or small sample is weak; do not presume the lowest public rates are executable.";
+  if (s.titleConflict) return "Protect expected market economics while the source-role conflict is resolved; test alternative mappings.";
+  if ((s.minExperienceYears ?? 0) >= 5 || /\bsenior\b|\bprincipal\b|\blead\b|manager|director|architect|expert|specialist/i.test(specialization))
+    return "Protect the expected rate as a planning assumption for documented seniority, specialist responsibilities or operational bottlenecks.";
+  if (row.proxy || row.sampleSize < 5) return "Protect expected market economics because the proxy mapping or small sample is weak; do not presume aggressive low rates are executable.";
+  if (s.clearance && !/unclassified|none/i.test(s.clearance)) return "Protect the expected rate because cleared labor commands a market premium and introduces retention risk.";
   return "";
 }
 function calculateCompetitivePosition(analysis) {
   const model2 = buildLaborModel(analysis.deal, analysis.evidence);
-  const priceOrderFirst = isPriceOrdered(analysis);
+  const scheme = analysis.deal.evaluationScheme;
   const missing = [...model2.missing];
   if (model2.rows.some((r) => r.assumedHours)) missing.push("Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.");
   analysis.deal.sourceConflicts?.filter((c) => sourceConflictStatus(c, analysis.deal) === "OPEN").forEach((c) => missing.push(`Resolve ${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution}`));
+  const bidTransform = determineBidTransform(analysis.deal);
   const assumptions = [
     ...model2.assumptions,
     "All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.",
-    "No public lower-quartile rate establishes an executable staffing floor or a competitor bid.",
-    "No dollar premium, productivity saving, teaming saving or probability of win is inferred from qualitative strategy prose."
+    "No dollar premium, productivity saving, teaming saving or probability of win is inferred from qualitative strategy prose.",
+    bidTransform.rationale
   ];
   const pricing = analysis.deal.evaluationPricing;
   if (!pricing) missing.push("Re-extract the complete evaluated-price basket, travel/ODCs and extension instructions from the source package.");
@@ -531,32 +560,41 @@ function calculateCompetitivePosition(analysis) {
     }
     components.push({ ...c, includedAmount: dollars(c.amount * (1 + indirect / 100)), assumption });
   }
+  const priceOrderFirst = scheme?.method === "LPTA" || scheme?.priceWeight === "DOMINANT";
   const rows = model2.rows.map((r) => {
-    const protectionReason = priceOrderFirst ? protectRole(analysis, r) : "Use the median public rate provisionally; no quantified evaluated advantage establishes a premium or a lower competitive position.";
-    const recommendedRate = protectionReason ? r.medianRate : r.lowRate;
+    const protectionReason = protectRole(analysis, r);
+    const marketExpected = r.medianRate;
+    const marketAggressive = r.lowRate;
+    const marketDefensive = r.highRate;
+    const transformedExpected = applyBidTransform(marketExpected, bidTransform);
+    const transformedAggressive = applyBidTransform(marketAggressive, bidTransform);
+    const transformedDefensive = applyBidTransform(marketDefensive, { discountPct: Math.max(0, bidTransform.discountPct - 5), rationale: "Less discount for defensive posture" });
+    const recommendedRate = protectionReason ? transformedExpected : transformedAggressive;
     return {
       ...r,
       recommendedRate,
-      protectionReason: protectionReason || "Apply lower-quartile public-rate economics as a price-led planning assumption; validate duties, qualifications and cleared labor availability.",
-      low: dollars(r.hours * r.lowRate * r.factor),
+      protectionReason: protectionReason || "Role is unprotected; assume aggressive market posture.",
+      bidTransformAssumption: `Discounted ${bidTransform.discountPct}% from GSA ceiling.`,
+      low: dollars(r.hours * transformedAggressive * r.factor),
       target: dollars(r.hours * recommendedRate * r.factor),
-      high: dollars(r.hours * r.highRate * r.factor)
+      high: dollars(r.hours * transformedDefensive * r.factor)
     };
   });
   const nonLabor = dollars(components.reduce((a, c) => a + c.includedAmount, 0));
-  const aggressive = laborTotal(rows, "lowRate"), defensive = laborTotal(rows, "highRate");
-  const central = dollars(rows.reduce((a, r) => a + r.hours * r.recommendedRate * r.factor, 0));
+  const aggressive = dollars(rows.reduce((a, r) => a + r.low, 0));
+  const central = dollars(rows.reduce((a, r) => a + r.target, 0));
+  const defensive = dollars(rows.reduce((a, r) => a + r.high, 0));
   const hasBasis = model2.complete;
-  const lowerRoles = new Set(rows.filter((r) => r.recommendedRate !== r.medianRate).map((r) => r.title));
-  const medianRoles = new Set(rows.filter((r) => r.recommendedRate === r.medianRate).map((r) => r.title));
-  const selectionRationale = lowerRoles.size ? `Apply lower-quartile rates to ${lowerRoles.size} role(s) and median rates to ${medianRoles.size} role(s), based on the documented protection choices.` : `Every priced role uses its public median. No lower-quartile reduction is applied${priceOrderFirst ? " because each role currently requires rate protection" : ""}.`;
+  const lowerRoles = new Set(rows.filter((r) => r.protectionReason === "Role is unprotected; assume aggressive market posture.").map((r) => r.title));
+  const medianRoles = new Set(rows.filter((r) => r.protectionReason !== "Role is unprotected; assume aggressive market posture.").map((r) => r.title));
+  const selectionRationale = lowerRoles.size ? `Apply aggressive market posture to ${lowerRoles.size} role(s) and expected market posture to ${medianRoles.size} role(s), based on the documented protection choices.` : `Every priced role uses its expected market posture. No aggressive reduction is applied.`;
   const basis = hasBasis ? "MODELED_BASKET" : "PARTIAL_SUBTOTAL";
   const evaluationComplete = hasBasis && pricing?.completeness === "COMPLETE" && !missing.length;
   const target = hasBasis ? dollars(central + nonLabor) : null;
   const scenarios = rows.length ? [
-    { id: "AGGRESSIVE", label: "Aggressive", labor: aggressive, nonLabor, total: dollars(aggressive + nonLabor), selected: false, basis, rationale: "Lower-quartile role rates test the lowest public-rate planning posture.", condition: "Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor." },
+    { id: "AGGRESSIVE", label: "Aggressive", labor: aggressive, nonLabor, total: dollars(aggressive + nonLabor), selected: false, basis, rationale: "Aggressive transformed rates test the lowest public-rate planning posture.", condition: "Requires validated recruitment/retention economics and mandatory qualifications; it is not a cost floor." },
     { id: "RECOMMENDED", label: hasBasis ? "Recommended" : "Working median / protected case", labor: central, nonLabor, total: dollars(central + nonLabor), selected: hasBasis, basis, rationale: selectionRationale, condition: "Validate influential mappings, all evaluated components and eligible competitive pressure before adopting the target." },
-    { id: "DEFENSIVE", label: "Defensive stress case", labor: defensive, nonLabor, total: dollars(defensive + nonLabor), selected: false, basis, rationale: "Upper-quartile role rates test higher labor-price exposure.", condition: priceOrderFirst ? "Greater risk of being outside the price-ranked evaluation cohort; higher rates do not earn evaluation credit by themselves." : "A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay." }
+    { id: "DEFENSIVE", label: "Defensive stress case", labor: defensive, nonLabor, total: dollars(defensive + nonLabor), selected: false, basis, rationale: "Higher transformed rates test higher labor-price exposure.", condition: "A higher price requires an evidenced benefit under scored factors; internal cost increases do not establish willingness to pay." }
   ] : [];
   const shift = dollars(rows.reduce((a, r) => a + r.hours * r.factor, 0));
   const byRole = [...new Set(rows.map((r) => r.title))].map((title) => ({ title, delta: dollars(rows.filter((r) => r.title === title).reduce((a, r) => a + r.hours * r.factor * 10, 0)) })).sort((a, b) => b.delta - a.delta);
@@ -565,8 +603,7 @@ function calculateCompetitivePosition(analysis) {
     { label: "All starting labor rates", change: "+$1/hour", delta: shift, rationale: "Sum of evaluated hours times the documented escalation factors; fixed components remain unchanged." },
     ...byRole.slice(0, 3).map((r) => ({ label: r.title, change: "+$10/hour", delta: r.delta, rationale: "Isolated role-rate change; no change to staffing quantities or other roles." })),
     { label: "Annual escalation", change: "+1 percentage point", delta: escalationUp, rationale: "Planning sensitivity; preserve the extension convention and compare annual rate assumptions." },
-    { label: "Recommended labor economics", change: "+5% loaded labor rates", delta: dollars(central * 0.05), rationale: "No additional burden or profit is added to the loaded proxies." },
-    { label: "Role protection choices", change: "Protect every role at the median", delta: dollars(laborTotal(rows, "medianRate") - central), rationale: "Tests the effect of the selected role-level percentile assumptions." }
+    { label: "Recommended labor economics", change: "+5% loaded labor rates", delta: dollars(central * 0.05), rationale: "No additional burden or profit is added to the loaded proxies." }
   ] : [];
   const ceiling = analysis.evidence.find((e) => e.type === "SOLICITATION_FACT" && e.numeric?.valueType === "CONTRACT_CEILING");
   const ceilingExplanation = ceiling ? `The ${ceiling.id} contract/program ceiling is a spending constraint, not the evaluated labor-and-other-component basket. It does not set PTW or justify clipping the recommendation. Validate the solicitation's distinct ceiling and evaluation language (${ceiling.section || "locator needed"}).` : "No program ceiling is used to set the PTW target.";
@@ -576,16 +613,18 @@ function calculateCompetitivePosition(analysis) {
     { owner: "Capture lead", action: "Establish an eligible pursuit-specific competitor field and the scored clearance/past-performance thresholds.", consequence: "Reassess competitive pressure; do not assume staffing readiness earns separate evaluation credit." },
     { owner: "Pricing director", action: "Review the provisional target and its assumptions; validate company execution economics separately in Phase 2.", consequence: "Authorize a market planning position; company bid approval remains a separate decision." }
   ];
+  const overallConfidence = model2.complete && scheme && !missing.length ? "HIGH" : rows.length ? "MEDIUM" : "LOW";
+  const newStatus = hasBasis && !missing.length ? "FULL" : hasBasis ? "CONDITIONAL" : rows.length ? "PARTIAL" : "NOT_SUPPORTABLE";
   return {
     version: COMPETITIVE_POSITION_VERSION,
-    status: hasBasis ? "PROVISIONAL" : rows.length ? "PARTIAL_MODEL" : "NOT_SUPPORTED",
+    status: newStatus,
     priceOrderFirst,
     evaluationComplete,
     target,
     rangeLow: hasBasis ? dollars(aggressive + nonLabor) : null,
     rangeHigh: hasBasis ? dollars(defensive + nonLabor) : null,
-    rangeMeaning: "Planning scenario envelope, not a statistical confidence interval, verified competitor-price corridor or approved offer band. Unresolved mapping and component risks may extend beyond these endpoints.",
-    rationale: priceOrderFirst ? "Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage." : "Recommend a provisional market-aligned position. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.",
+    rangeMeaning: "Planning scenario envelope applying a discount transform to GSA ceiling rates. Unresolved mapping and component risks may extend beyond these endpoints.",
+    rationale: priceOrderFirst ? "Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage." : "Recommend a provisional market-aligned position based on the evaluation scheme. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.",
     decisionRequest: target == null ? "Resolve the missing quantity/rate basis; use the priced rows as partial working material." : "Adopt the selected provisional market planning target, subject to the listed validation actions. This is not company bid approval or a prediction of the winning price.",
     rows,
     components,
@@ -596,7 +635,7 @@ function calculateCompetitivePosition(analysis) {
     totalHours: model2.totalHours,
     pricedHours: model2.pricedHours,
     quantityComplete: model2.quantityComplete,
-    confidence: { quantities: model2.quantityComplete && model2.quantityRows.every((r) => !r.source.includes("needs validation")) ? "HIGH" : "LOW", rateRelevance: !hasBasis || rows.some((r) => r.proxy || r.sampleSize < 5 || !r.qualification || r.evidenceIds.some((id) => analysis.evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "LOW" : "MEDIUM", competition: "LOW", execution: "NOT_ASSESSED", overall: "LOW" },
+    confidence: { quantities: model2.quantityComplete && model2.quantityRows.every((r) => !r.source.includes("needs validation")) ? "HIGH" : "LOW", rateRelevance: !hasBasis || rows.some((r) => r.proxy || r.sampleSize < 5 || !r.qualification || r.evidenceIds.some((id) => analysis.evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "LOW" : "MEDIUM", competition: "LOW", execution: "NOT_ASSESSED", overall: overallConfidence },
     sensitivities,
     actions,
     ceilingExplanation
@@ -3166,7 +3205,7 @@ function buildBrief(l) {
   d.font(regularFont).fontSize(9).fillColor("white").text(`${p.status.replaceAll("_", " ")} | ${p.confidence.overall} PTW confidence`, margin + 16, heroY + 83, { width: 300, lineBreak: false });
   d.font(regularFont).fontSize(9).fillColor("#D4E6E7").text(`Planning scenario range
 ${compact(p.rangeLow)} - ${compact(p.rangeHigh)}
-${p.evaluationComplete ? "Evaluated basket represented" : p.status === "PARTIAL_MODEL" ? "Partial labor coverage" : "Component validation remains open"}`, margin + 327, heroY + 24, { width: 185, lineGap: 5 });
+${p.evaluationComplete ? "Evaluated basket represented" : p.status === "PARTIAL" ? "Partial labor coverage" : "Component validation remains open"}`, margin + 327, heroY + 24, { width: 185, lineGap: 5 });
   l.y = heroY + 119;
   l.text(`Decision requested: ${p.decisionRequest}`, true, 9);
   l.text(`Rate coverage: ${p.pricedHours.toLocaleString("en-US")} of ${p.totalHours.toLocaleString("en-US")} source hours priced; ${p.unpricedRows.length} unpriced rows.`, true, 9);
@@ -3362,6 +3401,8 @@ function addCompetitiveWorkbook(workbook, analysis) {
   }
   const labor = workbook.addWorksheet("Competitive Labor");
   labor.columns = [{ header: "Row ID", key: "id", width: 16 }, { header: "Labor category", key: "title", width: 38 }, { header: "Period", key: "period", width: 27 }, { header: "Total evaluated hours", key: "hours", width: 24 }, { header: "Lower loaded rate", key: "lowRate", width: 22 }, { header: "Median loaded rate", key: "medianRate", width: 22 }, { header: "Upper loaded rate", key: "highRate", width: 22 }, { header: "Selected loaded rate", key: "selectedRate", width: 22 }, { header: "Escalation factor", key: "factor", width: 22 }, { header: "Aggressive labor", key: "low", width: 24 }, { header: "Recommended labor", key: "target", width: 24 }, { header: "Defensive labor", key: "high", width: 24 }, { header: "Rate-protection reason", key: "reason", width: 100 }, { header: "Quantity source", key: "source", width: 85 }, { header: "Rate evidence IDs", key: "evidence", width: 40 }, { header: "Qualification / mapping limitation", key: "limitation", width: 100 }, { header: "Protect median: 1 / lower: 0", key: "protect", width: 30 }];
+  const bidTransform = determineBidTransform(analysis.deal);
+  const discount = bidTransform.discountPct / 100;
   p.rows.forEach((r) => {
     const index = labor.rowCount + 1;
     const rate = (column, result) => {
@@ -3377,16 +3418,16 @@ function addCompetitiveWorkbook(workbook, analysis) {
       lowRate: rate("C", r.lowRate),
       medianRate: rate("D", r.medianRate),
       highRate: rate("E", r.highRate),
-      selectedRate: { formula: `IF('Pricing Inputs'!$B$3="PRICE_ORDERED",IF(Q${index}=1,F${index},E${index}),F${index})`, result: r.recommendedRate },
+      selectedRate: { formula: `IF(Q${index}=1, F${index}*(1-${discount}), E${index}*(1-${discount}))`, result: r.recommendedRate },
       factor: { formula: factorFormula, result: r.factor },
-      low: { formula: `D${index}*E${index}*I${index}`, result: r.hours * r.lowRate * r.factor },
-      target: { formula: `D${index}*H${index}*I${index}`, result: r.hours * r.recommendedRate * r.factor },
-      high: { formula: `D${index}*G${index}*I${index}`, result: r.hours * r.highRate * r.factor },
+      low: { formula: `D${index}*(E${index}*(1-${discount}))*I${index}`, result: r.low },
+      target: { formula: `D${index}*H${index}*I${index}`, result: r.target },
+      high: { formula: `D${index}*(G${index}*(1-MAX(0,${discount}-0.05)))*I${index}`, result: r.high },
       reason: r.protectionReason,
       source: r.source,
       evidence: r.evidenceIds.join(", "),
       limitation: `${r.qualification} ${r.rateLimitation}`,
-      protect: r.recommendedRate === r.medianRate ? 1 : 0
+      protect: r.protectionReason.includes("unprotected") ? 0 : 1
     });
   });
   const components = workbook.addWorksheet("Evaluated Components");
@@ -3619,7 +3660,20 @@ var baseSchema = {
             feeAllowed: { type: "BOOLEAN" }
           }, required: ["id", "label", "category", "source", "evidenceIds", "indirectTreatment", "feeAllowed"] } }
         }, required: ["basis", "source", "completeness", "extensionRateRule", "components"] },
-        sourceConflicts: { type: "ARRAY", items: { type: "OBJECT", properties: { topic: { type: "STRING" }, descriptions: stringArray, sources: stringArray, resolution: { type: "STRING" }, status: { type: "STRING", enum: ["OPEN", "RESOLVED"] } }, required: ["topic", "descriptions", "sources", "resolution", "status"] } }
+        sourceConflicts: { type: "ARRAY", items: { type: "OBJECT", properties: { topic: { type: "STRING" }, descriptions: stringArray, sources: stringArray, resolution: { type: "STRING" }, status: { type: "STRING", enum: ["OPEN", "RESOLVED"] } }, required: ["topic", "descriptions", "sources", "resolution", "status"] } },
+        evaluationScheme: {
+          type: "OBJECT",
+          properties: {
+            method: { type: "STRING", enum: ["LPTA", "TRADE_OFF", "HIGHEST_TECH_RATED", "UNKNOWN"] },
+            priceWeight: { type: "STRING", enum: ["DOMINANT", "SIGNIFICANT", "EQUAL", "LOW", "NONE", "UNKNOWN"] },
+            far522178Included: { type: "BOOLEAN" },
+            unbalancedPricingChecked: { type: "BOOLEAN" },
+            priceRealismChecked: { type: "BOOLEAN" },
+            costRealismChecked: { type: "BOOLEAN" },
+            sourceRefs: stringArray
+          },
+          required: ["method", "priceWeight", "far522178Included", "unbalancedPricingChecked", "priceRealismChecked", "costRealismChecked", "sourceRefs"]
+        }
       },
       required: [
         "documentStatus",
@@ -3634,6 +3688,7 @@ var baseSchema = {
         "naics",
         "awardStructure",
         "evaluationMethod",
+        "evaluationScheme",
         "scopeSummary",
         "facts",
         "requirements",
@@ -3792,6 +3847,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
 - Mark source conflicts OPEN when clarification or an approved mapping is still required. Mark RESOLVED only when cited controlling language establishes the answer; matching checked set-aside boxes and an agreeing clause are resolved corroboration. Distinguish an abbreviated title from a different occupation. Fixed travel/ODC amounts are evaluated components, never a whole-contract evaluated-price estimate.
 - Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
+- Extract the EvaluationScheme accurately. Detect if the method is LPTA, TRADE_OFF, HIGHEST_TECH_RATED, or UNKNOWN. Determine the priceWeight compared to technical factors. Flag if FAR 52.217-8 (Option to Extend Services) is evaluated. Flag if unbalanced pricing, price realism, or cost realism are explicitly evaluated. Provide source section references.
 - Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
 - For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.

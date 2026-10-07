@@ -196,10 +196,23 @@ const baseSchema = {
           },required:['id','label','category','source','evidenceIds','indirectTreatment','feeAllowed']}},
         },required:['basis','source','completeness','extensionRateRule','components']},
         sourceConflicts:{type:'ARRAY',items:{type:'OBJECT',properties:{topic:{type:'STRING'},descriptions:stringArray,sources:stringArray,resolution:{type:'STRING'},status:{type:'STRING',enum:['OPEN','RESOLVED']}},required:['topic','descriptions','sources','resolution','status']}},
+        evaluationScheme: {
+          type: 'OBJECT',
+          properties: {
+            method: { type: 'STRING', enum: ['LPTA', 'TRADE_OFF', 'HIGHEST_TECH_RATED', 'UNKNOWN'] },
+            priceWeight: { type: 'STRING', enum: ['DOMINANT', 'SIGNIFICANT', 'EQUAL', 'LOW', 'NONE', 'UNKNOWN'] },
+            far522178Included: { type: 'BOOLEAN' },
+            unbalancedPricingChecked: { type: 'BOOLEAN' },
+            priceRealismChecked: { type: 'BOOLEAN' },
+            costRealismChecked: { type: 'BOOLEAN' },
+            sourceRefs: stringArray,
+          },
+          required: ['method', 'priceWeight', 'far522178Included', 'unbalancedPricingChecked', 'priceRealismChecked', 'costRealismChecked', 'sourceRefs'],
+        },
       },
       required: [
         'documentStatus', 'eligibilityReason', 'eligibilitySource', 'title', 'agency', 'solicitationNumber', 'contractType', 'dueDate', 'periodOfPerformance',
-        'naics', 'awardStructure', 'evaluationMethod', 'scopeSummary', 'facts', 'requirements',
+        'naics', 'awardStructure', 'evaluationMethod', 'evaluationScheme', 'scopeSummary', 'facts', 'requirements',
         'laborSignals', 'pricingSignals', 'laborModelComplete', 'laborModelSource', 'setAside', 'evaluationPricing', 'sourceConflicts',
       ],
     },
@@ -315,6 +328,7 @@ NON-NEGOTIABLE AUTHORITY RULES
 - Crosswalk EVERY pricing title to the PWS duties, minimum experience, education, certifications, clearance and worksite. Preserve pwsTitle and qualificationSource. Expose titleConflict and sourceConflicts when titles or descriptions disagree; personnel/background-investigation security is not cybersecurity. Do not silently rewrite a pricing title. Financial titles with contradictory descriptions require a conflict, not automatic cybersecurity mapping.
 - Mark source conflicts OPEN when clarification or an approved mapping is still required. Mark RESOLVED only when cited controlling language establishes the answer; matching checked set-aside boxes and an agreeing clause are resolved corroboration. Distinguish an abbreviated title from a different occupation. Fixed travel/ODC amounts are evaluated components, never a whole-contract evaluated-price estimate.
 - Populate evaluationPricing with the exact Section M basket and source: all evaluated labor periods, options/extension and specified non-labor components. Extract specified travel even if it is also described as an allowance or budget. Component amounts are total USD for their identified period, not unit rates. Do not include a grand total and its child amounts twice. Each component must cite an existing SOLICITATION_FACT evidence ID and source locator. Include permitted travel indirect treatment and no-profit/no-fee restrictions; do not invent an indirect percentage. COMPLETE means every required evaluated component and period is represented; otherwise PARTIAL with a specific gap.
+- Extract the EvaluationScheme accurately. Detect if the method is LPTA, TRADE_OFF, HIGHEST_TECH_RATED, or UNKNOWN. Determine the priceWeight compared to technical factors. Flag if FAR 52.217-8 (Option to Extend Services) is evaluated. Flag if unbalanced pricing, price realism, or cost realism are explicitly evaluated. Provide source section references.
 - Reconcile extension rate language: FINAL_OPTION_RATES if the extension uses final-option rates without new uplift; ESCALATE only if explicitly supported; UNKNOWN otherwise. Preserve the clause/source in extensionSource. Historical escalation carried into future years is a planning assumption, not a forecast. Record transition/ordering-date conflicts and specific past-performance rating thresholds and fallback evaluation branches.
 - Extract every explicitly stated labor category, quantity/headcount, annual hours, CLIN quantity, and performance period needed for a bottom-up model. Leave quantity or annualHours absent when the source does not state it.
 - For pricing workbooks, extract ALL labor rows, not illustrative roles or grand totals. Populate laborSignals.periods with each ordering year and extension: zero-based startMonth, months, FTE quantity (including explicit zero), totalHours for the ENTIRE ROW (all FTE combined for that period) only when documented, and sheet/cell locator. A row with 12 FTE and 23,040 hours has totalHours 23040; do NOT multiply those hours by FTE again. A six-month row with 960 hours has totalHours 960; do NOT halve it again. The separate laborSignals.annualHours field means hours PER FTE PER FULL YEAR only, never aggregate row hours. Preserve changing staffing by period. Never repeat Year I headcount across later years when the worksheet supplies a ramp.

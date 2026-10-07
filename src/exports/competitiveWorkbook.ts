@@ -2,6 +2,7 @@ import type ExcelJS from 'exceljs';
 import type { OpportunityAnalysis } from '../types';
 import { buildLaborModel } from '../domain/ptw/laborModel';
 import { sourceConflictStatus } from '../domain/sourceConsistency';
+import { determineBidTransform } from '../domain/ptw/bidTransform';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
@@ -53,7 +54,6 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   }
   const labor=workbook.addWorksheet('Competitive Labor');
   labor.columns=[{header:'Row ID',key:'id',width:16},{header:'Labor category',key:'title',width:38},{header:'Period',key:'period',width:27},{header:'Total evaluated hours',key:'hours',width:24},{header:'Lower loaded rate',key:'lowRate',width:22},{header:'Median loaded rate',key:'medianRate',width:22},{header:'Upper loaded rate',key:'highRate',width:22},{header:'Selected loaded rate',key:'selectedRate',width:22},{header:'Escalation factor',key:'factor',width:22},{header:'Aggressive labor',key:'low',width:24},{header:'Recommended labor',key:'target',width:24},{header:'Defensive labor',key:'high',width:24},{header:'Rate-protection reason',key:'reason',width:100},{header:'Quantity source',key:'source',width:85},{header:'Rate evidence IDs',key:'evidence',width:40},{header:'Qualification / mapping limitation',key:'limitation',width:100},{header:'Protect median: 1 / lower: 0',key:'protect',width:30}];
-  const { determineBidTransform } = await import('../domain/ptw/bidTransform');
   const bidTransform = determineBidTransform(analysis.deal);
   const discount = bidTransform.discountPct / 100;
 
