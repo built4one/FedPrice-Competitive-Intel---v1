@@ -469,35 +469,10 @@ function reconcileSourceFacts(input) {
 }
 
 // src/domain/ptw/bidTransform.ts
-function determineBidTransform(deal) {
-  const scheme = deal.evaluationScheme;
-  if (!scheme) {
-    return {
-      discountPct: 0,
-      rationale: "No evaluation scheme detected. Using undiscounted public ceiling rates as a conservative baseline."
-    };
-  }
-  if (scheme.method === "LPTA" || scheme.priceWeight === "DOMINANT") {
-    return {
-      discountPct: 15,
-      rationale: "Price-dominant evaluation (LPTA or dominant weight). Assuming an aggressive 15% competitive discount from public ceiling rates."
-    };
-  }
-  if (scheme.method === "TRADE_OFF" && scheme.priceWeight === "SIGNIFICANT") {
-    return {
-      discountPct: 10,
-      rationale: "Best-value tradeoff with significant price weight. Assuming a standard 10% competitive discount from public ceiling rates."
-    };
-  }
-  if (scheme.method === "HIGHEST_TECH_RATED" || scheme.priceWeight === "LOW" || scheme.priceWeight === "NONE") {
-    return {
-      discountPct: 5,
-      rationale: "Qualifications-led or technical-dominant evaluation. Assuming a minimal 5% discount from public ceiling rates, favoring delivery margin."
-    };
-  }
+function determineBidTransform(_deal) {
   return {
-    discountPct: 8,
-    rationale: "Unknown specific evaluation weighting. Assuming an 8% default competitive discount from public ceiling rates."
+    discountPct: 0,
+    rationale: "Public ceiling rates are planning proxies, not observed bids. No ceiling-to-offer discount is inferred from evaluation method; enter supported offered rates in Price Scenarios."
   };
 }
 function applyBidTransform(rate, transform) {
@@ -505,7 +480,7 @@ function applyBidTransform(rate, transform) {
 }
 
 // src/domain/ptw/competitivePosition.ts
-var COMPETITIVE_POSITION_VERSION = "competitive-position-1.2.0";
+var COMPETITIVE_POSITION_VERSION = "competitive-position-1.3.0";
 function protectRole(analysis, row) {
   const s = analysis.deal.laborSignals.find((s2) => s2.title === row.title);
   const specialization = [s.pwsTitle || s.title, s.duties || "", s.certifications?.join(" ") || ""].join(" ");
@@ -520,6 +495,8 @@ function calculateCompetitivePosition(analysis) {
   const model2 = buildLaborModel(analysis.deal, analysis.evidence);
   const scheme = analysis.deal.evaluationScheme;
   const missing = [...model2.missing];
+  if (!scheme || scheme.method === "UNKNOWN" || !scheme.sourceRefs.some((ref) => ref.trim()))
+    missing.push("Confirm the source-selection method with a solicitation locator before treating the evaluated-price model as complete.");
   if (model2.rows.some((r) => r.assumedHours)) missing.push("Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.");
   analysis.deal.sourceConflicts?.filter((c) => sourceConflictStatus(c, analysis.deal) === "OPEN").forEach((c) => missing.push(`Resolve ${c.topic}: ${c.descriptions.join(" versus ")}. ${c.resolution}`));
   const bidTransform = determineBidTransform(analysis.deal);
@@ -527,7 +504,8 @@ function calculateCompetitivePosition(analysis) {
     ...model2.assumptions,
     "All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.",
     "No dollar premium, productivity saving, teaming saving or probability of win is inferred from qualitative strategy prose.",
-    bidTransform.rationale
+    bidTransform.rationale,
+    "Competitive PTW confidence remains low: public-rate arithmetic does not validate rival bidding behavior or company execution feasibility."
   ];
   const pricing = analysis.deal.evaluationPricing;
   if (!pricing) missing.push("Re-extract the complete evaluated-price basket, travel/ODCs and extension instructions from the source package.");
@@ -562,19 +540,19 @@ function calculateCompetitivePosition(analysis) {
   }
   const priceOrderFirst = scheme?.method === "LPTA" || scheme?.priceWeight === "DOMINANT";
   const rows = model2.rows.map((r) => {
-    const protectionReason = protectRole(analysis, r);
+    const protectionReason = priceOrderFirst ? protectRole(analysis, r) : "Use median public-rate economics for tradeoff or unknown evaluation; no quantified evaluated advantage supports a premium or reduction.";
     const marketExpected = r.medianRate;
     const marketAggressive = r.lowRate;
     const marketDefensive = r.highRate;
     const transformedExpected = applyBidTransform(marketExpected, bidTransform);
     const transformedAggressive = applyBidTransform(marketAggressive, bidTransform);
-    const transformedDefensive = applyBidTransform(marketDefensive, { discountPct: Math.max(0, bidTransform.discountPct - 5), rationale: "Less discount for defensive posture" });
+    const transformedDefensive = applyBidTransform(marketDefensive, bidTransform);
     const recommendedRate = protectionReason ? transformedExpected : transformedAggressive;
     return {
       ...r,
       recommendedRate,
       protectionReason: protectionReason || "Role is unprotected; assume aggressive market posture.",
-      bidTransformAssumption: `Discounted ${bidTransform.discountPct}% from GSA ceiling.`,
+      bidTransformAssumption: bidTransform.rationale,
       low: dollars(r.hours * transformedAggressive * r.factor),
       target: dollars(r.hours * recommendedRate * r.factor),
       high: dollars(r.hours * transformedDefensive * r.factor)
@@ -613,7 +591,7 @@ function calculateCompetitivePosition(analysis) {
     { owner: "Capture lead", action: "Establish an eligible pursuit-specific competitor field and the scored clearance/past-performance thresholds.", consequence: "Reassess competitive pressure; do not assume staffing readiness earns separate evaluation credit." },
     { owner: "Pricing director", action: "Review the provisional target and its assumptions; validate company execution economics separately in Phase 2.", consequence: "Authorize a market planning position; company bid approval remains a separate decision." }
   ];
-  const overallConfidence = model2.complete && scheme && !missing.length ? "HIGH" : rows.length ? "MEDIUM" : "LOW";
+  const overallConfidence = "LOW";
   const newStatus = hasBasis && !missing.length ? "FULL" : hasBasis ? "CONDITIONAL" : rows.length ? "PARTIAL" : "NOT_SUPPORTABLE";
   return {
     version: COMPETITIVE_POSITION_VERSION,
@@ -623,7 +601,7 @@ function calculateCompetitivePosition(analysis) {
     target,
     rangeLow: hasBasis ? dollars(aggressive + nonLabor) : null,
     rangeHigh: hasBasis ? dollars(defensive + nonLabor) : null,
-    rangeMeaning: "Planning scenario envelope applying a discount transform to GSA ceiling rates. Unresolved mapping and component risks may extend beyond these endpoints.",
+    rangeMeaning: "Public-rate planning scenario envelope, not observed competitor bids or a statistical confidence interval. No automatic ceiling-to-offer discount is applied. Unresolved mapping and component risks may extend beyond these endpoints.",
     rationale: priceOrderFirst ? "Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage." : "Recommend a provisional market-aligned position based on the evaluation scheme. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.",
     decisionRequest: target == null ? "Resolve the missing quantity/rate basis; use the priced rows as partial working material." : "Adopt the selected provisional market planning target, subject to the listed validation actions. This is not company bid approval or a prediction of the winning price.",
     rows,
@@ -1326,6 +1304,41 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
   throw new ConnectorError("Source request failed.", "ERROR", void 0, maxAttempts, Date.now() - startedAt);
 }
 
+// src/adapters/boundedBody.ts
+var BodySizeError = class extends Error {
+  constructor(sizeBytes) {
+    super("Document exceeds the automatic retrieval size budget.");
+    this.sizeBytes = sizeBytes;
+  }
+};
+async function readBoundedBody(response, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("Invalid response byte budget.");
+  const declaredSize = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declaredSize) && declaredSize > maxBytes) {
+    await response.body?.cancel();
+    throw new BodySizeError(declaredSize);
+  }
+  if (!response.body) return Buffer.alloc(0);
+  const reader = response.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) return Buffer.concat(chunks, size);
+      size += value.byteLength;
+      if (size > maxBytes) throw new BodySizeError(size);
+      chunks.push(Buffer.from(value));
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => {
+    });
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 // src/adapters/sam.ts
 var resourceLinkSchema = z4.object({
   type: z4.string().nullish(),
@@ -1581,25 +1594,24 @@ async function downloadResource(rawLink, apiKey, uploadedFiles, remainingBytes) 
   if (!link || !/^https?:\/\//i.test(link)) {
     return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: "FAILED", message: "SAM did not provide a downloadable URL." } };
   }
+  if (remainingBytes <= 0) {
+    return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: "TOO_LARGE", message: "The automatic package byte budget is exhausted." } };
+  }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2e4);
   try {
     const response = await fetch(withApiKey(link, apiKey), { headers: { Accept: "*/*" }, redirect: "follow", signal: controller.signal });
     if (!response.ok) {
+      await response.body?.cancel();
       return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: response.status === 401 || response.status === 403 ? "RESTRICTED" : "FAILED", message: `Download returned HTTP ${response.status}.` } };
     }
     const name = filenameFromDisposition(response.headers.get("content-disposition")) || initialName;
     const declaredSize = Number(response.headers.get("content-length") || 0);
     if (isProvided(name, uploadedFiles)) {
+      await response.body?.cancel();
       return { document: { name, url: safeUrl, provided: true, type, retrievalStatus: "PROVIDED", sizeBytes: declaredSize || void 0 } };
     }
-    if (declaredSize > maxAutoFileBytes || declaredSize > remainingBytes) {
-      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: "TOO_LARGE", sizeBytes: declaredSize || void 0, message: "Document exceeds the automatic retrieval size budget." } };
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > maxAutoFileBytes || buffer.length > remainingBytes) {
-      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: "TOO_LARGE", sizeBytes: buffer.length, message: "Document exceeds the automatic retrieval size budget." } };
-    }
+    const buffer = await readBoundedBody(response, Math.min(maxAutoFileBytes, remainingBytes));
     const mime = inferMime(name, response.headers.get("content-type"));
     if (!isSupportedMime(mime)) {
       return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: "UNSUPPORTED", sizeBytes: buffer.length, message: `Unsupported document type (${mime}).` } };
@@ -1609,6 +1621,9 @@ async function downloadResource(rawLink, apiKey, uploadedFiles, remainingBytes) 
       file: { originalname: name, mimetype: mime, size: buffer.length, buffer, sourceUrl: safeUrl }
     };
   } catch (error) {
+    if (error instanceof BodySizeError) {
+      return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: "TOO_LARGE", sizeBytes: error.sizeBytes, message: error.message } };
+    }
     const message = error instanceof Error && error.name === "AbortError" ? "Download timed out." : error instanceof Error ? error.message : "Download failed.";
     return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: "FAILED", message } };
   } finally {
@@ -1626,9 +1641,9 @@ async function retrieveDescription(opportunity, apiKey, remainingBytes) {
   try {
     const response = await fetch(withApiKey(opportunity.description, apiKey), { headers: { Accept: "text/html,text/plain,*/*" }, signal: controller.signal });
     if (!response.ok) return void 0;
-    const text2 = stripHtml(await response.text());
+    const text2 = stripHtml((await readBoundedBody(response, Math.min(maxAutoFileBytes, remainingBytes))).toString("utf8"));
     if (!text2) return void 0;
-    const buffer = Buffer.from(text2.slice(0, Math.min(text2.length, remainingBytes)), "utf8");
+    const buffer = Buffer.from(text2, "utf8");
     return {
       document: { name: "SAM Opportunity Description.txt", url: safeUrl, provided: false, type: "description", retrievalStatus: "RETRIEVED", sizeBytes: buffer.length, mimeType: "text/plain" },
       file: { originalname: "SAM Opportunity Description.txt", mimetype: "text/plain", size: buffer.length, buffer, sourceUrl: safeUrl }
@@ -1655,29 +1670,34 @@ async function resolveSamOpportunityPackage(referenceValue, uploadedFiles = []) 
     usedBytes += description.file.size;
   }
   const links = (found.opportunity.resourceLinks || []).slice(0, maxAutoFiles);
-  for (let offset = 0; offset < links.length; offset += 4) {
-    const batch = await Promise.all(links.slice(offset, offset + 4).map((link) => downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes)));
-    for (const retrieved of batch) {
-      if (retrieved.file && usedBytes + retrieved.file.size > maxAutoPackageBytes) {
-        documents.push({ ...retrieved.document, retrievalStatus: "TOO_LARGE", message: "Document exceeds the remaining automatic package budget." });
-        continue;
-      }
+  if (uploadedFiles.length > 0) {
+    documents.push({
+      name: `${links.length} SAM document(s)`,
+      url: found.opportunity.noticeId ? `https://sam.gov/opp/${found.opportunity.noticeId}/view` : "https://sam.gov/opportunities",
+      provided: false,
+      type: "document",
+      retrievalStatus: "SKIPPED",
+      message: "Automatic download skipped because analyst provided files."
+    });
+  } else {
+    for (const link of links) {
+      const retrieved = await downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes);
       documents.push(retrieved.document);
       if (retrieved.file) {
         files.push(retrieved.file);
         usedBytes += retrieved.file.size;
       }
     }
-  }
-  if ((found.opportunity.resourceLinks || []).length > links.length) {
-    documents.push({
-      name: `${(found.opportunity.resourceLinks || []).length - links.length} additional SAM document(s)`,
-      url: found.opportunity.noticeId ? `https://sam.gov/opp/${found.opportunity.noticeId}/view` : "https://sam.gov/opportunities",
-      provided: false,
-      type: "document",
-      retrievalStatus: "SKIPPED",
-      message: `Automatic intake is limited to ${maxAutoFiles} SAM attachments per run.`
-    });
+    if ((found.opportunity.resourceLinks || []).length > links.length) {
+      documents.push({
+        name: `${(found.opportunity.resourceLinks || []).length - links.length} additional SAM document(s)`,
+        url: found.opportunity.noticeId ? `https://sam.gov/opp/${found.opportunity.noticeId}/view` : "https://sam.gov/opportunities",
+        provided: false,
+        type: "document",
+        retrievalStatus: "SKIPPED",
+        message: `Automatic intake is limited to ${maxAutoFiles} SAM attachments per run.`
+      });
+    }
   }
   const retrievedCount = documents.filter((item) => item.retrievalStatus === "RETRIEVED").length;
   const providedCount = documents.filter((item) => item.retrievalStatus === "PROVIDED").length;
@@ -3401,8 +3421,6 @@ function addCompetitiveWorkbook(workbook, analysis) {
   }
   const labor = workbook.addWorksheet("Competitive Labor");
   labor.columns = [{ header: "Row ID", key: "id", width: 16 }, { header: "Labor category", key: "title", width: 38 }, { header: "Period", key: "period", width: 27 }, { header: "Total evaluated hours", key: "hours", width: 24 }, { header: "Lower loaded rate", key: "lowRate", width: 22 }, { header: "Median loaded rate", key: "medianRate", width: 22 }, { header: "Upper loaded rate", key: "highRate", width: 22 }, { header: "Selected loaded rate", key: "selectedRate", width: 22 }, { header: "Escalation factor", key: "factor", width: 22 }, { header: "Aggressive labor", key: "low", width: 24 }, { header: "Recommended labor", key: "target", width: 24 }, { header: "Defensive labor", key: "high", width: 24 }, { header: "Rate-protection reason", key: "reason", width: 100 }, { header: "Quantity source", key: "source", width: 85 }, { header: "Rate evidence IDs", key: "evidence", width: 40 }, { header: "Qualification / mapping limitation", key: "limitation", width: 100 }, { header: "Protect median: 1 / lower: 0", key: "protect", width: 30 }];
-  const bidTransform = determineBidTransform(analysis.deal);
-  const discount = bidTransform.discountPct / 100;
   p.rows.forEach((r) => {
     const index = labor.rowCount + 1;
     const rate = (column, result) => {
@@ -3418,11 +3436,11 @@ function addCompetitiveWorkbook(workbook, analysis) {
       lowRate: rate("C", r.lowRate),
       medianRate: rate("D", r.medianRate),
       highRate: rate("E", r.highRate),
-      selectedRate: { formula: `IF(Q${index}=1, F${index}*(1-${discount}), E${index}*(1-${discount}))`, result: r.recommendedRate },
+      selectedRate: { formula: `IF(Q${index}=1,F${index},E${index})`, result: r.recommendedRate },
       factor: { formula: factorFormula, result: r.factor },
-      low: { formula: `D${index}*(E${index}*(1-${discount}))*I${index}`, result: r.low },
-      target: { formula: `D${index}*H${index}*I${index}`, result: r.target },
-      high: { formula: `D${index}*(G${index}*(1-MAX(0,${discount}-0.05)))*I${index}`, result: r.high },
+      low: { formula: `ROUND(D${index}*E${index}*I${index},2)`, result: r.low },
+      target: { formula: `ROUND(D${index}*H${index}*I${index},2)`, result: r.target },
+      high: { formula: `ROUND(D${index}*G${index}*I${index},2)`, result: r.high },
       reason: r.protectionReason,
       source: r.source,
       evidence: r.evidenceIds.join(", "),
@@ -4456,7 +4474,7 @@ app.post("/api/export-brief", async (req, res) => {
       p.rows.forEach((r) => priced.addRow({ label: `${r.title} / ${r.period}`, quantity: r.hours, lowUnitPrice: r.lowRate * r.factor, targetUnitPrice: r.recommendedRate * r.factor, highUnitPrice: r.highRate * r.factor, source: `${r.source}; ${r.evidenceIds.join(", ")}. ${r.protectionReason}` }));
       p.unpricedRows.forEach((r) => priced.addRow({ label: `${r.title} / ${r.period}`, quantity: r.hours, source: `UNPRICED - excluded from partial subtotals. ${r.source}` }));
       p.components.forEach((c) => priced.addRow({ label: c.label, quantity: 1, lowUnitPrice: c.includedAmount, targetUnitPrice: c.includedAmount, highUnitPrice: c.includedAmount, source: `${c.source}. ${c.assumption}` }));
-      priced.addRow({ label: p.status === "PARTIAL_MODEL" ? "PARTIAL PLANNING SUBTOTALS" : "EVALUATED PLANNING TOTALS", lowUnitPrice: p.scenarios[0].total, targetUnitPrice: p.scenarios[1].total, highUnitPrice: p.scenarios[2].total, source: `${p.status}. ${p.pricedHours} of ${p.totalHours} source labor hours priced. ${p.evaluationComplete ? "Evaluation basket represented" : "Validation remains open"}. Recalculable formulas: Competitive Labor / Competitive Strategies.` });
+      priced.addRow({ label: p.status === "PARTIAL" ? "PARTIAL PLANNING SUBTOTALS" : "EVALUATED PLANNING TOTALS", lowUnitPrice: p.scenarios[0].total, targetUnitPrice: p.scenarios[1].total, highUnitPrice: p.scenarios[2].total, source: `${p.status}. ${p.pricedHours} of ${p.totalHours} source labor hours priced. ${p.evaluationComplete ? "Evaluation basket represented" : "Validation remains open"}. Recalculable formulas: Competitive Labor / Competitive Strategies.` });
     } else priced.addRow({ label: "No complete calculation basis", source: analysis.competitivePosition?.missing.join(" ") || "Re-extract the quantity/rate and evaluated-basket inputs." });
     const strategy = workbook.addWorksheet("PTW Strategy");
     strategy.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "assessment", width: 100 }, { header: "Claim type", key: "kind", width: 18 }, { header: "Evidence IDs", key: "evidence", width: 36 }, { header: "Validation action", key: "validation", width: 80 }];
