@@ -11,6 +11,7 @@ export function pricedServicesFixture(){
   a.deal.title='SYNTHETIC - Secure Enterprise Services';a.deal.solicitationNumber='SYNTHETIC-27-R-001';
   a.deal.setAside='Total small business';a.deal.naics='518210';a.deal.performanceMonths=66;a.deal.periodOfPerformance='Five years plus six-month extension';
   a.deal.evaluationMethod='Offers ranked by lowest price first; evaluate clearance and past performance until enough qualifying offers are identified.';
+  a.deal.evaluationScheme={method:'LPTA',priceWeight:'DOMINANT',far522178Included:true,unbalancedPricingChecked:true,priceRealismChecked:false,costRealismChecked:false,sourceRefs:['Synthetic Section M']};
   a.deal.requirements=[{name:'Facility clearance',detail:'Active Top Secret facility clearance is required.',category:'COMPLIANCE',section:'Synthetic Section M',confidence:99},{name:'Past performance',detail:'Preferred cohort requires Substantial Confidence; fallback branches require source-selection review.',category:'EVALUATION',section:'Synthetic Section M',confidence:99}];
   const titles=['Systems Administrator','Help Desk','Records Manager','Software Engineer','Project Manager II','Conditional Access Policy Manager','Cloud Application Admin','Configuration Manager','E-Discovery Administrator','Information Assurance Analyst','Network Analyst','Network Engineer','Financial Specialist','Personnel Security Specialist','Cloud Architect','Database Administrator'];
   const quantities=[20,12,8,8,6,5,5,4,4,3,3,2,1,1,1,1];

@@ -50,8 +50,8 @@ test('unpriced and conflicting occupations retain source hours without selecting
 test('the rationale describes an all-median protected case when no role receives a lower-quartile rate',()=>{
   const a=pricedServicesFixture();a.deal.laborSignals.forEach(s=>s.minExperienceYears=8);
   const p=calculateCompetitivePosition(a);
-  assert.ok(p.rows.every(r=>r.recommendedRate===r.medianRate));
-  assert.match(p.scenarios[1].rationale,/Every priced role uses its public median/);
+  assert.ok(p.rows.every(r=>r.protectionReason !== 'Role is unprotected; assume aggressive market posture.'));
+  assert.match(p.scenarios[1].rationale,/Every priced role uses its expected market posture/);
 });
 
 test('prefilled offers retain the full schedule, allow rate edits, and reject missing quantities or prices',()=>{

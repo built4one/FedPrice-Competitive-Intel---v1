@@ -130,6 +130,16 @@ export interface EvidenceItem {
 
 export interface DataGap { question: string; impact: string; priority: 'HIGH' | 'MEDIUM' | 'LOW'; }
 
+export interface EvaluationScheme {
+  method: 'LPTA' | 'TRADE_OFF' | 'HIGHEST_TECH_RATED' | 'UNKNOWN';
+  priceWeight: 'DOMINANT' | 'SIGNIFICANT' | 'EQUAL' | 'LOW' | 'NONE' | 'UNKNOWN';
+  far522178Included: boolean;
+  unbalancedPricingChecked: boolean;
+  priceRealismChecked: boolean;
+  costRealismChecked: boolean;
+  sourceRefs: string[];
+}
+
 export interface DealProfile {
   documentStatus?: string;
   eligibilityReason?: string;
@@ -146,6 +156,7 @@ export interface DealProfile {
   psc?: string;
   awardStructure: string;
   evaluationMethod: string;
+  evaluationScheme?: EvaluationScheme;
   scopeSummary: string;
   facts: DealFact[];
   requirements: RequirementSignal[];

@@ -60,7 +60,7 @@ function buildBrief(l:Layout){
   d.font(boldFont).fontSize(8).fillColor('#B9DDDB').text(p.evaluationComplete ? 'RECOMMENDED TOTAL EVALUATED PRICE' : 'PROVISIONAL PRICE OF MODELED BASKET',margin+16,heroY+15,{width:320,lineBreak:false});
   d.font(boldFont).fontSize(p.target==null?24:34).fillColor('white').text(compact(p.target),margin+16,heroY+35,{width:300,lineBreak:false});
   d.font(regularFont).fontSize(9).fillColor('white').text(`${p.status.replaceAll('_',' ')} | ${p.confidence.overall} PTW confidence`,margin+16,heroY+83,{width:300,lineBreak:false});
-  d.font(regularFont).fontSize(9).fillColor('#D4E6E7').text(`Planning scenario range\n${compact(p.rangeLow)} - ${compact(p.rangeHigh)}\n${p.evaluationComplete?'Evaluated basket represented':p.status==='PARTIAL_MODEL'?'Partial labor coverage':'Component validation remains open'}`,margin+327,heroY+24,{width:185,lineGap:5});
+  d.font(regularFont).fontSize(9).fillColor('#D4E6E7').text(`Planning scenario range\n${compact(p.rangeLow)} - ${compact(p.rangeHigh)}\n${p.evaluationComplete?'Evaluated basket represented':p.status==='PARTIAL'?'Partial labor coverage':'Component validation remains open'}`,margin+327,heroY+24,{width:185,lineGap:5});
   l.y=heroY+119;
   l.text(`Decision requested: ${p.decisionRequest}`,true,9);
   l.text(`Rate coverage: ${p.pricedHours.toLocaleString('en-US')} of ${p.totalHours.toLocaleString('en-US')} source hours priced; ${p.unpricedRows.length} unpriced rows.`,true,9);

@@ -100,7 +100,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <span className="rounded-full bg-blue-100 px-2.5 py-1 text-[10px] font-black text-blue-700">PTW INTELLIGENCE</span>
           <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-600">QUALITATIVE: {analysis.meta.researchStatus?.replaceAll('_',' ')}</span>
-          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${pricing.evaluationComplete ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>PRICING MODEL: {pricing.evaluationComplete ? 'BASKET COMPLETE' : pricing.status==='PROVISIONAL' ? 'COMPONENT VALIDATION OPEN' : pricing.status.replaceAll('_',' ')}</span>
+          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${pricing.evaluationComplete ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-800'}`}>PRICING MODEL: {pricing.evaluationComplete ? 'BASKET COMPLETE' : (pricing.status==='CONDITIONAL' || pricing.status==='PARTIAL') ? 'COMPONENT VALIDATION OPEN' : pricing.status.replaceAll('_',' ')}</span>
         </div>
         <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1>
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>

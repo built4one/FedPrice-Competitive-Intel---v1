@@ -10,7 +10,7 @@ test('partial pricing is identified in the workspace and its full source schedul
   const raw=pricedServicesFixture();raw.evidence=raw.evidence.filter(e=>e.id!=='SYN-RATE-1');
   const a=enforceAuthoritativeAnalysis(raw);
   const workspace=renderToStaticMarkup(<Workspace analysis={a} onBack={()=>{}} onUpdate={async()=>{}} />);
-  assert.match(workspace,/PRICING MODEL: PARTIAL MODEL/);
+  assert.match(workspace,/PRICING MODEL: COMPONENT VALIDATION OPEN/);
   assert.match(workspace,/PARTIAL SUBTOTAL/);
   assert.match(workspace,/1,050,240/);
   assert.doesNotMatch(workspace,/NUMERIC: SUPPORTED/);
