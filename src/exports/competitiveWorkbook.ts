@@ -2,7 +2,6 @@ import type ExcelJS from 'exceljs';
 import type { OpportunityAnalysis } from '../types';
 import { buildLaborModel } from '../domain/ptw/laborModel';
 import { sourceConflictStatus } from '../domain/sourceConsistency';
-import { determineBidTransform } from '../domain/ptw/bidTransform';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
@@ -54,19 +53,16 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   }
   const labor=workbook.addWorksheet('Competitive Labor');
   labor.columns=[{header:'Row ID',key:'id',width:16},{header:'Labor category',key:'title',width:38},{header:'Period',key:'period',width:27},{header:'Total evaluated hours',key:'hours',width:24},{header:'Lower loaded rate',key:'lowRate',width:22},{header:'Median loaded rate',key:'medianRate',width:22},{header:'Upper loaded rate',key:'highRate',width:22},{header:'Selected loaded rate',key:'selectedRate',width:22},{header:'Escalation factor',key:'factor',width:22},{header:'Aggressive labor',key:'low',width:24},{header:'Recommended labor',key:'target',width:24},{header:'Defensive labor',key:'high',width:24},{header:'Rate-protection reason',key:'reason',width:100},{header:'Quantity source',key:'source',width:85},{header:'Rate evidence IDs',key:'evidence',width:40},{header:'Qualification / mapping limitation',key:'limitation',width:100},{header:'Protect median: 1 / lower: 0',key:'protect',width:30}];
-  const bidTransform = determineBidTransform(analysis.deal);
-  const discount = bidTransform.discountPct / 100;
-
   p.rows.forEach(r=>{
     const index=labor.rowCount+1;
     const rate=(column:string,result:number)=>{const refs=r.evidenceIds.map(id=>statRows.get(id)).filter((v):v is number=>v!=null).map(n=>`'Rate Statistics'!${column}${n}`);return refs.length ? {formula:`MEDIAN(${refs.join(',')})`,result} : result;};
     const factorFormula=r.rateYearWeights.map(w=>`${w.weight}*(1+'Pricing Inputs'!$B$2)^${w.year}`).join('+');
     labor.addRow({id:r.id,title:r.title,period:r.period,hours:r.hours,lowRate:rate('C',r.lowRate),medianRate:rate('D',r.medianRate),highRate:rate('E',r.highRate),
-      selectedRate:{formula:`IF(Q${index}=1, F${index}*(1-${discount}), E${index}*(1-${discount}))`,result:r.recommendedRate},
+      selectedRate:{formula:`IF(Q${index}=1,F${index},E${index})`,result:r.recommendedRate},
       factor:{formula:factorFormula,result:r.factor},
-      low:{formula:`D${index}*(E${index}*(1-${discount}))*I${index}`,result:r.low},
-      target:{formula:`D${index}*H${index}*I${index}`,result:r.target},
-      high:{formula:`D${index}*(G${index}*(1-MAX(0,${discount}-0.05)))*I${index}`,result:r.high},
+      low:{formula:`ROUND(D${index}*E${index}*I${index},2)`,result:r.low},
+      target:{formula:`ROUND(D${index}*H${index}*I${index},2)`,result:r.target},
+      high:{formula:`ROUND(D${index}*G${index}*I${index},2)`,result:r.high},
       reason:r.protectionReason,source:r.source,evidence:r.evidenceIds.join(', '),limitation:`${r.qualification} ${r.rateLimitation}`,protect:r.protectionReason.includes('unprotected')?0:1});
   });
   const components=workbook.addWorksheet('Evaluated Components');

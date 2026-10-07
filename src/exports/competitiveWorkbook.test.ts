@@ -22,6 +22,24 @@ test('workbook exposes distribution, role and total formulas with matching cache
   assert.match(xml,/fullCalcOnLoad="1"/);
 });
 
+test('workbook formulas preserve undiscounted planning rates and row-cent rounding',()=>{
+  const a=pricedServicesFixture();
+  a.deal.evaluationScheme!.method='TRADE_OFF';
+  a.deal.evaluationScheme!.priceWeight='LOW';
+  a.deal.laborSignals[1].clearance='None';
+  const authoritative=enforceAuthoritativeAnalysis(a),w=new ExcelJS.Workbook();
+  w.addWorksheet('Executive Decision').columns=[{header:'Field',key:'field'},{header:'Value',key:'value'}];
+  addCompetitiveWorkbook(w,authoritative);
+  const labor=w.getWorksheet('Competitive Labor')!;
+  authoritative.competitivePosition!.rows.forEach((r,i)=>{
+    const n=i+2;
+    assert.equal(labor.getCell(`Q${n}`).value,1);
+    assert.deepEqual(labor.getCell(`H${n}`).value,{formula:`IF(Q${n}=1,F${n},E${n})`,result:r.medianRate});
+    for (const [column,rate,result] of [['J','E',r.low],['K','H',r.target],['L','G',r.high]] as const)
+      assert.deepEqual(labor.getCell(`${column}${n}`).value,{formula:`ROUND(D${n}*${rate}${n}*I${n},2)`,result});
+  });
+});
+
 test('invalid component indirects recalculate at the disclosed zero assumption',()=>{
   const a=pricedServicesFixture();
   a.deal.evaluationPricing!.components[0].indirectTreatment='KNOWN';

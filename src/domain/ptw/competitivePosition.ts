@@ -3,7 +3,7 @@ import { buildLaborModel, dollars, laborTotal, type LaborCalculationRow, type La
 import { sourceConflictStatus } from '../sourceConsistency';
 import { determineBidTransform, applyBidTransform } from './bidTransform';
 
-export const COMPETITIVE_POSITION_VERSION = 'competitive-position-1.2.0';
+export const COMPETITIVE_POSITION_VERSION = 'competitive-position-1.3.0';
 export interface CompetitiveScenario {
   id: 'AGGRESSIVE' | 'RECOMMENDED' | 'DEFENSIVE'; label: string; labor: number; nonLabor: number;
   total: number; selected: boolean; rationale: string; condition: string; basis: 'PARTIAL_SUBTOTAL' | 'MODELED_BASKET';
@@ -81,7 +81,8 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const priceOrderFirst = scheme?.method === 'LPTA' || scheme?.priceWeight === 'DOMINANT';
   
   const rows: PricedLaborRow[] = model.rows.map(r=>{
-    const protectionReason = protectRole(analysis,r);
+    const protectionReason = priceOrderFirst ? protectRole(analysis,r)
+      : 'Use median public-rate economics for tradeoff or unknown evaluation; no quantified evaluated advantage supports a premium or reduction.';
     // Base market rate choice
     const marketExpected = r.medianRate;
     const marketAggressive = r.lowRate;
@@ -90,7 +91,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     // Apply the bid discount logic to public ceiling rates
     const transformedExpected = applyBidTransform(marketExpected, bidTransform);
     const transformedAggressive = applyBidTransform(marketAggressive, bidTransform);
-    const transformedDefensive = applyBidTransform(marketDefensive, {discountPct: Math.max(0, bidTransform.discountPct - 5), rationale: 'Less discount for defensive posture'});
+    const transformedDefensive = applyBidTransform(marketDefensive, bidTransform);
 
     // Recommended rate uses the expected (protected) or aggressive (unprotected)
     const recommendedRate = protectionReason ? transformedExpected : transformedAggressive;
@@ -98,7 +99,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     return {...r,
       recommendedRate,
       protectionReason: protectionReason || 'Role is unprotected; assume aggressive market posture.',
-      bidTransformAssumption: `Discounted ${bidTransform.discountPct}% from GSA ceiling.`,
+      bidTransformAssumption: bidTransform.rationale,
       low:dollars(r.hours*transformedAggressive*r.factor),
       target:dollars(r.hours*recommendedRate*r.factor),
       high:dollars(r.hours*transformedDefensive*r.factor)};
@@ -152,7 +153,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
 
   return {version:COMPETITIVE_POSITION_VERSION,status:newStatus,priceOrderFirst,evaluationComplete,target,
     rangeLow:hasBasis ? dollars(aggressive+nonLabor) : null,rangeHigh:hasBasis ? dollars(defensive+nonLabor) : null,
-    rangeMeaning:'Planning scenario envelope applying a discount transform to GSA ceiling rates. Unresolved mapping and component risks may extend beyond these endpoints.',
+    rangeMeaning:'Public-rate planning scenario envelope, not observed competitor bids or a statistical confidence interval. No automatic ceiling-to-offer discount is applied. Unresolved mapping and component risks may extend beyond these endpoints.',
     rationale:priceOrderFirst ? 'Recommend a price-led market planning position with explicit role protection. Keep required clearance and past performance gates intact; higher delivery spend alone does not establish an evaluated advantage.' : 'Recommend a provisional market-aligned position based on the evaluation scheme. Quantify any proposed evaluated advantage before moving above neutral public-rate economics.',
     decisionRequest:target == null ? 'Resolve the missing quantity/rate basis; use the priced rows as partial working material.' : 'Adopt the selected provisional market planning target, subject to the listed validation actions. This is not company bid approval or a prediction of the winning price.',
     rows,components,scenarios,missing:[...new Set(missing)],assumptions:[...new Set(assumptions)],

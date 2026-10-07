@@ -34,8 +34,24 @@ test('strategy changes selected role rates without a fabricated tradeoff premium
   const a=pricedServicesFixture();a.deal.evaluationMethod='Best value tradeoff; technical factors significantly outweigh price';a.deal.requirements=[];
   a.deal.evaluationScheme={method:'TRADE_OFF',priceWeight:'LOW',far522178Included:true,unbalancedPricingChecked:true,priceRealismChecked:false,costRealismChecked:false,sourceRefs:['Synthetic Section M']};
   const p=calculateCompetitivePosition(a);assert.equal(p.priceOrderFirst,false);
+  assert.ok(p.rows.every(r=>r.recommendedRate===r.medianRate));
   const central = dollars(p.rows.reduce((s,r)=>s+r.hours*r.recommendedRate*r.factor,0));
   assert.ok(Math.abs(p.target! - (central+20000)) < 0.1);
+});
+test('evaluation method never supplies an unsupported ceiling-to-offer discount',()=>{
+  const a=pricedServicesFixture();
+  a.deal.laborSignals[1].clearance='None';
+  for (const scheme of [a.deal.evaluationScheme,
+    {...a.deal.evaluationScheme!,method:'TRADE_OFF' as const,priceWeight:'SIGNIFICANT' as const},
+    {...a.deal.evaluationScheme!,method:'UNKNOWN' as const,priceWeight:'UNKNOWN' as const},undefined]) {
+    a.deal.evaluationScheme=scheme;
+    const p=calculateCompetitivePosition(a);
+    const row=p.rows.find(r=>r.title==='Help Desk')!;
+    assert.equal(row.recommendedRate,p.priceOrderFirst?row.lowRate:row.medianRate);
+    assert.equal(row.low,dollars(row.hours*row.lowRate*row.factor));
+    assert.equal(row.high,dollars(row.hours*row.highRate*row.factor));
+    assert.match(row.bidTransformAssumption,/No ceiling-to-offer discount/);
+  }
 });
 test('sensitivity reproduces isolated rate movements and protects input authority',()=>{
   const a=pricedServicesFixture(),p=a.competitivePosition!;
