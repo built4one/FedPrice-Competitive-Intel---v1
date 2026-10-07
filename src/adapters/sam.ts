@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { AdapterResult, SamDocumentStatus } from './types';
 import type { DealProfile, EvidenceItem } from '../types';
 import { ConnectorError, fetchJsonWithRetry } from './http';
+import { BodySizeError, readBoundedBody } from './boundedBody';
 
 const resourceLinkSchema = z.object({
   type: z.string().nullish(),
@@ -319,26 +320,25 @@ async function downloadResource(
   if (!link || !/^https?:\/\//i.test(link)) {
     return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: 'FAILED', message: 'SAM did not provide a downloadable URL.' } };
   }
+  if (remainingBytes <= 0) {
+    return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: 'TOO_LARGE', message: 'The automatic package byte budget is exhausted.' } };
+  }
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 20_000);
   try {
     const response = await fetch(withApiKey(link, apiKey), { headers: { Accept: '*/*' }, redirect: 'follow', signal: controller.signal });
     if (!response.ok) {
+      await response.body?.cancel();
       return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: response.status === 401 || response.status === 403 ? 'RESTRICTED' : 'FAILED', message: `Download returned HTTP ${response.status}.` } };
     }
     const name = filenameFromDisposition(response.headers.get('content-disposition')) || initialName;
     const declaredSize = Number(response.headers.get('content-length') || 0);
     if (isProvided(name, uploadedFiles)) {
+      await response.body?.cancel();
       return { document: { name, url: safeUrl, provided: true, type, retrievalStatus: 'PROVIDED', sizeBytes: declaredSize || undefined } };
     }
-    if (declaredSize > maxAutoFileBytes || declaredSize > remainingBytes) {
-      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: 'TOO_LARGE', sizeBytes: declaredSize || undefined, message: 'Document exceeds the automatic retrieval size budget.' } };
-    }
-    const buffer = Buffer.from(await response.arrayBuffer());
-    if (buffer.length > maxAutoFileBytes || buffer.length > remainingBytes) {
-      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: 'TOO_LARGE', sizeBytes: buffer.length, message: 'Document exceeds the automatic retrieval size budget.' } };
-    }
+    const buffer = await readBoundedBody(response, Math.min(maxAutoFileBytes, remainingBytes));
     const mime = inferMime(name, response.headers.get('content-type'));
     if (!isSupportedMime(mime)) {
       return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: 'UNSUPPORTED', sizeBytes: buffer.length, message: `Unsupported document type (${mime}).` } };
@@ -348,6 +348,9 @@ async function downloadResource(
       file: { originalname: name, mimetype: mime, size: buffer.length, buffer, sourceUrl: safeUrl },
     };
   } catch (error) {
+    if (error instanceof BodySizeError) {
+      return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: 'TOO_LARGE', sizeBytes: error.sizeBytes, message: error.message } };
+    }
     const message = error instanceof Error && error.name === 'AbortError' ? 'Download timed out.' : (error instanceof Error ? error.message : 'Download failed.');
     return { document: { name: initialName, url: safeUrl, provided: false, type, retrievalStatus: 'FAILED', message } };
   } finally {
@@ -376,9 +379,9 @@ async function retrieveDescription(opportunity: SamOpportunity, apiKey: string, 
   try {
     const response = await fetch(withApiKey(opportunity.description, apiKey), { headers: { Accept: 'text/html,text/plain,*/*' }, signal: controller.signal });
     if (!response.ok) return undefined;
-    const text = stripHtml(await response.text());
+    const text = stripHtml((await readBoundedBody(response, Math.min(maxAutoFileBytes, remainingBytes))).toString('utf8'));
     if (!text) return undefined;
-    const buffer = Buffer.from(text.slice(0, Math.min(text.length, remainingBytes)), 'utf8');
+    const buffer = Buffer.from(text, 'utf8');
     return {
       document: { name: 'SAM Opportunity Description.txt', url: safeUrl, provided: false, type: 'description', retrievalStatus: 'RETRIEVED' as const, sizeBytes: buffer.length, mimeType: 'text/plain' },
       file: { originalname: 'SAM Opportunity Description.txt', mimetype: 'text/plain', size: buffer.length, buffer, sourceUrl: safeUrl },
@@ -426,18 +429,14 @@ export async function resolveSamOpportunityPackage(referenceValue: string, uploa
       message: 'Automatic download skipped because analyst provided files.',
     });
   } else {
-    for (let offset = 0; offset < links.length; offset += 4) {
-      const batch = await Promise.all(links.slice(offset, offset + 4).map(link => downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes)));
-      for (const retrieved of batch) {
-        if (retrieved.file && usedBytes + retrieved.file.size > maxAutoPackageBytes) {
-          documents.push({ ...retrieved.document, retrievalStatus: 'TOO_LARGE', message: 'Document exceeds the remaining automatic package budget.' });
-          continue;
-        }
-        documents.push(retrieved.document);
-        if (retrieved.file) {
-          files.push(retrieved.file);
-          usedBytes += retrieved.file.size;
-        }
+    // Each attachment receives the actual remaining package budget. Concurrent
+    // downloads would each reserve the same bytes and multiply peak memory.
+    for (const link of links) {
+      const retrieved = await downloadResource(link, apiKey, uploadedFiles, maxAutoPackageBytes - usedBytes);
+      documents.push(retrieved.document);
+      if (retrieved.file) {
+        files.push(retrieved.file);
+        usedBytes += retrieved.file.size;
       }
     }
     if ((found.opportunity.resourceLinks || []).length > links.length) {
