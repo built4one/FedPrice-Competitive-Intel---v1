@@ -41,6 +41,8 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const model = buildLaborModel(analysis.deal, analysis.evidence);
   const scheme = analysis.deal.evaluationScheme;
   const missing = [...model.missing];
+  if (!scheme || scheme.method === 'UNKNOWN' || !scheme.sourceRefs.some(ref=>ref.trim()))
+    missing.push('Confirm the source-selection method with a solicitation locator before treating the evaluated-price model as complete.');
   if(model.rows.some(r=>r.assumedHours)) missing.push('Replace assumed annual hours with the specified evaluated hours before treating this as a complete evaluated-price model.');
   analysis.deal.sourceConflicts?.filter(c=>sourceConflictStatus(c,analysis.deal)==='OPEN').forEach(c=>missing.push(`Resolve ${c.topic}: ${c.descriptions.join(' versus ')}. ${c.resolution}`));
   
@@ -48,7 +50,8 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const assumptions = [...model.assumptions,
     'All role percentiles and protections are analyst planning assumptions. Public fully burdened ceiling rates include embedded burdens/fee; do not add them again.',
     'No dollar premium, productivity saving, teaming saving or probability of win is inferred from qualitative strategy prose.',
-    bidTransform.rationale];
+    bidTransform.rationale,
+    'Competitive PTW confidence remains low: public-rate arithmetic does not validate rival bidding behavior or company execution feasibility.'];
 
   const pricing = analysis.deal.evaluationPricing;
   if (!pricing) missing.push('Re-extract the complete evaluated-price basket, travel/ODCs and extension instructions from the source package.');
@@ -148,7 +151,9 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     {owner:'Pricing director',action:'Review the provisional target and its assumptions; validate company execution economics separately in Phase 2.',consequence:'Authorize a market planning position; company bid approval remains a separate decision.'},
   ];
 
-  const overallConfidence = model.complete && scheme && !missing.length ? 'HIGH' : rows.length ? 'MEDIUM' : 'LOW';
+  // Overall PTW confidence cannot exceed competition confidence, which remains
+  // LOW until pursuit-specific rival pricing and execution economics are earned.
+  const overallConfidence = 'LOW';
   const newStatus = hasBasis && !missing.length ? 'FULL' : hasBasis ? 'CONDITIONAL' : rows.length ? 'PARTIAL' : 'NOT_SUPPORTABLE';
 
   return {version:COMPETITIVE_POSITION_VERSION,status:newStatus,priceOrderFirst,evaluationComplete,target,
