@@ -1,5 +1,6 @@
 import {auditHistoricalDocument,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
 import {freezeAndStore} from './predictions';
+import {preservePredictionExports} from './predictionExports';
 import crypto from 'node:crypto';
 import {officeImages,validateOfficeArchive} from './officeImages';
 import express, {type Express, type Request, type Response} from 'express';
@@ -148,6 +149,7 @@ export class PackageJobs {
         }else{
           const stored=await this.store.get(workspace,'analysis',analysis.id);
           const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
+          if(frozen.frozenPrediction)await preservePredictionExports(this.store,workspace,frozen);
           const saved=stored||await this.store.put(workspace,'analysis',analysis.id,frozen);
           job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message='Recommendation and source review saved. Open the executive brief.';
         }

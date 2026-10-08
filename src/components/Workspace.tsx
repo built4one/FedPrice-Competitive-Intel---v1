@@ -366,7 +366,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
       const r=await fetch(`/api/runs/${analysis.id}/outcome`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actualValue:val,actualValueType,actualAwardee,actualSource,sameBasis:comparable,retrospectiveNotes:notes})});
       const payload=await r.json();if(!r.ok)throw new Error(payload.error);
       // Server owns outcome calculation and preservation; reload the stored run.
-      window.location.reload();
+      await onUpdate(payload.data);
     }catch(error){setNotice(error instanceof Error?error.message:'Comparison could not be saved.');}
   };
 

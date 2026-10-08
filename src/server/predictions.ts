@@ -1,3 +1,4 @@
+import {preservePredictionExports} from './predictionExports';
 import crypto from 'node:crypto';
 import type {OpportunityAnalysis,ValidationRecord} from '../types';
 import {RecordStore,ConflictError} from './store';
@@ -31,7 +32,7 @@ export async function recordOutcome(store:RecordStore,workspace:string,id:string
  const review=await store.get<any>(workspace,'historical-review',id);
  const classification=a.historical?(review?.value.predictionHash===f.hash?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION'):'LIVE_ASSESSMENT';
  const v:ValidationRecord={frozenAt:f.frozenAt,predictionHash:f.hash,predictedExpected:f.target,predictedAggressive:f.low,predictedConservative:f.high,actualValue:value,actualValueType:raw.actualValueType,actualAwardee:String(raw.actualAwardee||'').slice(0,300),actualSource:source,comparableToPrediction:comparable,inRange:comparable?value>=f.low!&&value<=f.high!:null,expectedErrorPct:comparable?Math.round(Math.abs(f.target!-value)/value*10000)/100:null,retrospectiveNotes:String(raw.retrospectiveNotes||'').slice(0,5000),comparisonClass:classification};
- await store.put(workspace,'historical-outcome',id,v);return{...a,validation:v};
+ await store.put(workspace,'historical-outcome',id,v);const compared={...a,validation:v,historicalReview:review?.value};await preservePredictionExports(store,workspace,compared);return compared;
 }
 export async function validateHistorical(store:RecordStore,workspace:string,id:string,reviewer:string,confirmed:boolean){
  const a=await loadPrediction(store,workspace,id);if(!a)throw new Error('Freeze the prediction first.');

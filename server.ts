@@ -1,3 +1,4 @@
+import {predictionExport} from './src/server/predictionExports.js';
 import {blindHistoricalInput} from './src/server/historical.js';
 import {freezeAndStore,loadPrediction,withOutcome,recordOutcome,validateHistorical} from './src/server/predictions.js';
 import {reconcileBasket} from './src/domain/ptw/basketIntegrity.js';
@@ -806,7 +807,7 @@ app.post('/api/runs', async (req, res) => {
     if(existing){
       // Frozen recommendations cannot be rewritten through generic save, including forged validation fields.
       const stable=(v:any)=>JSON.stringify({deal:v.deal,evidence:v.evidence,competitivePosition:v.competitivePosition});
-      if(stable(req.body)!==stable(existing)||req.body.validation) return res.status(409).json({error:'This prediction is frozen. Record the outcome in Validation; create a new assessment for changed inputs.'});
+      if(stable(req.body)!==stable(existing)) return res.status(409).json({error:'This prediction is frozen. Record the outcome in Validation; create a new assessment for changed inputs.'});
       const current=await runStore.get(req.principal.workspace,'analysis',existing.id);
       return res.json({success:true,data:{...await withOutcome(runStore,req.principal.workspace,existing),storageVersion:current?.version||1}});
     }
@@ -971,6 +972,7 @@ app.post('/api/export-brief', async (req, res) => {
     if(!frozen&&(req.body.historical||req.body.frozenPrediction))return res.status(400).json({error:'A stored prediction is required for historical exports.'});
     const analysis=frozen?await withOutcome(runStore,req.principal.workspace,frozen):normalizeIncomingRun(req.body,true);
     if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
+    if(frozen){const buffer=await predictionExport(runStore,req.principal.workspace,analysis,'xlsx');res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');res.setHeader('Content-Disposition','attachment; filename="Historical_Test.xlsx"');return res.send(buffer);}
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Federal Market Position';
 
@@ -1146,7 +1148,7 @@ app.post('/api/export-pdf', async (req, res) => {
     if(!frozen&&(req.body.historical||req.body.frozenPrediction))return res.status(400).json({error:'A stored prediction is required for historical exports.'});
     const analysis=frozen?await withOutcome(runStore,req.principal.workspace,frozen):normalizeIncomingRun(req.body,true);
     if (!analysis.deal?.title) return res.status(400).json({ error: 'Analysis payload is required.' });
-    const buffer = await createExecutivePdf(analysis);
+    const buffer = frozen?await predictionExport(runStore,req.principal.workspace,analysis,'pdf'):await createExecutivePdf(analysis);
     if (!buffer.length) throw new Error('PDF generator returned an empty document.');
     const safeName = analysis.deal.solicitationNumber?.replace(/[^a-z0-9-]/gi, '_') || 'market-position';
     res.setHeader('Content-Type', 'application/pdf');

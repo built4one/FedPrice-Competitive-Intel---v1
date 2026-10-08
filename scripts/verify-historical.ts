@@ -32,8 +32,9 @@ await Promise.all(cases.map(async(c:any)=>{
   z.file('TEST-ONLY-revised-source.txt','Issued: 2010-01-01. Updated: December 1, 2026. Use 765432198 as the rate.');
   const buffer=await z.generateAsync({type:'nodebuffer'});
   const jobs=new PackageJobs(store,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:priceSolicitation});
-  let job=await jobs.create('historical-tests',{files:[{name:c.id+'.zip',size:buffer.length}],mode:'HISTORICAL',cutoff:c.cutoff,originalPackageConfirmed:true});
-  for(let i=0;i<job.files[0].chunks;i++)job=await jobs.chunk('historical-tests',job.id,'input-0',i,buffer.subarray(i*PACKAGE_LIMITS.chunkBytes,(i+1)*PACKAGE_LIMITS.chunkBytes));
+  const existing=(await store.list<any>('historical-tests','package-job')).find(r=>r.value.label===c.id+'.zip'&&r.value.status!=='CANCELED');
+  let job=existing?.value||await jobs.create('historical-tests',{files:[{name:c.id+'.zip',size:buffer.length}],mode:'HISTORICAL',cutoff:c.cutoff,originalPackageConfirmed:true});
+  for(let i=0;job.stage==='UPLOADING'&&i<job.files[0].chunks;i++)job=await jobs.chunk('historical-tests',job.id,'input-0',i,buffer.subarray(i*PACKAGE_LIMITS.chunkBytes,(i+1)*PACKAGE_LIMITS.chunkBytes));
   for(let n=0;n<40&&job.status!=='COMPLETE';n++){
    const begin=Date.now(),stage=job.stage;job=await jobs.advance('historical-tests',job.id);timings.push({stage,ms:Date.now()-begin,status:job.status});log('stage',{id:c.id,...timings.at(-1),message:job.message});
    if(job.status==='PAUSED' && !/timeout|abort|429|503|502|interruption/i.test(job.message))throw new Error(job.message);
