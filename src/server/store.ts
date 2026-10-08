@@ -5,6 +5,7 @@ import { Pool } from 'pg';
 export interface Stored<T = any> { id: string; value: T; version: number; updatedAt: string }
 export class ConflictError extends Error { constructor() { super('This record changed. Refresh before saving.'); } }
 export class RecordStore {
+  private namespace = process.env.VERCEL_GIT_COMMIT_REF === 'codex/historical-testing-safeguards' ? 'historical-preview-v1:' : '';
   private pool?: Pool;
   private sqlite?: any;
   private ready?: Promise<void>;
@@ -35,13 +36,16 @@ export class RecordStore {
   }
   private decode(row: any): Stored { return { id: row.id, value: JSON.parse(row.payload), version: row.version, updatedAt: row.updated_at }; }
   async get<T = any>(workspace: string, kind: string, id: string): Promise<Stored<T> | null> {
+    workspace=this.namespace+workspace;
     await this.init(); const rows = await this.raw('SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3', [workspace,kind,id]);
     return rows[0] ? this.decode(rows[0]) : null;
   }
   async list<T = any>(workspace: string, kind: string): Promise<Stored<T>[]> {
+    workspace=this.namespace+workspace;
     await this.init(); return (await this.raw('SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 ORDER BY updated_at DESC', [workspace,kind])).map(row => this.decode(row));
   }
   async put<T>(workspace: string, kind: string, id: string, value: T, expectedVersion = 0): Promise<Stored<T>> {
+    workspace=this.namespace+workspace;
     await this.init(); const updatedAt = new Date().toISOString();
     const sql = expectedVersion === 0
       ? 'INSERT INTO fmp_records(workspace,kind,id,payload,version,updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(workspace,kind,id) DO NOTHING RETURNING *'
@@ -49,6 +53,6 @@ export class RecordStore {
     const params = expectedVersion === 0 ? [workspace,kind,id,JSON.stringify(value),updatedAt] : [JSON.stringify(value),updatedAt,workspace,kind,id,expectedVersion];
     const rows = await this.raw(sql, params); if (!rows.length) throw new ConflictError(); return this.decode(rows[0]);
   }
-  async remove(workspace: string, kind: string, id: string) { await this.init(); await this.raw('DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id', [workspace,kind,id]); }
+  async remove(workspace: string, kind: string, id: string) { workspace=this.namespace+workspace; await this.init(); await this.raw('DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id', [workspace,kind,id]); }
   async close() { await this.pool?.end(); this.sqlite?.close(); this.ready = undefined; this.sqlite = undefined; this.pool = undefined; }
 }

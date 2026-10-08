@@ -15,10 +15,11 @@ export const localMode = () => process.env.STUDIO_LOCAL_MODE === '1' && process.
 // Owner-only testing on a specific Vercel-protected preview alias. Never applies
 // to production, local servers, custom domains, or other preview aliases.
 function previewOwner(req: Request): Principal | null {
-  const host = process.env.STUDIO_PREVIEW_OWNER_HOST;
+  const historicalPreview=process.env.STUDIO_HISTORICAL_PREVIEW_ACCESS==='1' && process.env.VERCEL_GIT_COMMIT_REF==='codex/historical-testing-safeguards';
+  const host = historicalPreview?process.env.VERCEL_URL:process.env.STUDIO_PREVIEW_OWNER_HOST;
   if (process.env.VERCEL !== '1' || process.env.VERCEL_ENV !== 'preview'
     || !host?.endsWith('.vercel.app') || req.headers.host !== host) return null;
-  return { username: 'boss', workspace: 'boss' };
+  return { username: 'boss', workspace: historicalPreview?'historical-tests':'boss' };
 }
 export const authConfigured = () => localMode() || (accounts().length > 0 && (process.env.SESSION_SECRET?.length || 0) >= 32);
 const sign = (text: string) => crypto.createHmac('sha256', process.env.SESSION_SECRET || '').update(text).digest('base64url');

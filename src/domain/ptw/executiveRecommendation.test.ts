@@ -50,3 +50,12 @@ test('unreasonable period durations are rejected before escalation loops or expo
   const a=pricedServicesFixture();a.deal.laborSignals[0].periods![0].months=2026*12;
   assert.equal(buildLaborModel(a.deal,a.evidence).quantityComplete,false);
 });
+
+test('unit-priced maintenance includes delivery labor without invented technician hours',()=>{
+ const a=pricedServicesFixture();
+ a.deal.laborSignals=[{title:'Technician',section:'Scope personnel qualification',duties:'Maintain the equipment'}];
+ a.deal.laborModelComplete=false;
+ a.deal.evaluationPricing={basis:'Three annual maintenance periods inclusive of options',source:'RFQ pricing schedule and option provision',completeness:'COMPLETE',extensionRateRule:'NOT_APPLICABLE',components:[],unitLines:[{id:'maintenance',label:'Full maintenance agreement',quantity:3,unit:'year',source:'RFQ pricing schedule and options'}]};
+ a.deal.planningInputs=[{id:'maintenance',label:'Full maintenance agreement',kind:'UNIT_PRICE',quantity:3,unit:'year',quantitySource:'RFQ pricing schedule and options',low:15000,central:20000,high:30000,basis:'PLANNING_ASSUMPTION',rationale:'Inclusive service economics',evidenceIds:[],lowerCondition:'Lower repair activity',upperCondition:'More repairs'}];
+ const p=calculateCompetitivePosition(a);assert.equal(p.target,60000);assert.equal(p.basisReconstructed,true);assert.equal(p.rows.length,0);
+});

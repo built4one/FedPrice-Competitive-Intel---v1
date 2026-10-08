@@ -1,3 +1,4 @@
+import type {HistoricalContext,FrozenPrediction} from './historicalTypes';
 import type { PricingScenario } from './domain/ptw/pricingScenario';
 import type { PtwStrategyResult } from './domain/ptw/strategy';
 import type { CompetitivePosition } from './domain/ptw/competitivePosition';
@@ -121,6 +122,7 @@ export interface NumericEvidence {
 }
 
 export interface EvidenceItem {
+  historicalProof?: {documentId:string;publishedAt:string;sha256:string;quote:string};
   id: string;
   type: EvidenceType;
   sourceLabel: string;
@@ -390,9 +392,14 @@ export interface ValidationRecord {
   inRange: boolean | null;
   expectedErrorPct: number | null;
   retrospectiveNotes: string;
+  actualSource?:string;
+  comparisonClass?:string;
 }
 
 export interface OpportunityAnalysis {
+  historical?: HistoricalContext;
+  historicalReview?: HistoricalContext['review'];
+  frozenPrediction?: FrozenPrediction;
   competitivePosition?: CompetitivePosition;
   pricingScenario?: PricingScenario;
   ptwStrategy?: PtwStrategyResult;

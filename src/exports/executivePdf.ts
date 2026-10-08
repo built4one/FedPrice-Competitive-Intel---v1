@@ -113,14 +113,21 @@ function buildBrief(l:Layout){
 function footers(doc:PDFKit.PDFDocument){const r=doc.bufferedPageRange();for(let i=r.start;i<r.start+r.count;i++){doc.switchToPage(i);doc.moveTo(margin,728).lineTo(pageWidth-margin,728).strokeColor(colors.line).lineWidth(.6).stroke();doc.font(regularFont).fontSize(7).fillColor(colors.muted).text('PROVISIONAL DECISION SUPPORT - ANALYST REVIEW AND COMPANY BID APPROVAL REQUIRED',margin,738,{width:contentWidth-55,lineBreak:false});doc.font(boldFont).fontSize(7).text(`${i+1}/${r.count}`,pageWidth-margin-45,738,{width:45,align:'right',lineBreak:false});}}
 
 export function createExecutivePdf(raw:OpportunityAnalysis):Promise<Buffer>{
-  const analysis=enforceAuthoritativeAnalysis(raw);
-  analysis.ptwStrategy=preserveCurrentStrategy(analysis,raw.ptwStrategy);
+  const analysis=raw.frozenPrediction?structuredClone(raw):enforceAuthoritativeAnalysis(raw);
+  if(!raw.frozenPrediction)analysis.ptwStrategy=preserveCurrentStrategy(analysis,raw.ptwStrategy);
   return new Promise((resolve,reject)=>{
     const regular=Buffer.from(regularFontData,'base64'),bold=Buffer.from(boldFontData,'base64');
     const doc=new PDFDocument({font:regular as unknown as string,size:'LETTER',margins:{top:margin,bottom:margin,left:margin,right:margin},bufferPages:true,autoFirstPage:false});
     doc.registerFont(regularFont,regular);doc.registerFont(boldFont,bold);
     const chunks:Buffer[]=[];doc.on('data',b=>chunks.push(b));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
-    try{buildBrief(new Layout(doc,analysis));footers(doc);doc.end();}catch(error){doc.destroy();reject(error);}
+    try{const layout=new Layout(doc,analysis);buildBrief(layout);
+      if(analysis.historical){layout.page('Historical test record',`Cutoff: ${analysis.historical.cutoff}`);
+       layout.text(`Classification: ${analysis.validation?.comparisonClass||(analysis.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION')}`,true);
+       layout.text(`Prediction frozen: ${analysis.frozenPrediction?.frozenAt}. SHA-256: ${analysis.frozenPrediction?.hash}`,false,8);
+       analysis.historical.limitations.forEach(v=>layout.text(v,false,8));
+       layout.table(['Source','Decision / publication'],[330,198],analysis.historical.documents.map(v=>[short(v.name,150),`${v.audit.decision} / ${v.audit.publishedAt||'unverified'}`]));
+       const v=analysis.validation;if(v){layout.title('Outcome comparison');layout.text(`Actual: ${money(v.actualValue)} (${v.actualValueType}). ${v.comparableToPrediction?`Absolute error / actual: ${v.expectedErrorPct}%. Within corridor: ${v.inRange?'yes':'no'}.`:'Not comparable; excluded from accuracy scoring.'}`);layout.text(`Outcome source: ${v.actualSource||'Unspecified'}`,false,8);}
+      }footers(doc);doc.end();}catch(error){doc.destroy();reject(error);}
   });
 }
 export const executivePdfLayout={pageWidth,pageHeight,margin,contentWidth};

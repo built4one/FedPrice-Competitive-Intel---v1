@@ -1,0 +1,56 @@
+[
+  {
+    "id": "court-refurbishment",
+    "files": [
+      {
+        "name": "RFQ.pdf",
+        "url": "https://www.cadc.uscourts.gov/sites/cadc/files/USCA26-00004%20-%20RFQ%20-%20BATHROOMS%20REFURBISHED.pdf"
+      },
+      {
+        "name": "SOW.xlsx",
+        "url": "https://www.cadc.uscourts.gov/sites/cadc/files/USCA26-00004-%20SOW%20Bathrooms%20Refurbished.xlsx"
+      },
+      {
+        "name": "Product-Specifications.pdf",
+        "url": "https://www.cadc.uscourts.gov/sites/cadc/files/USCA26-00004%20-%20Product%20Specifications.pdf"
+      },
+      {
+        "name": "Wage-Determination.pdf",
+        "url": "https://www.cadc.uscourts.gov/sites/cadc/files/Wage%20Determination%20-%20Service%20Contacts%20August2026.pdf"
+      }
+    ],
+    "cutoff": "2026-09-21"
+  },
+  {
+    "id": "court-av-maintenance",
+    "files": [
+      {
+        "name": "RFQ-AV-Maintenance.pdf",
+        "url": "https://www.ohnb.uscourts.gov/sites/default/files/news-and-announcements/rfq-courtroom-technology-maintenance-2019.pdf"
+      }
+    ],
+    "cutoff": "2019-10-18"
+  },
+  {
+    "id": "usda-commodities",
+    "files": [
+      {
+        "name": "Asparagus-Invitation.pdf",
+        "url": "https://www.ams.usda.gov/sites/default/files/2000010768%20-%20Bid%20Invitation.pdf"
+      },
+      {
+        "name": "Master-Solicitation-March-2025.pdf",
+        "url": "https://www.ams.usda.gov/sites/default/files/media/MSCP_D_03202025.pdf"
+      },
+      {
+        "name": "Canned-Vegetables-Specification.pdf",
+        "url": "https://www.ams.usda.gov/sites/default/files/media/CommoditySpecificationforCannedVegetablesJanuary2023.pdf"
+      },
+      {
+        "name": "Frozen-Vegetables-Specification.pdf",
+        "url": "https://www.ams.usda.gov/sites/default/files/media/Commodity_Specification_for_Frozen_Vegetables_March_2022.pdf"
+      }
+    ],
+    "cutoff": "2025-04-25"
+  }
+]

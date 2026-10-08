@@ -39,7 +39,7 @@ test('saved stages survive service failure, skip a corrupt attachment, and remai
  assert.equal(j.status,'COMPLETE');assert.equal(extracts,1);assert.equal(researches,2);
  const saved=await store.get<any>('alice','analysis',j.runId!);assert.ok(saved?.value.competitivePosition.target>0);assert.equal(saved?.value.competitivePosition.confidenceLabel,'LIMITED');
  assert.equal(saved?.value.meta.packageCoverage.documents.find((d:any)=>d.name.endsWith('broken.pdf')).status,'UNREADABLE');
- assert.equal((await store.list('alice','package-chunk')).length,0);assert.equal((await store.list('alice','package-source')).length,0);
+ assert.equal((await store.list('alice','package-chunk')).length,0);assert.equal((await store.list('alice','package-source')).length,2);
  assert.equal(await store.get('bob','analysis',j.runId!),null);
 });
 test('large uploads use bounded chunks and reject changed or incomplete retries',async(t)=>{

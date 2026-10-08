@@ -17,7 +17,7 @@ export function assessEligibility(deal: DealProfile, now = new Date(), options: 
     const date = new Date(`${deadline!.slice(0,10)}T23:59:59.999Z`);
     if (!options.historical && Number.isFinite(date.getTime()) && date < now) throw new IneligibleSolicitationError(`The extracted response deadline (${deadline}) has passed. Upload an amendment with the extended deadline or a current solicitation. Historical analysis is outside this live PTW pilot.`);
   }
-  const warnings: string[] = options.historical ? ['Historical practice analysis: not an open bidding opportunity. Research reflects today’s sources, not a backtest of prices available at the original deadline.'] : [];
+  const warnings: string[] = options.historical ? ['Historical practice analysis: not an open bidding opportunity. Historical source screening and original-deadline controls apply; validation status is reported separately.'] : [];
   if (status !== 'OPEN_COMPETITIVE' || !cited) warnings.push('Solicitation eligibility is unresolved. Confirm that this is the current, competitive package before using the recommendation.');
   if (!deadline || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(deadline)) warnings.push('No unambiguous response deadline was extracted. Confirm the current deadline and latest amendments.');
   return warnings;

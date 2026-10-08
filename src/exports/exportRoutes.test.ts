@@ -8,7 +8,9 @@ import { synthesizePtwStrategy } from '../server/ptwSynthesis';
 import { pricedServicesFixture } from '../testFixtures/pricedServices';
 
 test('serves valid PDF and Excel downloads through the production export routes', async (t) => {
-  process.env.VERCEL = '1';
+  delete process.env.VERCEL;
+  process.env.NODE_ENV='test';
+  process.env.STUDIO_DB_PATH=':memory:';
   process.env.STUDIO_USERS_JSON = JSON.stringify([{ username: 'exporter', workspace: 'exports', passwordHash: passwordHash('test-pass') }]);
   process.env.SESSION_SECRET = 'test-session-secret-with-at-least-32-characters';
   const { default: app } = await import('../../server');

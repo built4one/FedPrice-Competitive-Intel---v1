@@ -135,7 +135,8 @@ export function enforceAuthoritativeAnalysis(analysis: OpportunityAnalysis): Opp
   analysis = reconcileSourceFacts({ ...analysis, gaps: normalizeGaps(analysis.gaps) });
   analysis = {...analysis,evidence:analysis.evidence.map(e=>({...e,numeric:e.numeric ? {...e.numeric} : undefined}))};
   classifyNumericEvidence(analysis.evidence,analysis.deal);
-  const analyzedAt = analysis.meta?.analyzedAt;
+  
+  const analyzedAt = analysis.historical?.cutoff || analysis.meta?.analyzedAt;
   if (!analyzedAt || Number.isNaN(Date.parse(analyzedAt))) {
     throw new Error('Analysis metadata must include a valid analyzedAt date.');
   }

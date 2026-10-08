@@ -1,3 +1,4 @@
+import HistoricalReview from './decision/HistoricalReview';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
@@ -350,7 +351,8 @@ function IntelligenceView({ analysis }: { analysis: OpportunityAnalysis }) {
 function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis; onUpdate?: (a: OpportunityAnalysis) => Promise<void> }) {
   const [notice, setNotice] = useState('');
   const [actualAward, setActualAward] = useState(analysis.validation?.actualValue?.toString() || '');
-  const [actualValueType, setActualValueType] = useState<ValidationValueType>(analysis.validation?.actualValueType || 'TOTAL_AWARD_VALUE');
+  const [actualValueType, setActualValueType] = useState<ValidationValueType>(analysis.validation?.actualValueType || 'EVALUATED_PRICE');
+  const [actualSource,setActualSource]=useState(analysis.validation?.actualSource||'');
   const [actualAwardee, setActualAwardee] = useState(analysis.validation?.actualAwardee || '');
   const [notes, setNotes] = useState(analysis.validation?.retrospectiveNotes || '');
   const [comparable, setComparable] = useState(analysis.validation?.comparableToPrediction ?? false);
@@ -359,61 +361,27 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
     if (!onUpdate) return;
     const val = Number(actualAward);
     if (!val || val <= 0) return;
-    const position = validationPrediction(analysis);
-    const comparableToPrediction = comparable && comparisonReady(analysis,actualValueType) &&
-      position.expected !== null &&
-      position.aggressive !== null &&
-      position.conservative !== null;
-    const snapshot = JSON.stringify({
-      runId: analysis.id,
-      analyzedAt: analysis.meta.analyzedAt,
-      formulaVersion: position.version,
-      basis:position.basis,
-      aggressive: position.aggressive,
-      expected: position.expected,
-      conservative: position.conservative,
-      evidenceIds: analysis.evidence.map(e=>e.id).sort(),
-    });
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(snapshot));
-    const predictionHash = [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
-
-    const validation: OpportunityAnalysis['validation'] = {
-      frozenAt: new Date().toISOString(),
-      predictionHash,
-      predictedExpected: position.expected,
-      predictedAggressive: position.aggressive,
-      predictedConservative: position.conservative,
-      actualValue: val,
-      actualValueType,
-      comparableToPrediction,
-      actualAwardee,
-      inRange: comparableToPrediction
-        ? val >= (position.aggressive as number) && val <= (position.conservative as number)
-        : null,
-      expectedErrorPct: comparableToPrediction
-        ? Math.round((Math.abs(val - (position.expected as number)) / (position.expected as number)) * 1000) / 10
-        : null,
-      retrospectiveNotes: notes,
-    };
-
     try {
-      await onUpdate({ ...analysis, validation });
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Validation could not be saved.');
-    }
+      if(!analysis.frozenPrediction)throw new Error('This legacy run has no independently frozen prediction. Start a controlled historical assessment before scoring.');
+      const r=await fetch(`/api/runs/${analysis.id}/outcome`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({actualValue:val,actualValueType,actualAwardee,actualSource,sameBasis:comparable,retrospectiveNotes:notes})});
+      const payload=await r.json();if(!r.ok)throw new Error(payload.error);
+      // Server owns outcome calculation and preservation; reload the stored run.
+      window.location.reload();
+    }catch(error){setNotice(error instanceof Error?error.message:'Comparison could not be saved.');}
   };
 
   return (
     <div className="space-y-5">
       {notice && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{notice}</p>}
+      <HistoricalReview analysis={analysis}/>
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <div className="flex items-center justify-between">
           <div>
-            <h2 className="text-sm font-black">Retrospective Validation Harness</h2>
-            <p className="mt-1 text-xs text-slate-500">Freeze the prediction and compare only like-for-like award measurements.</p>
+            <h2 className="text-sm font-black">Compare the frozen recommendation</h2>
+            <p className="mt-1 text-xs text-slate-500">The original prediction is preserved automatically. Compare only the actual evaluated winning price for the same scope and periods.</p>
             {!comparisonReady(analysis,actualValueType) && <p role="status" className="mt-2 text-xs text-amber-800">Comparison is unavailable while the evaluated basket is incomplete or the actual is a ceiling/obligation. You can record actuals; partial subtotals will not be scored as a full-price prediction.</p>}
           </div>
-          {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">FROZEN & RECORDED</span>}
+          {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">{analysis.validation.comparisonClass?.replaceAll('_',' ')||'LEGACY COMPARISON'}</span>}
         </div>
         
         <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_.75fr]">
@@ -438,6 +406,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
                <input type="checkbox" checked={comparable && comparisonReady(analysis,actualValueType)} onChange={e => setComparable(e.target.checked)} disabled={!!analysis.validation || !comparisonReady(analysis,actualValueType)} className="mt-1" />
                I verified that this actual value covers the same scope, period, and measurement basis as the {validationPrediction(analysis).basis.toLowerCase()}.
              </label>
+             <label className="block text-xs font-semibold">Actual-price source and locator<input aria-label="Actual-price source" value={actualSource} onChange={e=>setActualSource(e.target.value)} disabled={!!analysis.validation} className="mt-2 block w-full rounded border p-2" placeholder="Document or URL, page, evaluated scope and periods"/></label>
              <div>
                <label className="block text-[10px] font-black uppercase text-slate-400">Winning Vendor (Optional)</label>
                <input type="text" value={actualAwardee} onChange={e => setActualAwardee(e.target.value)} disabled={!!analysis.validation} className="mt-1.5 w-full rounded border-slate-200 px-3 py-2 text-sm disabled:bg-slate-100" />
@@ -448,7 +417,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
              </div>
              {!analysis.validation && (
                <button onClick={runValidation} className="mt-2 w-full rounded bg-[#10243e] py-2.5 text-xs font-black text-white hover:bg-slate-800">
-                 {comparisonReady(analysis,actualValueType)?'FREEZE & RECORD COMPARISON':'RECORD ACTUAL · COMPARISON UNAVAILABLE'}
+                 {comparisonReady(analysis,actualValueType)?'RECORD COMPARISON':'RECORD ACTUAL · COMPARISON UNAVAILABLE'}
                </button>
              )}
           </div>
@@ -468,7 +437,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
                     </strong>
                     <p className="mt-2 text-xs leading-5 text-slate-600">
                       {analysis.validation.expectedErrorPct !== null
-                        ? `Expected error: ${analysis.validation.expectedErrorPct}%`
+                        ? `Absolute error versus actual: ${analysis.validation.expectedErrorPct}%`
                         : 'The actual value was preserved but not compared because its measurement basis was not verified.'}
                     </p>
                     <p className="mt-3 break-all font-mono text-[9px] text-slate-400">SHA-256 {analysis.validation.predictionHash}</p>

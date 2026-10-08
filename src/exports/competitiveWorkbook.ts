@@ -9,7 +9,7 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   if(coverage){
     const sheet=workbook.addWorksheet('Package Coverage');
     sheet.columns=[{header:'Document',key:'name',width:70},{header:'Review status',key:'status',width:22},{header:'Role',key:'role',width:35},{header:'Coverage / limitation',key:'note',width:100},{header:'SHA-256',key:'sha256',width:70}];
-    sheet.addRow({name:'Analysis purpose',status:coverage.mode||'LIVE',note:coverage.mode==='HISTORICAL'?'Closed solicitation using current research, not a historical price backtest.':'Live opportunity review'});
+    sheet.addRow({name:'Analysis purpose',status:coverage.mode||'LIVE',note:coverage.mode==='HISTORICAL'?'Screened historical documents; see Historical Test for qualification and cutoff.':'Live opportunity review'});
     sheet.addRow({name:'Package currency',status:coverage.freshness.status,note:coverage.freshness.message});
     coverage.documents.forEach(d=>sheet.addRow({...d,role:d.categories.join(', ')}));
   }
@@ -115,9 +115,15 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   analysis.deal.sourceConflicts?.forEach(c=>sensitivities.addRow({category:sourceConflictStatus(c,analysis.deal)==='RESOLVED'?'Resolved source agreement':'Open source conflict',label:c.topic,change:c.descriptions.join(' versus '),reason:`${c.resolution} ${c.sources.join('; ')}`}));
   const sources=workbook.addWorksheet('Source Snapshots');
   sources.columns=[{header:'Snapshot / evidence',key:'id',width:35},{header:'Retrieved / as of',key:'date',width:30},{header:'Locator / fingerprint',key:'source',width:110},{header:'Limitation',key:'limitation',width:100}];
-  sources.addRow({id:'Analysis cutoff',date:analysis.meta.analyzedAt,source:analysis.id,limitation:'Live analysis timestamp; not a certified historical pre-award evidence cutoff.'});
+  sources.addRow({id:'Analysis cutoff',date:analysis.historical?.cutoff||analysis.meta.analyzedAt,source:analysis.id,limitation:analysis.historical?'Locked historical cutoff; source qualification recorded separately.':'Live analysis timestamp.'});
   analysis.meta.warnings.filter(w=>w.startsWith('Package snapshot:')).forEach(source=>sources.addRow({id:'Uploaded source SHA-256',date:analysis.meta.analyzedAt,source,limitation:'Retain original uploaded files with this decision package.'}));
   analysis.evidence.forEach(e=>sources.addRow({id:e.id,date:e.retrievedAt || e.numeric?.sourceDate,source:[e.sourceLabel,e.section,e.url,e.numeric?.rateSampleFingerprint].filter(Boolean).join('; '),limitation:e.numeric?.rateDistribution ? 'All retrieved matched rates are frozen in Rate Distribution; up to 40 detailed source records are included. Sampling and qualification limitations remain.' : 'Detailed source snapshot is not available; retain the original cited record.'}));
+  if(analysis.historical){
+    const h=workbook.addWorksheet('Historical Test');h.columns=[{header:'Field',key:'field',width:45},{header:'Value',key:'value',width:110}];
+    h.addRows([{field:'Historical cutoff',value:analysis.historical.cutoff},{field:'Classification',value:analysis.validation?.comparisonClass||(analysis.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION')},{field:'Prediction frozen at',value:analysis.frozenPrediction?.frozenAt},{field:'Prediction SHA-256',value:analysis.frozenPrediction?.hash},...analysis.historical.limitations.map(value=>({field:'Limitation',value}))]);
+    analysis.historical.documents.forEach(d=>h.addRow({field:d.name,value:`${d.audit.decision}; ${d.audit.publishedAt||'undated'}; ${d.audit.reason}; SHA-256 ${d.sha256}`}));
+    if(analysis.validation)Object.entries(analysis.validation).forEach(([field,value])=>h.addRow({field,value}));
+  }
   workbook.calcProperties.fullCalcOnLoad=true;
   for(const sheet of [stats,labor,components,strategies]) sheet.eachRow((r,i)=>{if(i>1)r.eachCell(c=>{if(typeof c.value==='number' || c.type===6)c.numFmt='#,##0.00';});});
 }

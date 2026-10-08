@@ -1,10 +1,11 @@
+import {reconcileBasket} from './basketIntegrity';
 import type { ConfidenceLevel, EvaluatedPriceComponent, OpportunityAnalysis } from '../../types';
 import { buildLaborModel, dollars, laborTotal, type LaborCalculationRow, type LaborQuantityRow } from './laborModel';
 import { sourceConflictStatus } from '../sourceConsistency';
 import { laborFamily, benchmarkRole, roleMappingIssue } from '../laborMatching';
 import type { PlanningInput } from '../../types';
 
-export const COMPETITIVE_POSITION_VERSION = 'competitive-position-2.0.0';
+export const COMPETITIVE_POSITION_VERSION = 'competitive-position-2.1.0';
 export interface CompetitiveScenario {
   id: 'AGGRESSIVE' | 'RECOMMENDED' | 'DEFENSIVE'; label: string; labor: number; nonLabor: number;
   total: number; selected: boolean; rationale: string; condition: string; basis: 'PARTIAL_SUBTOTAL' | 'MODELED_BASKET';
@@ -40,10 +41,12 @@ export function validPlanningInput(p:PlanningInput):boolean {
 }
 
 /** Assumptions complete a known basket; they never masquerade as matched evidence. */
-export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,'deal'|'evidence'> & Partial<Pick<OpportunityAnalysis,'marketPosition'|'competitors'|'meta'>>): CompetitivePosition {
-  const {deal,evidence}=analysis, model=buildLaborModel(deal,evidence), pricing=deal.evaluationPricing, scheme=deal.evaluationScheme;
-  const assumptions=[...model.assumptions];
-  const missing=[...model.missing];
+export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,'deal'|'evidence'> & Partial<Pick<OpportunityAnalysis,'marketPosition'|'competitors'|'meta'|'frozenPrediction'|'competitivePosition'>>): CompetitivePosition {
+  if(analysis.frozenPrediction && analysis.competitivePosition)return analysis.competitivePosition;
+  const basket=reconcileBasket(analysis.deal);
+  const {evidence}=analysis,deal=basket.deal, model=buildLaborModel(deal,evidence), pricing=deal.evaluationPricing, scheme=deal.evaluationScheme;
+  const assumptions=[...model.assumptions,...basket.notes];
+  const missing=[...model.missing,...basket.blockers];
   const planningRows=(deal.planningInputs||[]).filter(validPlanningInput);
   const priceOrderFirst=scheme?.method==='SEALED_BID' || scheme?.method==='LPTA' || scheme?.priceWeight==='DOMINANT';
   const evaluationKnown=Boolean(scheme && scheme.method!=='UNKNOWN' && scheme.sourceRefs.some(r=>r.trim()));
@@ -126,8 +129,9 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const unpricedRows=model.quantityRows.filter(q=>!rows.some(r=>r.id===q.id));
   const uncoveredUnits=(pricing?.unitLines||[]).filter(l=>!components.some(c=>c.id===l.id));
   const uncoveredComponents=(pricing?.components||[]).filter(c=>!components.some(p=>p.id===c.id));
-  const hasLabor=deal.laborSignals.length>0;
   const hasUnits=Boolean(pricing?.unitLines?.length || pricing?.components.length);
+  // Personnel qualifications in a unit-priced service do not create a second, unquantified labor basket.
+  const hasLabor=deal.laborSignals.length>0 && (model.quantityRows.length>0 || !hasUnits);
   const quantityReconstructed=hasLabor?model.quantityComplete || (model.quantityRows.length>0 && !model.missing.some(m=>/period coverage|no documented quantity|no quantified|incomplete|does not cover/i.test(m))):hasUnits;
   const wholeAnchor=!hasLabor && !hasUnits && anchors.length>0 && Boolean(pricing?.basis && pricing?.source);
   const basisReconstructed=Boolean(quantityReconstructed || wholeAnchor);
@@ -144,7 +148,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     central=dollars(sorted.reduce((s,v)=>s+v,0)/sorted.length);
     assumptions.push('Whole-basket reference case uses the center of qualified normalized total-value evidence. The endpoints are evidence bounds, not predicted winning bids.');
   }
-  const hasTarget=(allPriced || wholeAnchor) && positive(central) && low<=central && central<=high;
+  const hasTarget=!basket.blockers.length && (allPriced || wholeAnchor) && positive(central) && low<=central && central<=high;
   const assumedAmount=rows.filter(r=>r.assumedRate).reduce((s,r)=>s+r.target,0)+components.filter(c=>c.assumption).reduce((s,c)=>s+c.includedAmount,0);
   const assumptionShare=central>0?Math.min(1,assumedAmount/central):1;
   const quantityConfidence=model.quantityComplete || !hasLabor && pricing?.completeness==='COMPLETE'?'HIGH':'LOW';

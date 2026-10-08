@@ -9,7 +9,7 @@ export default function CompetitiveRecommendation({analysis}:{analysis:Opportuni
   const drivers=p.judgment.filter(j=>['Government evaluation','Labor and unit-price evidence','Predecessor / comparables'].includes(j.factor));
   const movers=[...p.sensitivities].sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).slice(0,3);
   return <article aria-label="Executive pricing decision" className="max-w-5xl mx-auto space-y-8">
-    {analysis.meta.packageCoverage?.mode==='HISTORICAL'&&<p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">Historical practice · Closed solicitation, analyzed with current research. Not a live bid or a historical price backtest.</p>}
+    {analysis.meta.packageCoverage?.mode==='HISTORICAL'&&<p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-xs text-amber-900">{analysis.historical?`Historical test · As of ${analysis.historical.cutoff} · ${analysis.historicalReview?'Validated backtest — independent review recorded':'Retrospective approximation pending independent evidence review' }. ${analysis.frozenPrediction?'Original prediction frozen.':''}`:'Legacy historical practice · Current research was used; not a historical backtest.'}</p>}
     <section className="relative overflow-hidden rounded-2xl bg-[#103243] text-white px-6 py-8 sm:px-9 sm:py-10">
       <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-xs font-bold uppercase tracking-[.2em] text-teal-200">Your competitive position</p><span className="text-xs rounded-full border border-white/25 px-3 py-1.5">{p.assumptionShare>0?'Assumption-led recommendation':'Evidence-led recommendation'}</span></div>
       <h2 className="mt-7 text-base font-medium text-slate-200">Where should we price?</h2>

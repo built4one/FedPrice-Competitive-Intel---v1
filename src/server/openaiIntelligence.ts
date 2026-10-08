@@ -59,6 +59,7 @@ export class OpenAIIntelligence {
     private readonly model = getOpenAIModel(),
     private readonly request: typeof fetch = fetch,
     private readonly timeoutMs = 240_000,
+    private readonly reasoningEffort?: 'low' | 'medium',
   ) {}
 
   private async respond(body: Record<string, unknown>): Promise<OpenAIResponse> {
@@ -66,7 +67,7 @@ export class OpenAIIntelligence {
     const response = await this.request('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: { Authorization: `Bearer ${this.key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, store: false, ...body }),
+      body: JSON.stringify({ model: this.model, store: false, ...(this.reasoningEffort?{reasoning:{effort:this.reasoningEffort}}:{}), ...body }),
       signal: AbortSignal.timeout(this.timeoutMs),
     });
     const data = await response.json() as OpenAIResponse;
