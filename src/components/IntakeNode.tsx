@@ -1,174 +1,60 @@
-import { useEffect, useRef, useState } from 'react';
-import { AlertCircle, ArrowLeft, CheckCircle2, FileText, Loader2, Search, ShieldCheck, UploadCloud, X } from 'lucide-react';
-import type { OpportunityAnalysis } from '../types';
-
-interface Props { onBack: () => void; onSuccess: (analysis: OpportunityAnalysis) => Promise<void>; }
-
-export default function IntakeNode({ onBack, onSuccess }: Props) {
-  const [opportunityRef, setOpportunityRef] = useState('');
-  const [files, setFiles] = useState<File[]>([]);
-  const [dragging, setDragging] = useState(false);
-  const [processing, setProcessing] = useState(false);
-  const [error, setError] = useState('');
-  const [elapsed, setElapsed] = useState(0);
-  const [statusText, setStatusText] = useState('Resolving the official opportunity and building the evidence package.');
-  const [pendingAnalysis, setPendingAnalysis] = useState<OpportunityAnalysis | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const abortRef = useRef<AbortController | null>(null);
-  const maxUploadBytes = 4 * 1024 * 1024;
-
-  useEffect(() => {
-    if (!processing) return;
-    setElapsed(0);
-    const timer = window.setInterval(() => setElapsed((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [processing]);
-
-  const chooseFiles = (newFiles?: FileList | null) => {
-    if (!newFiles) return;
-    const added = Array.from(newFiles);
-    const nextFiles = [...files, ...added];
-    const combined = nextFiles.reduce((sum, file) => sum + file.size, 0);
-    if (nextFiles.length > 10) return setError('Add no more than 10 files. SAM.gov documents retrieved automatically do not count against this limit.');
-    if (combined > maxUploadBytes) return setError('For the hosted demo, uploaded files must total 4 MB or less. SAM.gov documents are retrieved separately.');
-    setError('');
-    setPendingAnalysis(null);
-    setFiles(nextFiles);
-  };
-
-  const removeFile = (index: number) => { setPendingAnalysis(null); setFiles((prev) => prev.filter((_, i) => i !== index)); };
-
-  const submitAnalysis = async (controller: AbortController, reference?: string) => {
-    const body = new FormData();
-    if (reference?.trim()) body.append('opportunityRef', reference.trim());
-    files.forEach((file) => body.append('files', file));
-    const response = await fetch('/api/analyze-solicitation', { method: 'POST', body, signal: controller.signal });
-    let payload: any = {};
-    let rawText = '';
-    try {
-      rawText = await response.text();
-      payload = JSON.parse(rawText);
-    } catch {
-      // Vercel hard crash
-    }
-    if (!response.ok) {
-      if (response.status === 404) throw new Error('The analysis service is unavailable in this published app.');
-      if (response.status === 413) throw new Error('An uploaded file is too large for the hosted analysis endpoint.');
-      if (response.status === 502) throw new Error(payload.error || 'SAM.gov could not assemble the opportunity package. Upload the official solicitation and retry.');
-      if (response.status === 503) throw new Error(payload.error || 'The production analysis service is not configured. Verify the server-side keys.');
-      if ([408, 504].includes(response.status)) throw new Error('The analysis exceeded the hosting time limit. No completed run was saved.');
-      
-      const serverErr = payload.error || (rawText.length < 100 ? rawText : 'Vercel Serverless Function Crash (OOM or Timeout)');
-      throw new Error(`Analysis failed with server status ${response.status}: ${serverErr}`);
-    }
-    return payload.data as OpportunityAnalysis;
-  };
-
-  const runAnalysis = async () => {
-    const samReference = opportunityRef.trim();
-    if (!samReference && files.length === 0) return setError('Upload a solicitation document or enter its SAM.gov URL / solicitation number.');
-    setProcessing(true);
-    setError('');
-    const controller = new AbortController();
-    abortRef.current = controller;
-    try {
-      if (pendingAnalysis) { setStatusText('Retrying the save. Completed analysis is preserved.'); await onSuccess(pendingAnalysis); return; }
-      setStatusText(samReference
-        ? 'Retrieving the official opportunity package and building Market Position.'
-        : 'Reading the uploaded package and building Market Position.');
-      let analysis = await submitAnalysis(controller, samReference);
-      if (!samReference) {
-        analysis.meta.warnings = [
-          ...(analysis.meta.warnings || []),
-          'For faster analysis, uploaded packages are processed in one pass. Enter a SAM.gov URL or solicitation number at intake when automatic official-package completion is required.',
-        ];
+import {useEffect,useRef,useState} from 'react';
+import {ArrowLeft,ArrowRight,Archive,FileText,Loader2,UploadCloud,X,AlertCircle,Pause,Play} from 'lucide-react';
+import type {OpportunityAnalysis} from '../types';
+import {PACKAGE_LIMITS,type PackageJob} from '../packageTypes';
+interface Props {onBack:()=>void;onSuccess:(analysis:OpportunityAnalysis)=>Promise<void>}
+const stages=['Upload','Inventory','Read documents','Reconcile scope','Research','Recommend'];
+const stageIndex:Record<string,number>={UPLOADING:0,INVENTORY:1,READING:2,EXTRACTION:3,RESEARCH:4,PRICING:5,COMPLETE:6};
+async function request(url:string,init?:RequestInit){const r=await fetch(url,init),p=await r.json().catch(()=>({}));if(!r.ok)throw new Error(p.error||'The request was interrupted. Your saved progress is retained.');return p;}
+const post=(url:string,body?:unknown)=>request(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
+export default function IntakeNode({onBack,onSuccess}:Props){
+  const [files,setFiles]=useState<File[]>([]),[job,setJob]=useState<PackageJob|null>(null),[saved,setSaved]=useState<PackageJob[]>([]),[busy,setBusy]=useState(false),[error,setError]=useState(''),[drag,setDrag]=useState(false),[reference,setReference]=useState(''),[availability,setAvailability]=useState<any>(null);
+  const [historical,setHistorical]=useState(false);
+  const chooser=useRef<HTMLInputElement>(null),stop=useRef(false),mounted=useRef(true);
+  const refresh=()=>request('/api/package-jobs').then(p=>setSaved(p.data||[])).catch(()=>{});
+  useEffect(()=>{mounted.current=true;void refresh();void request('/api/source-availability').then(p=>setAvailability(p.sam)).catch(()=>{});return()=>{stop.current=true;mounted.current=false;};},[]);
+  const choose=(list:FileList|null)=>{if(!list)return;const next=[...files,...Array.from(list)].filter((f,i,a)=>a.findIndex(g=>g.name===f.name&&g.size===f.size&&g.lastModified===f.lastModified)===i);if(next.some(f=>!(/\.(zip|pdf|docx|xlsx|txt|csv)$/i.test(f.name))))return setError('Use ZIP, PDF, DOCX, XLSX, TXT or CSV.');if(next.length>PACKAGE_LIMITS.inputs||next.reduce((n,f)=>n+f.size,0)>PACKAGE_LIMITS.uploadBytes)return setError('Choose up to 40 files totaling 50 MB. A ZIP may contain up to 500 entries.');setFiles(next);setError('');};
+  const run=async(existing?:PackageJob)=>{
+    setBusy(true);setError('');stop.current=false;
+    try{
+      let current=existing||(await post('/api/package-jobs',{files:files.map(f=>({name:f.name,size:f.size,type:f.type})),mode:historical?'HISTORICAL':'LIVE'})).data as PackageJob;setJob(current);
+      if(current.stage==='UPLOADING'){
+        for(const f of current.files){const local=files.find(v=>v.name===f.name&&v.size===f.size);for(let i=0;i<f.chunks;i++){
+          if(stop.current)return;if(current.receivedChunks.includes(`${f.id}:${i}`))continue;
+          if(!local)throw new Error(`Reselect ${f.name} to resume the remaining upload. Already saved chunks will be reused.`);
+          const body=local.slice(i*PACKAGE_LIMITS.chunkBytes,(i+1)*PACKAGE_LIMITS.chunkBytes);
+          current=(await request(`/api/package-jobs/${current.id}/chunks/${f.id}/${i}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body})).data;setJob(current);
+        }}
       }
-      setStatusText('Recommendation calculated. Saving the decision and its assumptions.');
-      setPendingAnalysis(analysis);
-      setStatusText('Saving the completed evidence and assessment.');
-      await onSuccess(analysis);
-    } catch (failure) {
-      setError(failure instanceof DOMException && failure.name === 'AbortError'
-        ? 'Analysis cancelled. Your opportunity reference and uploaded files are still available.'
-        : failure instanceof Error ? failure.message : 'The analysis could not be completed.');
-      setProcessing(false);
-    } finally {
-      abortRef.current = null;
-    }
+      while(!stop.current&&!['COMPLETE','CANCELED'].includes(current.status)){
+        current=(await post(`/api/package-jobs/${current.id}/advance`)).data;setJob(current);
+        if(current.status==='PAUSED')throw new Error(current.message);
+        if(current.status==='WORKING')await new Promise(resolve=>setTimeout(resolve,2000));
+      }
+      if(current.status==='COMPLETE'&&!stop.current){const result=await request(`/api/package-jobs/${current.id}/result`);await onSuccess(result.data);}
+    }catch(e){if(mounted.current)setError(e instanceof Error?e.message:'Analysis paused. Resume from the saved stage.');}
+    finally{if(mounted.current){setBusy(false);void refresh();}}
   };
-
-  const canRun = opportunityRef.trim().length > 0 || files.length > 0;
-
-  return <div className="mx-auto max-w-5xl px-4 py-8 sm:px-6 lg:px-8">
-    <button onClick={onBack} className="inline-flex items-center gap-2 text-xs font-black uppercase tracking-[.14em] text-slate-500 hover:text-slate-950"><ArrowLeft className="h-4 w-4" /> Back</button>
-    {!processing ? <>
-      <div className="mt-8 max-w-3xl">
-        <p className="text-xs font-black uppercase tracking-[.18em] text-blue-600">New analysis · automatic opportunity intake</p>
-        <h1 className="mt-2 text-3xl font-black tracking-tight sm:text-4xl">Start with what you already have.</h1>
-        <p className="mt-3 max-w-2xl text-sm leading-6 text-slate-500">Upload the solicitation, paste its SAM.gov URL, or enter the solicitation number. Federal Market Position analyzes the files you provide and checks available public metadata. Add a SAM.gov reference to retrieve accessible official documents. Review package coverage after analysis.</p>
-      </div>
-
-      <div className="mt-8 max-w-3xl space-y-5">
-        <section className="rounded-2xl border border-blue-200 bg-white p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <p className="text-xs font-black uppercase tracking-[.12em] text-slate-700">Upload solicitation</p>
-              <p className="mt-1 text-xs leading-5 text-slate-500">Preferred when you already have the RFP, RFI, solicitation, amendment, or other official package. The upload is analyzed as provided. Add a SAM.gov reference below to retrieve accessible official material.</p>
-            </div>
-            <span className="rounded-full bg-blue-50 px-2.5 py-1 text-[9px] font-black uppercase tracking-wide text-blue-700">Upload your package</span>
-          </div>
-
-          <div role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') inputRef.current?.click(); }} onDragOver={(event) => { event.preventDefault(); setDragging(true); }} onDragLeave={() => setDragging(false)} onDrop={(event) => { event.preventDefault(); setDragging(false); chooseFiles(event.dataTransfer.files); }} onClick={() => inputRef.current?.click()} className={`mt-4 grid min-h-40 cursor-pointer place-items-center rounded-xl border-2 border-dashed px-6 text-center transition focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 ${dragging ? 'border-blue-500 bg-blue-50' : files.length > 0 ? 'border-emerald-400 bg-emerald-50/40' : 'border-slate-300 bg-slate-50/50 hover:border-blue-400'}`}>
-            <input ref={inputRef} className="hidden" type="file" multiple accept=".pdf,.docx,.txt,.xlsx" onChange={(event) => chooseFiles(event.target.files)} />
-            <div>
-              {files.length > 0 ? <CheckCircle2 className="mx-auto h-8 w-8 text-emerald-600" /> : <UploadCloud className="mx-auto h-8 w-8 text-slate-400" />}
-              <h2 className="mt-3 text-xs font-black uppercase tracking-[.12em]">{files.length > 0 ? `${files.length} file(s) ready` : 'Drop solicitation here'}</h2>
-              <p className="mt-1.5 text-[11px] leading-5 text-slate-500">PDF, DOCX, TXT, or XLSX · up to 10 files / 4 MB combined</p>
-            </div>
-          </div>
-
-          {files.length > 0 && <div className="mt-4 space-y-2">{files.map((file, index) => <div key={`${file.name}-${index}`} className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm">
-            <div className="flex min-w-0 items-center gap-2"><FileText className="h-4 w-4 shrink-0 text-slate-400" /><span className="truncate text-slate-700">{file.name}</span></div>
-            <button aria-label={`Remove ${file.name}`} onClick={(event) => { event.stopPropagation(); removeFile(index); }} className="rounded-md p-1 text-slate-500 hover:bg-slate-200"><X className="h-4 w-4" /></button>
-          </div>)}</div>}
-        </section>
-
-        <div className="flex items-center gap-3 px-2"><div className="h-px flex-1 bg-slate-200" /><span className="text-[10px] font-black uppercase tracking-[.16em] text-slate-400">or identify it directly</span><div className="h-px flex-1 bg-slate-200" /></div>
-
-        <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <div className="flex items-start gap-3">
-            <div className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100"><Search className="h-5 w-5 text-slate-700" /></div>
-            <div className="min-w-0 flex-1">
-              <label htmlFor="opportunity-reference" className="text-xs font-black uppercase tracking-[.12em] text-slate-700">SAM.gov URL or solicitation number</label>
-              <p className="mt-1 text-xs leading-5 text-slate-500">Use this when you do not want to upload a solicitation first. NAICS is collected automatically from the official record.</p>
-              <input
-                id="opportunity-reference"
-                value={opportunityRef}
-                onChange={(event) => { setOpportunityRef(event.target.value); setPendingAnalysis(null); setError(''); }}
-                placeholder="Example: FA875026S7002 or https://sam.gov/opp/.../view"
-                autoComplete="off"
-                className="mt-4 w-full rounded-xl border border-slate-300 bg-slate-50 px-4 py-3 text-sm font-semibold text-slate-900 outline-none transition placeholder:font-normal placeholder:text-slate-400 focus:border-blue-500 focus:bg-white focus:ring-4 focus:ring-blue-50"
-              />
-            </div>
-          </div>
-          <div className="mt-5 grid gap-2 sm:grid-cols-3">
-            {['Resolve official notice', 'Retrieve public documents', 'Auto-fill NAICS + agency'].map((item) => <div key={item} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-[11px] font-bold text-slate-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-blue-600" />{item}</div>)}
-          </div>
-        </section>
-
-        <div className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs text-slate-700"><ShieldCheck className="h-4 w-4 shrink-0 text-blue-600" /> Official SAM documents, analyst-provided material, inferences, and unresolved gaps remain visibly separated.</div>
-      </div>
-
-      {error && <div className="mt-5 max-w-3xl flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-800"><AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />{error}</div>}
-      <div className="mt-6 max-w-3xl flex items-center justify-between gap-4">
-        <p className="text-[11px] leading-5 text-slate-400">One identifier is enough. Uploading a solicitation and entering a SAM reference are both valid starting paths.</p>
-        <button onClick={runAnalysis} className="shrink-0 rounded-xl bg-[#10243e] px-6 py-3 text-sm font-black text-white shadow-lg disabled:cursor-not-allowed disabled:opacity-50" disabled={!canRun}>{pendingAnalysis ? 'RETRY SAVING ANALYSIS' : 'BUILD PTW ASSESSMENT'}</button>
-      </div>
-    </> : <div className="mx-auto mt-16 max-w-2xl rounded-2xl border border-slate-200 bg-white p-6 shadow-xl sm:p-8">
-      <div className="flex items-start gap-3"><Loader2 className="mt-0.5 h-5 w-5 animate-spin text-blue-600" /><div className="flex-1"><div className="flex items-center justify-between gap-3"><p className="text-sm font-black">Building the opportunity intelligence package</p><span className="font-mono text-xs font-bold text-slate-400">{Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</span></div><p className="mt-2 text-xs leading-5 text-slate-500">{statusText}</p></div></div>
-      <div className="mt-6 grid gap-2 sm:grid-cols-2">{['Identify opportunity', 'Check accessible official material', 'Read available source files', 'Search comparable evidence', 'Calculate Market Position'].map((label) => <div key={label} className="flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2.5 text-xs font-semibold text-slate-600"><span className="h-2 w-2 rounded-full bg-blue-500" />{label}</div>)}</div>
-      <div className="mt-6 flex justify-end"><button onClick={() => abortRef.current?.abort()} className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-black text-slate-600 hover:bg-slate-50">CANCEL ANALYSIS</button></div>
-    </div>}
+  const lookup=async()=>{setBusy(true);setError('');try{const form=new FormData();form.append('opportunityRef',reference);const result=await request('/api/analyze-solicitation',{method:'POST',body:form});await onSuccess(result.data);}catch(e){setError((e instanceof Error?e.message:'SAM lookup unavailable.')+' Download the package from SAM.gov and upload its ZIP here.');void request('/api/source-availability').then(p=>setAvailability(p.sam));}finally{setBusy(false);}};
+  return <div className="mx-auto max-w-5xl px-4 py-8 sm:px-8 sm:py-12">
+    <button onClick={onBack} className="fmp-link"><ArrowLeft size={16}/>Back to workspace</button>
+    <div className="mt-8 max-w-2xl"><p className="fmp-eyebrow">New pricing decision</p><h1 className="mt-3 text-3xl font-semibold tracking-tight sm:text-5xl">Bring the whole opportunity.</h1><p className="mt-5 leading-7 text-slate-600">Drop in the ZIP downloaded from SAM.gov, or individual documents. We inventory the package, prioritize pricing evidence, and build your recommendation.</p></div>
+    {error&&<div role="alert" className="mt-6 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-950"><AlertCircle size={18} className="mb-2"/>{error}</div>}
+    <div className="mt-8 grid gap-8 lg:grid-cols-[1.5fr_1fr]">
+      <section>
+        <input ref={chooser} type="file" multiple accept=".zip,.pdf,.docx,.xlsx,.txt,.csv" className="hidden" onChange={e=>{choose(e.target.files);e.target.value='';}}/>
+        <button disabled={busy} onClick={()=>chooser.current?.click()} onDragOver={e=>{e.preventDefault();setDrag(true);}} onDragLeave={()=>setDrag(false)} onDrop={e=>{e.preventDefault();setDrag(false);if(!busy)choose(e.dataTransfer.files);}} className={`w-full rounded-2xl border-2 border-dashed px-6 py-12 text-center transition-colors ${drag?'border-teal-600 bg-teal-50':'border-slate-300 bg-white hover:border-teal-600'} disabled:opacity-60`}>
+          <UploadCloud size={34} className="mx-auto text-teal-700"/><span className="mt-4 block text-xl font-semibold">Drop your solicitation package</span><span className="mt-2 block text-sm text-slate-500">ZIP or individual documents · 50 MB combined</span><span className="mt-2 block text-xs text-slate-500">PDF, DOCX, XLSX, TXT, CSV · Select files</span>
+        </button>
+        {files.length>0&&<ul className="mt-4 divide-y divide-slate-200">{files.map((f,i)=><li className="flex items-center gap-3 py-3 text-sm" key={f.name+i}>{/\.zip$/i.test(f.name)?<Archive className="shrink-0 text-teal-700" size={18}/>:<FileText className="shrink-0 text-slate-500" size={18}/>}<span className="min-w-0 flex-1 break-words">{f.name}<span className="block text-xs text-slate-500">{(f.size/1024/1024).toFixed(2)} MB</span></span><button aria-label={`Remove ${f.name}`} disabled={busy} onClick={()=>setFiles(v=>v.filter((_,n)=>n!==i))} className="p-3"><X size={16}/></button></li>)}</ul>}
+        <label className="mt-5 flex items-start gap-2 text-xs leading-5 text-slate-500"><input type="checkbox" className="mt-1" checked={historical} disabled={busy||!!job} onChange={e=>setHistorical(e.target.checked)}/>Historical practice: analyze a closed package using current research. Not a live bid or historical price backtest.</label>
+        <button disabled={busy||!files.length} onClick={()=>void run(job?.stage==='UPLOADING'?job:undefined)} className="fmp-primary mt-5 w-full">{busy?<Loader2 size={18} className="animate-spin"/>:<ArrowRight size={18}/>} {busy?'Processing package…':job?.stage==='UPLOADING'?'Continue upload':'Build pricing recommendation'}</button>
+        <p className="mt-3 text-xs leading-5 text-slate-500">Uploads and completed stages are saved to your workspace. Keep this page open while processing; you can pause and resume later.</p>
+      </section>
+      <aside className="border-l border-slate-200 pl-6"><h2 className="text-lg font-semibold">A focused review, with full visibility.</h2><ol className="mt-5 space-y-5 text-sm leading-6 text-slate-600"><li><strong className="block text-slate-900">01 · Understand the package</strong>Identify every file, amendments, duplicates and unreadable material.</li><li><strong className="block text-slate-900">02 · Read what drives price</strong>Evaluation, quantities, scope, staffing, wages and referenced attachments.</li><li><strong className="block text-slate-900">03 · Make the decision clear</strong>Recommended PTW, competitive corridor, confidence and your next action.</li></ol><p className="mt-6 rounded-lg bg-[#eef4f1] p-4 text-xs leading-5 text-slate-600">Uploading a package does not verify that it contains the latest amendments. Source currency is stated separately in every brief.</p></aside>
+    </div>
+    {job&&<section aria-live="polite" className="mt-8 rounded-xl border border-slate-200 bg-white p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="font-semibold">{job.label}</h2>{busy?<button className="fmp-link" onClick={()=>{stop.current=true;}}><Pause size={16}/>Pause after this stage</button>:job.status!=='CANCELED'&&<button className="fmp-link" onClick={()=>void run(job)}><Play size={16}/>{job.status==='COMPLETE'?'Open recommendation':'Resume saved progress'}</button>}</div>{!busy&&!['COMPLETE','CANCELED'].includes(job.status)&&<button className="mt-3 text-xs text-slate-500 underline" onClick={async()=>{const p=await post(`/api/package-jobs/${job.id}/cancel`);setJob(p.data);setFiles([]);void refresh();}}>Cancel this package</button>}<ol className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">{stages.map((s,i)=><li key={s} className={`border-t-2 pt-2 text-xs ${i<=stageIndex[job.stage]?'border-teal-600 text-teal-800':'border-slate-200 text-slate-500'}`}>{i<stageIndex[job.stage]?'✓ ':''}{s}</li>)}</ol><p className="mt-4 text-sm text-slate-600">{job.message}</p>{job.documents.length>0&&<details className="mt-5"><summary className="cursor-pointer text-sm font-semibold">Package inventory · {job.documents.length} files</summary><ul className="mt-3 max-h-80 space-y-3 overflow-auto text-xs">{job.documents.map(d=><li key={d.id} className="border-b border-slate-100 pb-2"><strong className="break-words">{d.name}</strong><p className="mt-1 text-slate-500">{d.status} · {d.categories.join(', ')||'Supporting material'}</p>{d.note&&<p className="mt-1 text-amber-800">{d.note}</p>}</li>)}</ul></details>}</section>}
+    {saved.filter(s=>s.id!==job?.id&&s.status!=='CANCELED').length>0&&<section className="mt-8"><h2 className="text-sm font-semibold">Saved package progress</h2><div className="mt-3 space-y-2">{saved.filter(s=>s.id!==job?.id&&s.status!=='CANCELED').slice(0,5).map(s=><button disabled={busy} className="flex w-full items-center justify-between gap-4 rounded-lg border border-slate-200 bg-white p-4 text-left text-sm" key={s.id} onClick={()=>{setJob(s);void run(s);}}><span className="min-w-0 break-words">{s.label}<span className="mt-1 block text-xs text-slate-500">{s.stage.toLowerCase()} · {s.status.toLowerCase()}</span></span><span className="shrink-0 font-semibold text-teal-700">{s.status==='COMPLETE'?'Open':'Resume'}</span></button>)}</div></section>}
+    <details className="mt-10 border-t border-slate-200 pt-5"><summary className="cursor-pointer text-sm font-semibold text-slate-600">Optional: retrieve a package using a SAM.gov reference</summary><p className="mt-3 text-sm text-slate-500">{availability?.message||'SAM availability is not guaranteed. Upload a package if lookup is unavailable.'}</p>{availability?.retryAt&&<p className="mt-2 text-xs text-amber-800">Service retry time: {new Date(availability.retryAt).toLocaleString()}</p>}<label htmlFor="opportunity-reference" className="mt-4 block text-sm font-medium">SAM.gov URL or solicitation number</label><div className="mt-2 flex flex-wrap gap-2"><input id="opportunity-reference" className="min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm" value={reference} onChange={e=>setReference(e.target.value)}/><button className="fmp-secondary" disabled={busy||!reference.trim()||availability?.status==='QUOTA_REACHED'} onClick={()=>void lookup()}>Try SAM lookup</button></div></details>
   </div>;
 }
-

@@ -5,6 +5,14 @@ import { sourceConflictStatus } from '../domain/sourceConsistency';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
+  const coverage=analysis.meta.packageCoverage;
+  if(coverage){
+    const sheet=workbook.addWorksheet('Package Coverage');
+    sheet.columns=[{header:'Document',key:'name',width:70},{header:'Review status',key:'status',width:22},{header:'Role',key:'role',width:35},{header:'Coverage / limitation',key:'note',width:100},{header:'SHA-256',key:'sha256',width:70}];
+    sheet.addRow({name:'Analysis purpose',status:coverage.mode||'LIVE',note:coverage.mode==='HISTORICAL'?'Closed solicitation using current research, not a historical price backtest.':'Live opportunity review'});
+    sheet.addRow({name:'Package currency',status:coverage.freshness.status,note:coverage.freshness.message});
+    coverage.documents.forEach(d=>sheet.addRow({...d,role:d.categories.join(', ')}));
+  }
   const government=workbook.addWorksheet('Government Decision');
   government.columns=[{header:'Category',key:'category',width:25},{header:'Fact / rule',key:'label',width:35},{header:'Extracted value / implication',key:'value',width:100},{header:'Source locator',key:'source',width:80}];
   government.addRows([{category:'Eligibility',label:'Set-aside',value:analysis.deal.setAside || 'Unconfirmed'},{category:'Eligibility',label:'NAICS',value:analysis.deal.naics},{category:'Evaluation',label:'Method',value:analysis.deal.evaluationMethod},{category:'Evaluation',label:'Basket',value:analysis.deal.evaluationPricing?.basis,source:analysis.deal.evaluationPricing?.source}]);

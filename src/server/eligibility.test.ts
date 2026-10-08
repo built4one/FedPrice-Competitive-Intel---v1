@@ -13,3 +13,9 @@ test('closed, sole-source, sources-sought and unrelated packages are blocked wit
   assert.throws(()=>assessEligibility({...deal,dueDate:'2026-01-01'},new Date('2026-10-04')),/deadline.*passed/);
   assert.ok(assessEligibility({...deal,documentStatus:'NONCOMPETITIVE',eligibilitySource:''}).length>0);
 });
+
+test('historical practice is explicit and does not waive solicitation eligibility',()=>{
+ const closed={...opportunityAnalysisFixture().deal,eligibilitySource:'Original solicitation',documentStatus:'EXPIRED' as const,dueDate:'2019-10-18'};
+ assert.ok(assessEligibility(closed,new Date(),{historical:true}).some(w=>w.includes('Historical practice')));
+ assert.throws(()=>assessEligibility({...closed,documentStatus:'NON_SOLICITATION'},new Date(),{historical:true}),/not a federal solicitation/);
+});

@@ -113,7 +113,7 @@ export default function App() {
     setRuns([]); setSelectedId(null); setView('home');
   };
 
-  if (!session?.user) return <div className="grid min-h-screen place-items-center bg-[#f4f7fb] px-4">
+  if (!session?.user) return <div className="grid min-h-screen place-items-center bg-[#f7f8f5] px-4">
     <form onSubmit={signIn} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-lg">
       <h1 className="text-2xl font-black text-slate-950">Federal Market Position</h1>
       <p className="mt-2 text-sm text-slate-600">Private opportunity intelligence</p>
@@ -130,7 +130,7 @@ export default function App() {
     </form>
   </div>;
 
-  return <div className="min-h-screen bg-[#f4f7fb] text-slate-950">
+  return <div className="min-h-screen bg-[#f7f8f5] text-slate-950">
     <Header view={view} activeTitle={selected?.deal.solicitationNumber || selected?.deal.title} onNavigate={setView} />
     <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
       <span>{session.user.username}{session.accessMode === 'vercel-preview' ? ' · Private Vercel preview' : ''}</span>

@@ -14,3 +14,14 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   body, #root { background: white !important; }
   section, article { break-inside: avoid; box-shadow: none !important; }
 }
+
+body { background: #f7f8f5; color: #153344; }
+button:disabled { cursor: not-allowed; }
+.fmp-eyebrow { color: #22756b; font-size: .7rem; font-weight: 700; letter-spacing: .18em; text-transform: uppercase; }
+.fmp-primary, .fmp-secondary, .fmp-link { display: inline-flex; align-items: center; justify-content: center; gap: .6rem; font-weight: 600; font-size: .875rem; transition: background-color .15s; }
+.fmp-primary { background: #146c62; color: white; border-radius: .65rem; padding: .9rem 1.2rem; min-height: 44px; }
+.fmp-primary:hover { background: #10574f; }
+.fmp-primary:disabled, .fmp-secondary:disabled { opacity: .5; }
+.fmp-secondary { background: white; color: #153344; border: 1px solid #cbd5d8; padding: .85rem 1.1rem; border-radius: .65rem; min-height: 44px; }
+.fmp-link { color: #146c62; min-height: 36px; }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

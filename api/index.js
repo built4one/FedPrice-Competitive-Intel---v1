@@ -1,3 +1,135 @@
+// src/server/packageJobs.ts
+import crypto2 from "node:crypto";
+
+// src/server/officeImages.ts
+import unzipper from "unzipper";
+import PDFDocument from "pdfkit";
+async function officeImages(file) {
+  if (!/\.(xlsx|docx)$/i.test(file.originalname)) return {};
+  const zip = await unzipper.Open.buffer(file.buffer);
+  const entries = zip.files.filter((e) => /^(xl|word)\/media\//.test(e.path) && e.type !== "Directory");
+  if (!entries.length) return {};
+  const supported = entries.filter((e) => /\.(png|jpe?g)$/i.test(e.path));
+  const selected = supported.slice(0, 20);
+  let skipped = entries.length - selected.length, total = 0;
+  const doc = new PDFDocument({ autoFirstPage: false });
+  const chunks = [];
+  const done = new Promise((resolve, reject) => {
+    doc.on("data", (b) => chunks.push(b));
+    doc.on("end", () => resolve(Buffer.concat(chunks)));
+    doc.on("error", reject);
+  });
+  let added = 0;
+  for (const entry of selected) {
+    if (entry.uncompressedSize > 10 * 1024 * 1024 || total + entry.uncompressedSize > 25 * 1024 * 1024) {
+      skipped++;
+      continue;
+    }
+    try {
+      const buffer2 = await entry.buffer();
+      total += buffer2.length;
+      doc.addPage();
+      doc.fontSize(9).text(`${file.originalname} \u2014 embedded image ${entry.path}`, 36, 25, { width: 540 });
+      doc.image(buffer2, 36, 65, { fit: [540, 670], align: "center", valign: "center" });
+      added++;
+    } catch {
+      skipped++;
+    }
+  }
+  doc.end();
+  const buffer = await done;
+  return { file: added ? { originalname: file.originalname + "-embedded-images.pdf", mimetype: "application/pdf", size: buffer.length, buffer } : void 0, warning: skipped ? `${skipped} embedded images could not be included in visual review. Review original drawings/photos before adopting price.` : void 0 };
+}
+async function validateOfficeArchive(file) {
+  if (!/\.(xlsx|docx)$/i.test(file.originalname)) return;
+  const zip = await unzipper.Open.buffer(file.buffer);
+  if (zip.files.length > 5e3) throw new Error("Office document contains too many internal entries. Export it to PDF.");
+  let bytes = 0;
+  for (const entry of zip.files) {
+    if (entry.type === "Directory") continue;
+    if (bytes + entry.uncompressedSize > 50 * 1024 * 1024) throw new Error("Office document expands beyond 50 MB. Export a smaller PDF or workbook.");
+    for await (const chunk of entry.stream()) {
+      bytes += chunk.length;
+      if (bytes > 50 * 1024 * 1024) throw new Error("Office document expanded-size limit exceeded.");
+    }
+  }
+}
+
+// src/server/packageJobs.ts
+import express from "express";
+
+// src/server/store.ts
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { Pool } from "pg";
+var ConflictError = class extends Error {
+  constructor() {
+    super("This record changed. Refresh before saving.");
+  }
+};
+var RecordStore = class {
+  constructor(options = { url: process.env.DATABASE_URL, file: process.env.STUDIO_DB_PATH || "./data/market-intelligence.sqlite", hosted: process.env.VERCEL === "1" }) {
+    this.options = options;
+    this.durable = !options.hosted || Boolean(options.url);
+  }
+  async init() {
+    if (!this.ready) this.ready = (async () => {
+      if (!this.durable) throw new Error("DATABASE_URL is required for durable hosted storage.");
+      if (this.options.url) this.pool = new Pool({ connectionString: this.options.url, max: 3, connectionTimeoutMillis: 1e4, idleTimeoutMillis: 1e4 });
+      else {
+        await mkdir(path.dirname(path.resolve(this.options.file)), { recursive: true });
+        const { DatabaseSync } = await import("node:sqlite");
+        this.sqlite = new DatabaseSync(this.options.file);
+        this.sqlite.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
+      }
+      await this.raw("CREATE TABLE IF NOT EXISTS fmp_records (workspace TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace,kind,id))");
+      await this.raw("CREATE INDEX IF NOT EXISTS fmp_records_list ON fmp_records(workspace,kind,updated_at)");
+    })().catch((error) => {
+      this.ready = void 0;
+      throw error;
+    });
+    return this.ready;
+  }
+  async raw(sql, values = []) {
+    if (this.pool) return (await this.pool.query(sql, values)).rows;
+    const normalized = sql.replace(/\$\d+/g, "?");
+    const statement2 = this.sqlite.prepare(normalized);
+    return statement2.all(...values);
+  }
+  decode(row) {
+    return { id: row.id, value: JSON.parse(row.payload), version: row.version, updatedAt: row.updated_at };
+  }
+  async get(workspace, kind, id) {
+    await this.init();
+    const rows = await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3", [workspace, kind, id]);
+    return rows[0] ? this.decode(rows[0]) : null;
+  }
+  async list(workspace, kind) {
+    await this.init();
+    return (await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 ORDER BY updated_at DESC", [workspace, kind])).map((row) => this.decode(row));
+  }
+  async put(workspace, kind, id, value, expectedVersion = 0) {
+    await this.init();
+    const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const sql = expectedVersion === 0 ? "INSERT INTO fmp_records(workspace,kind,id,payload,version,updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(workspace,kind,id) DO NOTHING RETURNING *" : "UPDATE fmp_records SET payload=$1,version=version+1,updated_at=$2 WHERE workspace=$3 AND kind=$4 AND id=$5 AND version=$6 RETURNING *";
+    const params = expectedVersion === 0 ? [workspace, kind, id, JSON.stringify(value), updatedAt] : [JSON.stringify(value), updatedAt, workspace, kind, id, expectedVersion];
+    const rows = await this.raw(sql, params);
+    if (!rows.length) throw new ConflictError();
+    return this.decode(rows[0]);
+  }
+  async remove(workspace, kind, id) {
+    await this.init();
+    await this.raw("DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id", [workspace, kind, id]);
+  }
+  async close() {
+    await this.pool?.end();
+    this.sqlite?.close();
+    this.ready = void 0;
+    this.sqlite = void 0;
+    this.pool = void 0;
+  }
+};
+
 // src/server/openaiIntelligence.ts
 function strictSchema(schema2) {
   const type = schema2.type.toLowerCase();
@@ -123,6 +255,384 @@ Return only a valid JSON object, without Markdown fences or prose outside the ob
     };
   }
 };
+
+// src/server/packageInventory.ts
+import crypto from "node:crypto";
+import unzipper2 from "unzipper";
+
+// src/packageTypes.ts
+var PACKAGE_LIMITS = { uploadBytes: 50 * 1024 * 1024, expandedBytes: 200 * 1024 * 1024, fileBytes: 25 * 1024 * 1024, entries: 500, chunkBytes: 2 * 1024 * 1024, inputs: 40 };
+
+// src/server/packageInventory.ts
+var digest = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
+var mime = { pdf: "application/pdf", docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document", xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", txt: "text/plain", csv: "text/plain" };
+var signals = [["Amendment", /amendment|sf.?30|supersed|revis(?:ed|ion)|questions? and answers|\bQ\s*&\s*A\b/i, 5], ["Evaluation", /evaluation|section m\b|52\.212-2|basis (?:for|of) award|lowest.price|trade.?off/i, 5], ["Pricing", /pricing|price schedule|\bCLIN\b|section b\b|unit price|evaluated price|rate schedule|\bhours\b|quantit/i, 5], ["Scope", /statement of work|\bPWS\b|\bSOW\b|performance work|specification|drawing|deliverable|staffing/i, 3], ["Wages", /wage determination|52\.222|prevailing wage|collective bargaining/i, 3], ["Solicitation", /solicitation|\bRFP\b|\bRFQ\b|\bIFB\b|sf.?1449|sf.?33/i, 4]];
+function classifyDocument(name, text2 = "") {
+  const categories = signals.filter(([, re]) => re.test(name + "\n" + text2)).map(([label]) => label);
+  return { categories, priority: Math.max(1, ...signals.filter(([, re]) => re.test(name + "\n" + text2)).map(([, , weight]) => weight)) };
+}
+function safeArchivePath(name) {
+  return !name.includes("\0") && !/^(?:[a-z]:|\/|\\)/i.test(name) && !name.replace(/\\/g, "/").split("/").includes("..");
+}
+async function inventoryPackage(inputs) {
+  const documents = [], files = [], seen = /* @__PURE__ */ new Set();
+  let expanded = 0, entries = 0;
+  const record = (name, size, status, note, sha256) => {
+    const row = { id: `doc-${documents.length + 1}`, name, bytes: size, status, note, sha256, ...classifyDocument(name) };
+    documents.push(row);
+    return row;
+  };
+  const visit = async (file, depth = 0) => {
+    if (++entries > PACKAGE_LIMITS.entries) throw new Error("Package exceeds 500 entries. Split the package into smaller ZIP files.");
+    if (!safeArchivePath(file.originalname)) {
+      record(file.originalname, file.size, "UNREADABLE", "Unsafe archive path rejected.");
+      return;
+    }
+    if (/\.zip$/i.test(file.originalname)) {
+      if (depth > 2) {
+        record(file.originalname, file.size, "UNSUPPORTED", "Nested ZIP exceeds two folder-archive levels. Upload its documents separately.");
+        return;
+      }
+      let archive;
+      try {
+        archive = await unzipper2.Open.buffer(file.buffer);
+      } catch {
+        record(file.originalname, file.size, "UNREADABLE", "ZIP is damaged or encrypted.");
+        return;
+      }
+      if (entries + archive.files.length > PACKAGE_LIMITS.entries) throw new Error("Package exceeds 500 entries. Split the package into smaller ZIP files.");
+      for (const entry of archive.files) {
+        if (entry.type === "Directory") continue;
+        const name = `${file.originalname}/${entry.path}`;
+        if (!safeArchivePath(entry.path) || entry.flags & 1 || (entry.externalFileAttributes >>> 16 & 61440) === 40960) {
+          record(name, entry.uncompressedSize, "UNREADABLE", "Encrypted entries, links, or unsafe paths cannot be read.");
+          continue;
+        }
+        if (/(?:^|\/)__MACOSX\/|(?:^|\/)\._|(?:^|\/)\.DS_Store$/.test(entry.path)) continue;
+        if (entry.uncompressedSize > PACKAGE_LIMITS.fileBytes) {
+          record(name, entry.uncompressedSize, "UNREADABLE", "File exceeds 25 MB; split it into smaller documents.");
+          continue;
+        }
+        if (expanded + entry.uncompressedSize > PACKAGE_LIMITS.expandedBytes) throw new Error("Expanded package exceeds 200 MB. Split the package.");
+        const chunks = [];
+        let bytes = 0;
+        try {
+          for await (const chunk of entry.stream()) {
+            bytes += chunk.length;
+            if (bytes > PACKAGE_LIMITS.fileBytes || expanded + bytes > PACKAGE_LIMITS.expandedBytes) throw new Error("Expanded file limit exceeded.");
+            chunks.push(chunk);
+          }
+          expanded += bytes;
+          await visit({ originalname: name, mimetype: "", size: bytes, buffer: Buffer.concat(chunks) }, depth + 1);
+        } catch (e) {
+          record(name, bytes, "UNREADABLE", e instanceof Error ? e.message : "Could not decompress this file.");
+        }
+      }
+      return;
+    }
+    if (file.size > PACKAGE_LIMITS.fileBytes) {
+      record(file.originalname, file.size, "UNREADABLE", "File exceeds 25 MB; split it into smaller documents.");
+      return;
+    }
+    const ext = file.originalname.split(".").pop().toLowerCase();
+    if (!mime[ext]) {
+      record(file.originalname, file.size, "UNSUPPORTED", "Supported documents: PDF, DOCX, XLSX, TXT and CSV. Convert this attachment if it affects pricing.");
+      return;
+    }
+    const hash = digest(file.buffer);
+    if (seen.has(hash)) {
+      record(file.originalname, file.size, "DUPLICATE", "Identical content already included.", hash);
+      return;
+    }
+    seen.add(hash);
+    const row = record(file.originalname, file.size, "QUEUED", void 0, hash);
+    files.push({ ...file, documentId: row.id, mimetype: mime[ext], originalname: row.name });
+  };
+  for (const file of inputs) await visit(file);
+  return { documents, files };
+}
+function screenDocument(name, text2) {
+  const tags = classifyDocument(name, text2), references = [...new Set((text2.match(/(?:attachment|appendix|exhibit)\s+[A-Z0-9][A-Z0-9 ._-]{0,45}/gi) || []).map((v) => v.trim()))].slice(0, 40);
+  if (text2.length <= 9e4) return { ...tags, text: text2, references, excerpted: false };
+  const blocks = text2.split(/(?=SOURCE: .*?\| PAGE \d+)|\n\s*\n/).flatMap((block) => block.length > 6e4 ? block.match(/[\s\S]{1,60000}/g) : [block]);
+  const ranked = blocks.map((v, i) => ({ v, i, score: classifyDocument("", v).priority + (i < 3 ? 5 : 0) })).sort((a, b) => b.score - a.score || a.i - b.i);
+  const selected = [];
+  let size = 0;
+  for (const b of ranked) {
+    if (size + b.v.length > 16e4) continue;
+    selected.push(b);
+    size += b.v.length;
+  }
+  return { ...tags, text: selected.sort((a, b) => a.i - b.i).map((b) => b.v).join("\n\n"), references, excerpted: true };
+}
+
+// src/server/packageJobs.ts
+var asStored = (f) => ({ ...f, buffer: f.buffer.toString("base64") });
+var fromStored = (f) => ({ ...f, buffer: Buffer.from(f.buffer, "base64") });
+var initialMessage = "Upload saved in small chunks. Processing resumes from the last completed stage.";
+var PackageJobs = class {
+  constructor(store2, deps) {
+    this.store = store2;
+    this.deps = deps;
+  }
+  async create(workspace, raw) {
+    if (!Array.isArray(raw.files) || !raw.files.length || raw.files.length > PACKAGE_LIMITS.inputs) throw new Error("Choose 1\u201340 files, including ZIP packages.");
+    let total = 0;
+    const files = raw.files.map((f, i) => {
+      if (typeof f.name !== "string" || f.name.length > 240 || !Number.isSafeInteger(f.size) || f.size <= 0) throw new Error("Invalid file name or size.");
+      if (!/\.(zip|pdf|docx|xlsx|txt|csv)$/i.test(f.name)) throw new Error("Choose ZIP, PDF, DOCX, XLSX, TXT or CSV files.");
+      total += f.size;
+      return { id: `input-${i}`, name: f.name, size: f.size, type: String(f.type || ""), chunks: Math.ceil(f.size / PACKAGE_LIMITS.chunkBytes) };
+    });
+    if (total > PACKAGE_LIMITS.uploadBytes) throw new Error("Upload up to 50 MB per package.");
+    const active = (await this.store.list(workspace, "package-job")).filter((j) => !["COMPLETE", "CANCELED"].includes(j.value.status));
+    if (active.length >= 5) throw new Error("Finish or cancel one of your five active packages before starting another.");
+    const job = { id: crypto2.randomUUID(), label: files[0].name, mode: raw.mode === "HISTORICAL" ? "HISTORICAL" : "LIVE", stage: "UPLOADING", status: "READY", files, receivedChunks: [], documents: [], warnings: [], receivedAt: (/* @__PURE__ */ new Date()).toISOString(), cursor: 0, attempts: 0, message: initialMessage, opportunityRef: String(raw.opportunityRef || "").slice(0, 500) };
+    return (await this.store.put(workspace, "package-job", job.id, job)).value;
+  }
+  async get(workspace, id) {
+    const row = await this.store.get(workspace, "package-job", id);
+    if (!row) throw new Error("Package not found in your workspace.");
+    return row;
+  }
+  async chunk(workspace, id, fileId, index, buffer) {
+    const row = await this.get(workspace, id), job = row.value, file = job.files.find((f) => f.id === fileId);
+    if (job.stage !== "UPLOADING" || job.status === "CANCELED" || !file || !Number.isSafeInteger(index) || index < 0 || index >= file.chunks) throw new Error("Invalid upload chunk.");
+    const expected = Math.min(PACKAGE_LIMITS.chunkBytes, file.size - index * PACKAGE_LIMITS.chunkBytes);
+    if (buffer.length !== expected) throw new Error("Incomplete upload chunk; retry it.");
+    const key = `${id}:${fileId}:${index}`, value = buffer.toString("base64"), prior = await this.store.get(workspace, "package-chunk", key);
+    if (prior && prior.value !== value) throw new Error("The reselected file differs from the saved upload. Start a new package.");
+    if (!prior) await this.store.put(workspace, "package-chunk", key, value);
+    if (!job.receivedChunks.includes(`${fileId}:${index}`)) job.receivedChunks.push(`${fileId}:${index}`);
+    job.message = `${job.receivedChunks.length} of ${job.files.reduce((n, f) => n + f.chunks, 0)} upload chunks saved.`;
+    await this.store.put(workspace, "package-job", id, job, row.version);
+    return job;
+  }
+  async cancel(workspace, id) {
+    const r = await this.get(workspace, id);
+    r.value.status = "CANCELED";
+    r.value.message = "Canceled. Saved analyses are unchanged.";
+    await this.store.put(workspace, "package-job", id, r.value, r.version);
+    return r.value;
+  }
+  async advance(workspace, id) {
+    const row = await this.get(workspace, id);
+    let job = row.value;
+    if (["COMPLETE", "CANCELED"].includes(job.status)) return job;
+    if (job.status === "WORKING" && (job.leaseUntil || 0) > Date.now()) return job;
+    job = { ...job, status: "WORKING", leaseUntil: Date.now() + 18e4, attempts: job.attempts + 1 };
+    const locked = await this.store.put(workspace, "package-job", id, job, row.version);
+    try {
+      if (job.stage === "UPLOADING") {
+        if (job.receivedChunks.length !== job.files.reduce((n, f) => n + f.chunks, 0)) throw new Error("Reselect the original files to finish uploading the remaining chunks.");
+        job.stage = "INVENTORY";
+        job.message = "Upload complete. Opening and inventorying the package.";
+      } else if (job.stage === "INVENTORY") {
+        const inputs = [];
+        for (const f of job.files) {
+          const chunks = [];
+          for (let i = 0; i < f.chunks; i++) {
+            const c = await this.store.get(workspace, "package-chunk", `${id}:${f.id}:${i}`);
+            if (!c) throw new Error(`Missing upload chunk for ${f.name}.`);
+            chunks.push(Buffer.from(c.value, "base64"));
+          }
+          inputs.push({ originalname: f.name, mimetype: f.type, size: f.size, buffer: Buffer.concat(chunks) });
+        }
+        const inventory = await inventoryPackage(inputs);
+        job.documents = inventory.documents;
+        for (const doc of job.documents.filter((d) => d.status === "QUEUED")) {
+          const f = inventory.files.find((f2) => f2.documentId === doc.id);
+          await this.put(workspace, "package-source", `${id}:${doc.id}`, asStored(f));
+        }
+        if (!inventory.files.length) throw new Error("No readable supported documents were found. Add a PDF, DOCX, XLSX or TXT document.");
+        job.stage = "READING";
+        job.cursor = 0;
+        job.message = `${job.documents.length} files inventoried. Screening content and following pricing references.`;
+      } else if (job.stage === "READING") {
+        for (const f of job.files) for (let i = 0; i < f.chunks; i++) await this.store.remove(workspace, "package-chunk", `${id}:${f.id}:${i}`);
+        const doc = job.documents.find((d) => d.status === "QUEUED");
+        if (doc) {
+          try {
+            const source = await this.store.get(workspace, "package-source", `${id}:${doc.id}`);
+            const original = fromStored(source.value);
+            if (/\.pdf$/i.test(original.originalname) && !original.buffer.subarray(0, 5).equals(Buffer.from("%PDF-"))) throw new Error("PDF signature is invalid; this attachment is unreadable.");
+            await validateOfficeArchive(original);
+            const [file] = await this.deps.normalize([original]);
+            let text2, visual = false;
+            if (file.mimetype === "text/plain") text2 = file.buffer.toString("utf8");
+            else {
+              visual = true;
+              text2 = await (this.deps.visual || readVisual)(file);
+            }
+            const embedded = await officeImages(original);
+            if (embedded.file) {
+              text2 += "\n\nEMBEDDED VISUAL EVIDENCE:\n" + await (this.deps.visual || readVisual)(embedded.file);
+              visual = true;
+            }
+            if (embedded.warning) {
+              doc.note = embedded.warning;
+              job.warnings.push(`${doc.name}: ${embedded.warning}`);
+            }
+            if (!text2.trim()) throw new Error("No usable text or visual content could be read.");
+            const screen = screenDocument(doc.name, text2);
+            doc.categories = screen.categories;
+            doc.priority = screen.priority;
+            doc.references = screen.references;
+            doc.status = screen.excerpted || embedded.warning ? "EXCERPTS" : visual ? "VISUAL" : "READ";
+            if (screen.excerpted) doc.note = "All text screened; selected intact pricing-related sections used for detailed extraction. Unselected context may require review.";
+            await this.put(workspace, "package-text", `${id}:${doc.id}`, screen.text);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (/OpenAI|timeout|abort|429|quota|402|503|502/i.test(message)) throw new Error(`Reading ${doc.name} paused: ${message}. Completed documents are saved; resume to retry this document.`);
+            doc.status = "UNREADABLE";
+            doc.note = message;
+            job.warnings.push(`${doc.name}: ${message}`);
+          }
+          job.cursor++;
+          job.message = `Reviewed ${job.cursor} documents. ${job.documents.filter((d) => d.status === "QUEUED").length} remaining.`;
+        }
+        if (!job.documents.some((d) => d.status === "QUEUED")) {
+          job.stage = "EXTRACTION";
+          job.message = "Reconciling scope, amendments, quantities and Government evaluation instructions.";
+        }
+      } else if (job.stage === "EXTRACTION") {
+        for (const doc of job.documents) await this.store.remove(workspace, "package-source", `${id}:${doc.id}`);
+        const ordered = [...job.documents].filter((d) => ["READ", "EXCERPTS", "VISUAL"].includes(d.status)).sort((a, b) => b.priority - a.priority);
+        const files = [];
+        let chars = 0;
+        for (const doc of ordered) {
+          const text2 = (await this.store.get(workspace, "package-text", `${id}:${doc.id}`))?.value || "";
+          if (chars + text2.length > 45e4) {
+            doc.note = (doc.note || "") + " Detail review budget reached; this file was screened but not included in final extraction.";
+            doc.status = "EXCERPTS";
+            job.warnings.push(`${doc.name}: detailed extraction deferred by context budget.`);
+            continue;
+          }
+          const buffer = Buffer.from(`SOURCE DOCUMENT: ${doc.name}
+${text2}`);
+          chars += text2.length;
+          files.push({ originalname: doc.name + ".txt", mimetype: "text/plain", size: buffer.length, buffer });
+        }
+        if (!files.length) throw new Error("No readable content remains. Add a readable solicitation or pricing schedule.");
+        const manifest = Buffer.from("PACKAGE INVENTORY \u2014 missing or unreadable files are gaps, never evidence that requirements are absent.\n" + JSON.stringify(job.documents));
+        files.push({ originalname: "Package inventory.txt", mimetype: "text/plain", size: manifest.length, buffer: manifest });
+        await this.put(workspace, "package-draft", id, await this.deps.extract(files, { historical: job.mode === "HISTORICAL" }));
+        job.stage = "RESEARCH";
+        job.message = "Scope extraction saved. Researching applicable rates, comparable awards and competition.";
+      } else if (job.stage === "RESEARCH") {
+        const draft = (await this.store.get(workspace, "package-draft", id)).value;
+        const analysis = await this.deps.research(draft, job.documents.map((d) => d.name), { historical: job.mode === "HISTORICAL" });
+        await this.put(workspace, "package-result", id, analysis);
+        job.stage = "PRICING";
+        job.message = "Research saved. Completing bounded price assumptions and calculating the recommendation.";
+      } else if (job.stage === "PRICING") {
+        const prior = (await this.store.get(workspace, "package-result", id)).value;
+        const coverage = { documents: job.documents, warnings: job.warnings, receivedAt: job.receivedAt, mode: job.mode, freshness: { status: "UNVERIFIED", message: "Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency." } };
+        prior.meta.packageCoverage = coverage;
+        const analysis = await this.deps.price(prior);
+        analysis.meta.warnings.push(...job.warnings, ...job.documents.filter((d) => ["UNREADABLE", "UNSUPPORTED", "EXCERPTS"].includes(d.status)).map((d) => `${d.name}: ${d.note}`), coverage.freshness.message);
+        if (!analysis.competitivePosition?.target) {
+          await this.put(workspace, "package-result", id, analysis);
+          throw new Error("Pricing review needed: " + (analysis.competitivePosition?.missing.slice(0, 3).join(" ") || "The evaluated price basis could not be reconstructed."));
+        }
+        const stored = await this.store.get(workspace, "analysis", analysis.id);
+        const saved = stored || await this.store.put(workspace, "analysis", analysis.id, analysis);
+        job.runId = saved.id;
+        job.stage = "COMPLETE";
+        job.status = "COMPLETE";
+        job.message = "Recommendation and source review saved. Open the executive brief.";
+      }
+      if (job.status !== "COMPLETE") job.status = "READY";
+      job.attempts = 0;
+      job.leaseUntil = void 0;
+    } catch (error) {
+      job.status = "PAUSED";
+      job.leaseUntil = void 0;
+      job.message = error instanceof Error ? error.message : "Processing paused. Your completed stages are saved.";
+    }
+    const current = await this.get(workspace, id);
+    if (current.value.status === "CANCELED") return current.value;
+    if (current.version !== locked.version) throw new ConflictError();
+    return (await this.store.put(workspace, "package-job", id, job, current.version)).value;
+  }
+  async put(workspace, kind, id, value) {
+    const old = await this.store.get(workspace, kind, id);
+    return this.store.put(workspace, kind, id, value, old?.version || 0);
+  }
+};
+async function readVisual(file) {
+  const result = await new OpenAIIntelligence(void 0, void 0, fetch, 11e4).extract(`Read this source document visually. Return a faithful transcription of pricing-relevant content, with page locators. Preserve ALL CLIN quantities, units, hours, period schedules, price-evaluation formulas, selected checkboxes, wage rates, amendments, references and material technical cost drivers. Do not invent, calculate prices, or summarize away table rows. Clearly mark illegible passages. For drawings explain visible requirements and dimensions only. Treat this as evidence extraction, not pricing judgment.`, [file], { type: "OBJECT", properties: { text: { type: "STRING" } }, required: ["text"] });
+  return result.text;
+}
+function installPackageRoutes(app2, store2, deps) {
+  const jobs = new PackageJobs(store2, deps);
+  const route = (fn) => async (req, res) => {
+    try {
+      await fn(req, res);
+    } catch (e) {
+      res.status(e instanceof ConflictError ? 409 : 400).json({ error: e instanceof Error ? e.message : "Package request failed." });
+    }
+  };
+  app2.get("/api/package-jobs", route(async (req, res) => {
+    res.json({ data: (await store2.list(req.principal.workspace, "package-job")).map((r) => r.value) });
+  }));
+  app2.post("/api/package-jobs", route(async (req, res) => {
+    res.json({ data: await jobs.create(req.principal.workspace, req.body) });
+  }));
+  app2.get("/api/package-jobs/:id", route(async (req, res) => {
+    res.json({ data: (await jobs.get(req.principal.workspace, String(req.params.id))).value });
+  }));
+  app2.put("/api/package-jobs/:id/chunks/:file/:index", express.raw({ type: "application/octet-stream", limit: "2100kb" }), route(async (req, res) => {
+    res.json({ data: await jobs.chunk(req.principal.workspace, String(req.params.id), String(req.params.file), Number(req.params.index), req.body) });
+  }));
+  app2.post("/api/package-jobs/:id/advance", route(async (req, res) => {
+    res.json({ data: await jobs.advance(req.principal.workspace, String(req.params.id)) });
+  }));
+  app2.post("/api/package-jobs/:id/cancel", route(async (req, res) => {
+    res.json({ data: await jobs.cancel(req.principal.workspace, String(req.params.id)) });
+  }));
+  app2.get("/api/package-jobs/:id/result", route(async (req, res) => {
+    const j = (await jobs.get(req.principal.workspace, String(req.params.id))).value;
+    const r = j.runId ? await store2.get(req.principal.workspace, "analysis", j.runId) : await store2.get(req.principal.workspace, "package-result", j.id);
+    if (!r) throw new Error("The analysis has not reached a saved result yet.");
+    res.json({ data: { ...r.value, ...j.runId ? { storageVersion: r.version } : {} } });
+  }));
+  return jobs;
+}
+
+// src/server/sourceAvailability.ts
+var store = new RecordStore();
+var blockedUntil = 0;
+function quotaReset(body) {
+  const v = /"nextAccessTime"\s*:\s*"([^"]+)"/.exec(body)?.[1];
+  if (!v) return Date.now() + 60 * 60 * 1e3;
+  const m = /(\d{4})-([A-Za-z]{3})-(\d{2}) (\d{2}):(\d{2}):(\d{2})/.exec(v);
+  if (m) {
+    const month = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"].findIndex((x) => x.toLowerCase() === m[2].toLowerCase());
+    if (month >= 0) return Date.UTC(+m[1], month, +m[3], +m[4], +m[5], +m[6]);
+  }
+  return Number.isFinite(Date.parse(v)) ? Date.parse(v) : Date.now() + 60 * 60 * 1e3;
+}
+async function samAvailability() {
+  if (process.env.VERCEL === "1" && process.env.DATABASE_URL) {
+    try {
+      const r = await store.get("system", "source-health", "sam");
+      if (r) blockedUntil = Math.max(blockedUntil, r.value);
+    } catch {
+    }
+  }
+  return { configured: !!process.env.SAM_API_KEY, status: blockedUntil > Date.now() ? "QUOTA_REACHED" : "NOT_CHECKED", retryAt: blockedUntil > Date.now() ? new Date(blockedUntil).toISOString() : void 0, message: blockedUntil > Date.now() ? "SAM lookup is temporarily unavailable. Upload the package to continue." : "SAM availability is not guaranteed. Package upload works independently of lookup." };
+}
+async function noteSamQuota(body) {
+  blockedUntil = Math.max(Date.now() + 6e4, quotaReset(body));
+  if (process.env.VERCEL === "1" && process.env.DATABASE_URL) {
+    try {
+      const r = await store.get("system", "source-health", "sam");
+      await store.put("system", "source-health", "sam", blockedUntil, r?.version || 0);
+    } catch {
+    }
+  }
+}
 
 // src/domain/laborMatching.ts
 var roles = [
@@ -748,9 +1258,10 @@ function calculateCompetitivePosition(analysis) {
   const rateConfidence = assumptionShare > 0.2 || unpricedRows.length || rows.some((r) => r.sampleSize < 5) ? "LOW" : rows.some((r) => r.proxy || r.evidenceIds.some((id) => evidence.find((e) => e.id === id)?.numeric?.qualificationFit === "UNVALIDATED")) ? "MEDIUM" : rows.length ? "HIGH" : planningRows.some((p) => p.basis === "PLANNING_ASSUMPTION") ? "LOW" : "MEDIUM";
   const competitionConfidence = competitors.length >= 2 && comparables.length >= 2 ? "HIGH" : comparables.length || competitors.length >= 2 ? "MEDIUM" : "LOW";
   const divergence = comparables.length && central > 0 ? Math.max(...comparables.map((a) => Math.abs(a.normalizedValue - central) / central)) : 0;
-  const overall = !hasTarget || !evaluationKnown || rateConfidence === "LOW" || divergence > 0.4 || assumptionShare > 0.2 ? "LOW" : quantityConfidence === "HIGH" && rateConfidence === "HIGH" && competitionConfidence === "HIGH" ? "HIGH" : "MEDIUM";
+  const packageGaps = analysis.meta?.packageCoverage?.documents.filter((d) => ["UNREADABLE", "UNSUPPORTED", "EXCERPTS"].includes(d.status)) || [];
+  const overall = packageGaps.length > 0 || !hasTarget || !evaluationKnown || rateConfidence === "LOW" || divergence > 0.4 || assumptionShare > 0.2 ? "LOW" : quantityConfidence === "HIGH" && rateConfidence === "HIGH" && competitionConfidence === "HIGH" ? "HIGH" : "MEDIUM";
   const confidenceLabel = overall === "HIGH" ? "STRONG" : overall === "MEDIUM" ? "MODERATE" : "LIMITED";
-  const confidenceReason = overall === "LOW" ? `Use as an assumption-led planning position. ${!evaluationKnown ? "Evaluation posture needs confirmation. " : ""}${assumptionShare > 0 ? `${Math.round(assumptionShare * 100)}% of modeled price depends on explicit pricing assumptions. ` : ""}${divergence > 0.4 ? "Comparable evidence materially disagrees with the model. " : ""}Validate the largest price driver before adopting the target.` : overall === "MEDIUM" ? "Use to frame the pricing decision. The evaluated basket and rate evidence support this position; competing bids and the most influential mapping judgments still need validation." : "Use as a well-supported market position. The evaluated basket, qualified rates and independent comparable/competitive evidence converge. This is not a probability of winning.";
+  const confidenceReason = overall === "LOW" ? `Use as a provisional planning position. ${packageGaps.length ? `${packageGaps.length} package documents need review; omitted requirements could change price. ` : ""}${!evaluationKnown ? "Evaluation posture needs confirmation. " : ""}${assumptionShare > 0 ? `${Math.round(assumptionShare * 100)}% of modeled price depends on explicit pricing assumptions. ` : ""}${divergence > 0.4 ? "Comparable evidence materially disagrees with the model. " : ""}Validate the largest price driver before adopting the target.` : overall === "MEDIUM" ? "Use to frame the pricing decision. The evaluated basket and rate evidence support this position; competing bids and the most influential mapping judgments still need validation." : "Use as a well-supported market position. The evaluated basket, qualified rates and independent comparable/competitive evidence converge. This is not a probability of winning.";
   const judgment = [
     { factor: "Government evaluation", finding: deal.evaluationMethod || "Selection method unconfirmed", effect: priceOrderFirst ? "Select supported efficient economics where qualifications permit; protect mandatory gates." : "No premium is added without a quantified advantage under the scored factors.", evidenceIds: scheme?.sourceRefs || [] },
     { factor: "Opportunity economics", finding: `${rows.length} labor rows and ${components.length} evaluated non-labor components form the price.`, effect: "Preserve required scope, options and fixed components. Program ceilings are not divided among awardees.", evidenceIds: components.flatMap((c) => c.evidenceIds) },
@@ -864,9 +1375,9 @@ SOURCE EVIDENCE: ${JSON.stringify(sourceEvidence)}`, schema);
 
 // server.ts
 import "dotenv/config";
-import crypto2 from "node:crypto";
+import crypto4 from "node:crypto";
 import path2 from "node:path";
-import express from "express";
+import express2 from "express";
 import multer from "multer";
 import ExcelJS from "exceljs";
 import mammoth from "mammoth";
@@ -971,7 +1482,7 @@ function preserveValidation(analysis) {
 // src/server/eligibility.ts
 var IneligibleSolicitationError = class extends Error {
 };
-function assessEligibility(deal, now = /* @__PURE__ */ new Date()) {
+function assessEligibility(deal, now = /* @__PURE__ */ new Date(), options = {}) {
   const status = deal.documentStatus;
   const cited = Boolean(deal.eligibilitySource?.trim());
   const reasons = {
@@ -980,25 +1491,25 @@ function assessEligibility(deal, now = /* @__PURE__ */ new Date()) {
     PRE_SOLICITATION: "This is an RFI, sources-sought notice, or draft. A final solicitation and price evaluation basis are needed.",
     EXPIRED: "The package identifies a closed or superseded solicitation."
   };
-  if (status && reasons[status] && cited) throw new IneligibleSolicitationError(`${reasons[status]} ${deal.eligibilityReason || ""} Source: ${deal.eligibilitySource} Upload the current competitive solicitation and amendments.`);
+  if (status && reasons[status] && cited && !(options.historical && status === "EXPIRED")) throw new IneligibleSolicitationError(`${reasons[status]} ${deal.eligibilityReason || ""} Source: ${deal.eligibilitySource} Upload the current competitive solicitation and amendments.`);
   const deadline = deal.dueDate?.trim();
   if (/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(deadline || "")) {
     const date = /* @__PURE__ */ new Date(`${deadline.slice(0, 10)}T23:59:59.999Z`);
-    if (Number.isFinite(date.getTime()) && date < now) throw new IneligibleSolicitationError(`The extracted response deadline (${deadline}) has passed. Upload an amendment with the extended deadline or a current solicitation. Historical analysis is outside this live PTW pilot.`);
+    if (!options.historical && Number.isFinite(date.getTime()) && date < now) throw new IneligibleSolicitationError(`The extracted response deadline (${deadline}) has passed. Upload an amendment with the extended deadline or a current solicitation. Historical analysis is outside this live PTW pilot.`);
   }
-  const warnings = [];
+  const warnings = options.historical ? ["Historical practice analysis: not an open bidding opportunity. Research reflects today\u2019s sources, not a backtest of prices available at the original deadline."] : [];
   if (status !== "OPEN_COMPETITIVE" || !cited) warnings.push("Solicitation eligibility is unresolved. Confirm that this is the current, competitive package before using the recommendation.");
   if (!deadline || !/^\d{4}-\d{2}-\d{2}(?:T.*)?$/.test(deadline)) warnings.push("No unambiguous response deadline was extracted. Confirm the current deadline and latest amendments.");
   return warnings;
 }
 
 // src/server/auth.ts
-import crypto from "node:crypto";
+import crypto3 from "node:crypto";
 function matches(password, encoded) {
   const [salt, hash] = encoded.split(":");
   if (!salt || !/^[a-f0-9]{64}$/.test(hash || "")) return false;
-  const derived = crypto.scryptSync(password, salt, 32);
-  return crypto.timingSafeEqual(derived, Buffer.from(hash, "hex"));
+  const derived = crypto3.scryptSync(password, salt, 32);
+  return crypto3.timingSafeEqual(derived, Buffer.from(hash, "hex"));
 }
 function accounts() {
   try {
@@ -1015,7 +1526,7 @@ function previewOwner(req) {
   return { username: "boss", workspace: "boss" };
 }
 var authConfigured = () => localMode() || accounts().length > 0 && (process.env.SESSION_SECRET?.length || 0) >= 32;
-var sign = (text2) => crypto.createHmac("sha256", process.env.SESSION_SECRET || "").update(text2).digest("base64url");
+var sign = (text2) => crypto3.createHmac("sha256", process.env.SESSION_SECRET || "").update(text2).digest("base64url");
 function principal(req) {
   const owner = previewOwner(req);
   if (owner) return owner;
@@ -1025,7 +1536,7 @@ function principal(req) {
   if (!cookie) return null;
   const [body, sig] = cookie.split(".");
   const expected = sign(body || "");
-  if (!sig || sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  if (!sig || sig.length !== expected.length || !crypto3.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
   try {
     const data = JSON.parse(Buffer.from(body, "base64url").toString());
     if (data.expires < Date.now()) return null;
@@ -1076,78 +1587,6 @@ function installAuth(app2) {
     next();
   });
 }
-
-// src/server/store.ts
-import { mkdir } from "node:fs/promises";
-import path from "node:path";
-import { Pool } from "pg";
-var ConflictError = class extends Error {
-  constructor() {
-    super("This record changed. Refresh before saving.");
-  }
-};
-var RecordStore = class {
-  constructor(options = { url: process.env.DATABASE_URL, file: process.env.STUDIO_DB_PATH || "./data/market-intelligence.sqlite", hosted: process.env.VERCEL === "1" }) {
-    this.options = options;
-    this.durable = !options.hosted || Boolean(options.url);
-  }
-  async init() {
-    if (!this.ready) this.ready = (async () => {
-      if (!this.durable) throw new Error("DATABASE_URL is required for durable hosted storage.");
-      if (this.options.url) this.pool = new Pool({ connectionString: this.options.url, max: 3, connectionTimeoutMillis: 1e4, idleTimeoutMillis: 1e4 });
-      else {
-        await mkdir(path.dirname(path.resolve(this.options.file)), { recursive: true });
-        const { DatabaseSync } = await import("node:sqlite");
-        this.sqlite = new DatabaseSync(this.options.file);
-        this.sqlite.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
-      }
-      await this.raw("CREATE TABLE IF NOT EXISTS fmp_records (workspace TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace,kind,id))");
-      await this.raw("CREATE INDEX IF NOT EXISTS fmp_records_list ON fmp_records(workspace,kind,updated_at)");
-    })().catch((error) => {
-      this.ready = void 0;
-      throw error;
-    });
-    return this.ready;
-  }
-  async raw(sql, values = []) {
-    if (this.pool) return (await this.pool.query(sql, values)).rows;
-    const normalized = sql.replace(/\$\d+/g, "?");
-    const statement2 = this.sqlite.prepare(normalized);
-    return statement2.all(...values);
-  }
-  decode(row) {
-    return { id: row.id, value: JSON.parse(row.payload), version: row.version, updatedAt: row.updated_at };
-  }
-  async get(workspace, kind, id) {
-    await this.init();
-    const rows = await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3", [workspace, kind, id]);
-    return rows[0] ? this.decode(rows[0]) : null;
-  }
-  async list(workspace, kind) {
-    await this.init();
-    return (await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 ORDER BY updated_at DESC", [workspace, kind])).map((row) => this.decode(row));
-  }
-  async put(workspace, kind, id, value, expectedVersion = 0) {
-    await this.init();
-    const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const sql = expectedVersion === 0 ? "INSERT INTO fmp_records(workspace,kind,id,payload,version,updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(workspace,kind,id) DO NOTHING RETURNING *" : "UPDATE fmp_records SET payload=$1,version=version+1,updated_at=$2 WHERE workspace=$3 AND kind=$4 AND id=$5 AND version=$6 RETURNING *";
-    const params = expectedVersion === 0 ? [workspace, kind, id, JSON.stringify(value), updatedAt] : [JSON.stringify(value), updatedAt, workspace, kind, id, expectedVersion];
-    const rows = await this.raw(sql, params);
-    if (!rows.length) throw new ConflictError();
-    return this.decode(rows[0]);
-  }
-  async remove(workspace, kind, id) {
-    await this.init();
-    await this.raw("DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id", [workspace, kind, id]);
-  }
-  async close() {
-    await this.pool?.end();
-    this.sqlite?.close();
-    this.ready = void 0;
-    this.sqlite = void 0;
-    this.pool = void 0;
-  }
-};
 
 // src/server/ptwSynthesis.ts
 import { createHash } from "node:crypto";
@@ -1393,6 +1832,11 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
   const maxAttempts = options.maxAttempts ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 250;
   const startedAt = Date.now();
+  const samRequest = new URL(url).hostname === "api.sam.gov";
+  if (samRequest) {
+    const state = await samAvailability();
+    if (state.status === "QUOTA_REACHED") throw new ConnectorError(`SAM daily quota reached. Retry after ${state.retryAt}. Uploaded packages can still be analyzed.`, "RATE_LIMITED", 429, 0, 0);
+  }
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
@@ -1402,6 +1846,7 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
       if (!response.ok) {
         const status = classifyStatus(response.status);
         const dailyQuotaReached = response.status === 429 && /exceeded your quota|nextAccessTime/i.test(body);
+        if (dailyQuotaReached && samRequest) await noteSamQuota(body);
         if (retryableStatus(response.status) && !dailyQuotaReached && attempt < maxAttempts) {
           await wait(baseDelayMs * 2 ** (attempt - 1) + Math.floor(Math.random() * 100));
           continue;
@@ -1552,14 +1997,14 @@ function inferMime(name, header) {
   if (lower.endsWith(".txt") || lower.endsWith(".csv")) return "text/plain";
   return "application/octet-stream";
 }
-function isSupportedMime(mime) {
+function isSupportedMime(mime2) {
   return [
     "application/pdf",
     "text/plain",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/msword",
     "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-  ].includes(mime);
+  ].includes(mime2);
 }
 function isProvided(name, uploadedFiles) {
   const normalizedName = normalize(name);
@@ -1742,13 +2187,13 @@ async function downloadResource(rawLink, apiKey, uploadedFiles, remainingBytes) 
       return { document: { name, url: safeUrl, provided: true, type, retrievalStatus: "PROVIDED", sizeBytes: declaredSize || void 0 } };
     }
     const buffer = await readBoundedBody(response, Math.min(maxAutoFileBytes, remainingBytes));
-    const mime = inferMime(name, response.headers.get("content-type"));
-    if (!isSupportedMime(mime)) {
-      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: "UNSUPPORTED", sizeBytes: buffer.length, message: `Unsupported document type (${mime}).` } };
+    const mime2 = inferMime(name, response.headers.get("content-type"));
+    if (!isSupportedMime(mime2)) {
+      return { document: { name, url: safeUrl, provided: false, type, retrievalStatus: "UNSUPPORTED", sizeBytes: buffer.length, message: `Unsupported document type (${mime2}).` } };
     }
     return {
-      document: { name, url: safeUrl, provided: false, type, retrievalStatus: "RETRIEVED", sizeBytes: buffer.length, mimeType: mime },
-      file: { originalname: name, mimetype: mime, size: buffer.length, buffer, sourceUrl: safeUrl }
+      document: { name, url: safeUrl, provided: false, type, retrievalStatus: "RETRIEVED", sizeBytes: buffer.length, mimeType: mime2 },
+      file: { originalname: name, mimetype: mime2, size: buffer.length, buffer, sourceUrl: safeUrl }
     };
   } catch (error) {
     if (error instanceof BodySizeError) {
@@ -2032,7 +2477,7 @@ async function normalizePdfText(file) {
       const content = await page.getTextContent();
       const text2 = content.items.map((item) => "str" in item ? `${item.str}${item.hasEOL ? "\n" : " "}` : "").join("").trim();
       if (i === 1 && /SOLICITATION\/CONTRACT\/ORDER FOR COMMERCIAL|STANDARD FORM\s*1449|SF\s*1449/i.test(text2) && /SET.?ASIDE|WOSB|WOMEN.OWNED|SMALL BUSINESS/i.test(text2)) return file;
-      if (text2.replace(/\s/g, "").length < 25) return file;
+      if (!usablePdfText(text2)) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}
 ${text2}`);
       page.cleanup();
@@ -2048,6 +2493,10 @@ ${text2}`);
     } catch {
     }
   }
+}
+function usablePdfText(text2) {
+  const controls = (text2.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g) || []).length;
+  return text2.replace(/\s/g, "").length >= 25 && controls / Math.max(1, text2.length) < 0.02;
 }
 
 // src/adapters/usaspending.ts
@@ -2300,8 +2749,8 @@ var quantile = (values, p) => {
 };
 async function queryGsaCalc(laborSignals) {
   const retrievedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const signals = [...new Map((laborSignals || []).filter((s) => s.title?.trim()).map((s) => [s.title.toLowerCase(), s])).values()].slice(0, 30);
-  const queries = [...new Map(signals.map((s) => {
+  const signals2 = [...new Map((laborSignals || []).filter((s) => s.title?.trim()).map((s) => [s.title.toLowerCase(), s])).values()].slice(0, 30);
+  const queries = [...new Map(signals2.map((s) => {
     const category = laborFamily(benchmarkRole(s)), clearance = requiresClearance(s.clearance);
     return [`${category}|${clearance}`, { category, clearance }];
   })).values()];
@@ -2333,7 +2782,7 @@ async function queryGsaCalc(laborSignals) {
   const successful = results.flatMap((r) => r.status === "fulfilled" ? [r.value] : []);
   const evidence = [];
   const messages = [];
-  for (const signal of signals) {
+  for (const signal of signals2) {
     const requestedRole = benchmarkRole(signal);
     const mappedFamily = laborFamily(requestedRole);
     const result = successful.find((q) => q.category === mappedFamily && q.clearance === requiresClearance(signal.clearance));
@@ -2389,7 +2838,7 @@ async function queryGsaCalc(laborSignals) {
     if (proxyUsed) messages.push(`${signal.title}: used a provisional ${mappedFamily} family proxy; analyst validation required.`);
     if (!result.complete) messages.push(`${signal.title}: sampled ${matches2.length} matching records from ${result.total} search results.`);
   }
-  if (signals.length < laborSignals.length) messages.push("The first 30 distinct labor roles were searched; remaining roles need review.");
+  if (signals2.length < laborSignals.length) messages.push("The first 30 distinct labor roles were searched; remaining roles need review.");
   const failure = results.find((r) => r.status === "rejected");
   return {
     name: "GSA CALC+",
@@ -3125,7 +3574,7 @@ function calculateDeterministicScenarios(draft, options) {
 }
 
 // src/exports/executivePdf.ts
-import PDFDocument from "pdfkit";
+import PDFDocument2 from "pdfkit";
 
 // src/exports/fontData.ts
 var regularFontData = "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";
@@ -3345,6 +3794,7 @@ function buildBrief(l) {
   const subtitle = [a.deal.solicitationNumber, a.deal.agency, new Date(a.meta.analyzedAt).toISOString().slice(0, 10)].filter(Boolean).join(" | ");
   l.page("Your competitive position", subtitle);
   l.text(a.deal.title, true, 11);
+  if (a.meta.packageCoverage?.mode === "HISTORICAL") l.text("HISTORICAL PRACTICE \u2014 closed solicitation using current research; not a live bid or historical price backtest.", true, 8);
   const y = l.y;
   d.roundedRect(margin, y, contentWidth, 111, 5).fill(colors.navy);
   d.font(boldFont).fontSize(9).fillColor("#B9DDDB").text("RECOMMENDED PTW", margin + 16, y + 15, { width: contentWidth - 32, lineBreak: false });
@@ -3356,6 +3806,7 @@ function buildBrief(l) {
   l.text(p.judgment.find((j) => j.factor === "Labor and unit-price evidence").finding, false, 9);
   l.title(`Recommendation Confidence: ${p.confidenceLabel}`);
   l.text(p.confidenceReason);
+  if (a.meta.packageCoverage) l.text(a.meta.packageCoverage.freshness.message, false, 8, colors.muted);
   l.title("What could move it?");
   const movers = [...p.sensitivities].sort((a2, b) => Math.abs(b.delta) - Math.abs(a2.delta)).slice(0, 2);
   if (movers.length) l.table(["Input change", "Evaluated-price effect"], [380, 148], movers.map((s) => [`${s.label}: ${s.change}`, `${s.delta >= 0 ? "+" : ""}${money(s.delta)}`]));
@@ -3417,7 +3868,7 @@ function createExecutivePdf(raw) {
   analysis.ptwStrategy = preserveCurrentStrategy(analysis, raw.ptwStrategy);
   return new Promise((resolve, reject) => {
     const regular = Buffer.from(regularFontData, "base64"), bold = Buffer.from(boldFontData, "base64");
-    const doc = new PDFDocument({ font: regular, size: "LETTER", margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: false });
+    const doc = new PDFDocument2({ font: regular, size: "LETTER", margins: { top: margin, bottom: margin, left: margin, right: margin }, bufferPages: true, autoFirstPage: false });
     doc.registerFont(regularFont, regular);
     doc.registerFont(boldFont, bold);
     const chunks = [];
@@ -3438,6 +3889,14 @@ function createExecutivePdf(raw) {
 // src/exports/competitiveWorkbook.ts
 function addCompetitiveWorkbook(workbook, analysis) {
   const p = analysis.competitivePosition;
+  const coverage = analysis.meta.packageCoverage;
+  if (coverage) {
+    const sheet = workbook.addWorksheet("Package Coverage");
+    sheet.columns = [{ header: "Document", key: "name", width: 70 }, { header: "Review status", key: "status", width: 22 }, { header: "Role", key: "role", width: 35 }, { header: "Coverage / limitation", key: "note", width: 100 }, { header: "SHA-256", key: "sha256", width: 70 }];
+    sheet.addRow({ name: "Analysis purpose", status: coverage.mode || "LIVE", note: coverage.mode === "HISTORICAL" ? "Closed solicitation using current research, not a historical price backtest." : "Live opportunity review" });
+    sheet.addRow({ name: "Package currency", status: coverage.freshness.status, note: coverage.freshness.message });
+    coverage.documents.forEach((d) => sheet.addRow({ ...d, role: d.categories.join(", ") }));
+  }
   const government = workbook.addWorksheet("Government Decision");
   government.columns = [{ header: "Category", key: "category", width: 25 }, { header: "Fact / rule", key: "label", width: 35 }, { header: "Extracted value / implication", key: "value", width: 100 }, { header: "Source locator", key: "source", width: 80 }];
   government.addRows([{ category: "Eligibility", label: "Set-aside", value: analysis.deal.setAside || "Unconfirmed" }, { category: "Eligibility", label: "NAICS", value: analysis.deal.naics }, { category: "Evaluation", label: "Method", value: analysis.deal.evaluationMethod }, { category: "Evaluation", label: "Basket", value: analysis.deal.evaluationPricing?.basis, source: analysis.deal.evaluationPricing?.source }]);
@@ -3577,14 +4036,14 @@ function addCompetitiveWorkbook(workbook, analysis) {
 }
 
 // server.ts
-var app = express();
+var app = express2();
 var port = Number(process.env.PORT || 3e3);
 var model = getOpenAIModel();
 var upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 4 * 1024 * 1024, files: 10 }
 });
-app.use(express.json({ limit: "5mb" }));
+app.use(express2.json({ limit: "5mb" }));
 installAuth(app);
 var runStore = new RecordStore();
 var stringArray = { type: "ARRAY", items: { type: "STRING" } };
@@ -4082,17 +4541,17 @@ SHEET: ${worksheet.name}`);
       const values = Array.isArray(row.values) ? row.values.slice(1) : [];
       const rendered = values.map((value, columnIndex) => {
         if (value == null) return "";
-        if (typeof value === "object") {
+        const address = worksheet.getCell(row.number, columnIndex + 1).address;
+        let rendered2;
+        if (value instanceof Date) rendered2 = value.toISOString();
+        else if (typeof value === "object") {
           const record = value;
-          if ("text" in record) return String(record.text || "");
-          if ("result" in record) return String(record.result || "");
-          try {
-            return JSON.stringify(value);
-          } catch {
-            return String(value);
-          }
-        }
-        return `${worksheet.getCell(row.number, columnIndex + 1).address}: ${String(value)}`;
+          if ("richText" in record) rendered2 = record.richText.map((part) => part.text).join("");
+          else if ("text" in record) rendered2 = String(record.text ?? "");
+          else if ("result" in record) rendered2 = String(record.result ?? "");
+          else rendered2 = JSON.stringify(value);
+        } else rendered2 = String(value);
+        return `${address}: ${rendered2}`;
       }).join("	");
       if (rendered.trim()) lines.push(rendered);
     });
@@ -4167,7 +4626,7 @@ ${JSON.stringify(official)}`);
   draft.incumbent = synthesis.incumbent || draft.incumbent;
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
-async function analyzeFiles(files) {
+async function extractSolicitation(files, options = {}) {
   const client = new OpenAIIntelligence(void 0, void 0, fetch, 11e4);
   let draft = await client.extract(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
@@ -4176,10 +4635,13 @@ async function analyzeFiles(files) {
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
   draft = reconcileSourceFacts(draft);
-  const warnings = assessEligibility(draft.deal);
+  assessEligibility(draft.deal, /* @__PURE__ */ new Date(), options);
+  return draft;
+}
+async function enrichSolicitation(draft, fileNames = [], options = {}) {
+  const warnings = assessEligibility(draft.deal, /* @__PURE__ */ new Date(), options);
   let researchStatus = "SOLICITATION_ONLY";
   const connectors = [];
-  const fileNames = files.map((f) => f.originalname);
   const connectorWork = runConnectorSet(draft.deal, void 0, false, fileNames);
   const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== "false" ? new OpenAIIntelligence(void 0, void 0, fetch, 6e4).research(`Research the public federal market for this opportunity using web search.
 Return JSON with keys marketAssessment, competitors, incumbent, and narrative only.
@@ -4259,11 +4721,6 @@ Do not infer company-specific costs, staffing, or bids.`) : Promise.resolve(null
       researchStatus = connectors.some((connector) => connector.status === "SUCCESS") ? "PARTIAL" : "SOLICITATION_ONLY";
     }
   }
-  try {
-    warnings.push(...await completePlanningInputs(draft.deal, draft.evidence));
-  } catch (error) {
-    warnings.push(`Bounded price completion needs a retry: ${error instanceof Error ? error.message : String(error)}`);
-  }
   draft.gaps = normalizeGaps([...draft.gaps, ...laborCoverageGaps(draft.deal, draft.evidence)]);
   const analyzedAt = (/* @__PURE__ */ new Date()).toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
@@ -4272,10 +4729,26 @@ Do not infer company-specific costs, staffing, or bids.`) : Promise.resolve(null
     ...analysisFields,
     marketPosition,
     narrative: sanitizeNarrative(draft.narrative),
-    id: `run-${crypto2.randomUUID()}`,
+    id: `run-${crypto4.randomUUID()}`,
     meta: { mode: "MARKET_ONLY", model, analyzedAt, researchStatus, warnings, connectors }
   });
 }
+async function priceSolicitation(analysis) {
+  const warnings = await completePlanningInputs(analysis.deal, analysis.evidence);
+  analysis.meta.warnings.push(...warnings);
+  return enforceAuthoritativeAnalysis(analysis);
+}
+async function analyzeFiles(files) {
+  const analysis = await enrichSolicitation(await extractSolicitation(files), files.map((f) => f.originalname));
+  try {
+    return await priceSolicitation(analysis);
+  } catch (error) {
+    analysis.meta.warnings.push(`Bounded price completion needs a retry: ${error instanceof Error ? error.message : String(error)}`);
+    return analysis;
+  }
+}
+installPackageRoutes(app, runStore, { normalize: normalizeAnalysisFiles, extract: extractSolicitation, research: enrichSolicitation, price: priceSolicitation });
+app.get("/api/source-availability", async (_req, res) => res.json({ sam: await samAvailability() }));
 app.get("/api/health", (_req, res) => res.json({
   status: "ok",
   aiConfigured: openAIConfigured(),
@@ -4427,7 +4900,7 @@ app.post("/api/analyze-solicitation", upload.array("files"), async (req, res) =>
     if (deduped.length === 0) return res.status(400).json({ error: "No analyzable solicitation documents were available." });
     const normalizedFiles = await normalizeAnalysisFiles(deduped);
     const analysis = await analyzeFiles(normalizedFiles);
-    analysis.meta.warnings.push(`Package snapshot: ${deduped.map((f) => `${f.originalname} [SHA-256 ${crypto2.createHash("sha256").update(f.buffer).digest("hex")}]`).join("; ")}. Keep these source files with the exported decision package.`);
+    analysis.meta.warnings.push(`Package snapshot: ${deduped.map((f) => `${f.originalname} [SHA-256 ${crypto4.createHash("sha256").update(f.buffer).digest("hex")}]`).join("; ")}. Keep these source files with the exported decision package.`);
     if (samFallbackWarning) analysis.meta.warnings.push(samFallbackWarning);
     if (samPackage) {
       mergeSamDealMetadata(analysis, samPackage.opportunity, naicsOverride);
@@ -4707,7 +5180,7 @@ async function start() {
     app.use(vite.middlewares);
   } else {
     const distPath = path2.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
+    app.use(express2.static(distPath));
     app.get("*", (_req, res) => res.sendFile(path2.join(distPath, "index.html")));
   }
   app.listen(port, "0.0.0.0", () => console.log(`Federal Market Position running on http://localhost:${port}`));
@@ -4719,6 +5192,9 @@ if (process.env.VERCEL !== "1" && process.env.NODE_ENV !== "test") {
 export {
   analyzeFiles,
   server_default as default,
+  enrichSolicitation,
+  extractSolicitation,
   normalizeAnalysisFiles,
+  priceSolicitation,
   samMetadataFile
 };

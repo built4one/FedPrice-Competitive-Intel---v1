@@ -11,3 +11,5 @@ data/
 !.env.example
 
 /node_modules
+/acceptance/sources/
+/acceptance/*.zip

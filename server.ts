@@ -1,3 +1,5 @@
+import { installPackageRoutes } from './src/server/packageJobs.js';
+import { samAvailability } from './src/server/sourceAvailability.js';
 import { completePlanningInputs } from './src/server/planningInputs.js';
 import 'dotenv/config';
 import crypto from 'node:crypto';
@@ -462,13 +464,17 @@ async function normalizeSpreadsheet(file: AnalysisFile): Promise<AnalysisFile> {
       const values = Array.isArray(row.values) ? row.values.slice(1) : [];
       const rendered = values.map((value, columnIndex) => {
         if (value == null) return '';
-        if (typeof value === 'object') {
-          const record = value as unknown as Record<string, unknown>;
-          if ('text' in record) return String(record.text || '');
-          if ('result' in record) return String(record.result || '');
-          try { return JSON.stringify(value); } catch { return String(value); }
-        }
-        return `${worksheet.getCell(row.number, columnIndex + 1).address}: ${String(value)}`;
+        const address=worksheet.getCell(row.number,columnIndex+1).address;
+        let rendered:string;
+        if(value instanceof Date)rendered=value.toISOString();
+        else if(typeof value==='object'){
+          const record=value as any;
+          if('richText' in record)rendered=record.richText.map((part:any)=>part.text).join('');
+          else if('text' in record)rendered=String(record.text??'');
+          else if('result' in record)rendered=String(record.result??'');
+          else rendered=JSON.stringify(value);
+        }else rendered=String(value);
+        return `${address}: ${rendered}`;
       }).join('\t');
       if (rendered.trim()) lines.push(rendered);
     });
@@ -547,7 +553,7 @@ ${JSON.stringify(official)}`);
   draft.narrative = sanitizeNarrative(synthesis.narrative || draft.narrative);
 }
 
-export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
+export async function extractSolicitation(files: AnalysisFile[], options: {historical?:boolean} = {}): Promise<AiAnalysisDraft> {
   const client = new OpenAIIntelligence(undefined, undefined, fetch, 110_000);
   let draft = await client.extract<AiAnalysisDraft>(analysisPrompt, files, baseSchema);
   draft.evidence = draft.evidence || [];
@@ -556,11 +562,15 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
   draft.marketAssessment = sanitizeMarketAssessment(draft.marketAssessment);
   draft.narrative = sanitizeNarrative(draft.narrative);
   draft = reconcileSourceFacts(draft);
-  const warnings: string[] = assessEligibility(draft.deal);
+  assessEligibility(draft.deal,new Date(),options);
+  return draft;
+}
+
+export async function enrichSolicitation(draft: AiAnalysisDraft, fileNames: string[] = [], options: {historical?:boolean} = {}): Promise<OpportunityAnalysis> {
+  const warnings: string[] = assessEligibility(draft.deal,new Date(),options);
   let researchStatus: OpportunityAnalysis['meta']['researchStatus'] = 'SOLICITATION_ONLY';
   const connectors: ConnectorStatus[] = [];
 
-  const fileNames = files.map(f => f.originalname);
   const connectorWork = runConnectorSet(draft.deal, undefined, false, fileNames);
   const researchWork = process.env.ENABLE_OPENAI_WEB_SEARCH !== 'false'
     ? new OpenAIIntelligence(undefined, undefined, fetch, 60_000).research<Partial<AiAnalysisDraft>>(`Research the public federal market for this opportunity using web search.
@@ -645,8 +655,6 @@ Do not infer company-specific costs, staffing, or bids.`)
     }
   }
 
-  try { warnings.push(...await completePlanningInputs(draft.deal,draft.evidence)); }
-  catch(error) { warnings.push(`Bounded price completion needs a retry: ${error instanceof Error?error.message:String(error)}`); }
   draft.gaps = normalizeGaps([...draft.gaps, ...laborCoverageGaps(draft.deal, draft.evidence)]);
   const analyzedAt = new Date().toISOString();
   const marketPosition = calculateDeterministicScenarios(draft, { asOfDate: analyzedAt });
@@ -659,6 +667,18 @@ Do not infer company-specific costs, staffing, or bids.`)
     meta: { mode: 'MARKET_ONLY', model, analyzedAt, researchStatus, warnings, connectors },
   });
 }
+
+export async function priceSolicitation(analysis: OpportunityAnalysis) {
+  const warnings=await completePlanningInputs(analysis.deal,analysis.evidence);
+  analysis.meta.warnings.push(...warnings);
+  return enforceAuthoritativeAnalysis(analysis);
+}
+export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAnalysis> {
+  const analysis=await enrichSolicitation(await extractSolicitation(files),files.map(f=>f.originalname));
+  try{return await priceSolicitation(analysis);}catch(error){analysis.meta.warnings.push(`Bounded price completion needs a retry: ${error instanceof Error?error.message:String(error)}`);return analysis;}
+}
+installPackageRoutes(app,runStore,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:priceSolicitation});
+app.get('/api/source-availability',async(_req,res)=>res.json({sam:await samAvailability()}));
 
 app.get('/api/health', (_req, res) => res.json({
   status: 'ok',

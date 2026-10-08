@@ -77,7 +77,7 @@ export async function normalizePdfText<T extends IntelligenceFile & { size: numb
       if (i === 1 && /SOLICITATION\/CONTRACT\/ORDER FOR COMMERCIAL|STANDARD FORM\s*1449|SF\s*1449/i.test(text)
         && /SET.?ASIDE|WOSB|WOMEN.OWNED|SMALL BUSINESS/i.test(text)) return file;
       // Scanned/image-only pages must stay as PDFs so the AI can inspect the visual page.
-      if (text.replace(/\s/g, '').length < 25) return file;
+      if (!usablePdfText(text)) return file;
       pages.push(`SOURCE: ${file.originalname} | PAGE ${i}\n${text}`);
       page.cleanup();
     }
@@ -90,4 +90,9 @@ export async function normalizePdfText<T extends IntelligenceFile & { size: numb
   } finally {
     try { await task?.destroy?.(); } catch { /* best-effort cleanup */ }
   }
+}
+
+export function usablePdfText(text: string) {
+  const controls=(text.match(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\ufffd]/g)||[]).length;
+  return text.replace(/\s/g,'').length>=25 && controls/Math.max(1,text.length)<.02;
 }

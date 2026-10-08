@@ -1,4 +1,5 @@
 import type { ConnectorStatus } from '../types';
+import {samAvailability,noteSamQuota} from '../server/sourceAvailability';
 
 export type FailureStatus = Exclude<ConnectorStatus['status'], 'SUCCESS' | 'CACHED' | 'ZERO_RESULTS' | 'SKIPPED'>;
 
@@ -47,6 +48,8 @@ export async function fetchJsonWithRetry<T>(
   const maxAttempts = options.maxAttempts ?? 3;
   const baseDelayMs = options.baseDelayMs ?? 250;
   const startedAt = Date.now();
+  const samRequest=new URL(url).hostname==='api.sam.gov';
+  if(samRequest){const state=await samAvailability();if(state.status==='QUOTA_REACHED')throw new ConnectorError(`SAM daily quota reached. Retry after ${state.retryAt}. Uploaded packages can still be analyzed.`,'RATE_LIMITED',429,0,0);}
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     const controller = new AbortController();
@@ -57,6 +60,7 @@ export async function fetchJsonWithRetry<T>(
       if (!response.ok) {
         const status = classifyStatus(response.status);
         const dailyQuotaReached = response.status === 429 && /exceeded your quota|nextAccessTime/i.test(body);
+        if(dailyQuotaReached&&samRequest)await noteSamQuota(body);
         if (retryableStatus(response.status) && !dailyQuotaReached && attempt < maxAttempts) {
           await wait(baseDelayMs * (2 ** (attempt - 1)) + Math.floor(Math.random() * 100));
           continue;

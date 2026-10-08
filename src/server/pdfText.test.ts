@@ -31,3 +31,9 @@ test('SF1449 retains visual set-aside boxes instead of flattening every printed 
   const source=await pdf('STANDARD FORM 1449. SOLICITATION/CONTRACT/ORDER FOR COMMERCIAL PRODUCTS. SET-ASIDE SMALL BUSINESS WOSB WOMEN-OWNED SMALL BUSINESS. NAICS 518210. Selected boxes determine the eligibility.');
   assert.equal(await normalizePdfText(source),source);
 });
+
+test('broken font mappings cannot masquerade as readable PDF text',async()=>{
+ const {usablePdfText}=await import('./pdfText');
+ assert.equal(usablePdfText('\u0000\u0001\u0002Wage determination'.repeat(100)),false);
+ assert.equal(usablePdfText('Ordinary readable wage determination with rates and obligations.'),true);
+});

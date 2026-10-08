@@ -55,6 +55,7 @@ function buildBrief(l:Layout){
   const subtitle=[a.deal.solicitationNumber,a.deal.agency,new Date(a.meta.analyzedAt).toISOString().slice(0,10)].filter(Boolean).join(' | ');
   l.page('Your competitive position',subtitle);
   l.text(a.deal.title,true,11);
+  if(a.meta.packageCoverage?.mode==='HISTORICAL')l.text('HISTORICAL PRACTICE — closed solicitation using current research; not a live bid or historical price backtest.',true,8);
   const y=l.y;
   d.roundedRect(margin,y,contentWidth,111,5).fill(colors.navy);
   d.font(boldFont).fontSize(9).fillColor('#B9DDDB').text('RECOMMENDED PTW',margin+16,y+15,{width:contentWidth-32,lineBreak:false});
@@ -64,6 +65,7 @@ function buildBrief(l:Layout){
   l.title('Why this position?');l.text(p.rationale);
   l.text(p.judgment.find(j=>j.factor==='Labor and unit-price evidence')!.finding,false,9);
   l.title(`Recommendation Confidence: ${p.confidenceLabel}`);l.text(p.confidenceReason);
+  if(a.meta.packageCoverage)l.text(a.meta.packageCoverage.freshness.message,false,8,colors.muted);
   l.title('What could move it?');
   const movers=[...p.sensitivities].sort((a,b)=>Math.abs(b.delta)-Math.abs(a.delta)).slice(0,2);
   if(movers.length)l.table(['Input change','Evaluated-price effect'],[380,148],movers.map(s=>[`${s.label}: ${s.change}`,`${s.delta>=0?'+':''}${money(s.delta)}`]));

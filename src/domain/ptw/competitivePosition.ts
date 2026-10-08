@@ -151,10 +151,11 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const rateConfidence=assumptionShare>.2 || unpricedRows.length || rows.some(r=>r.sampleSize<5)?'LOW':rows.some(r=>r.proxy || r.evidenceIds.some(id=>evidence.find(e=>e.id===id)?.numeric?.qualificationFit==='UNVALIDATED'))?'MEDIUM':rows.length?'HIGH':planningRows.some(p=>p.basis==='PLANNING_ASSUMPTION')?'LOW':'MEDIUM';
   const competitionConfidence=competitors.length>=2 && comparables.length>=2?'HIGH':comparables.length || competitors.length>=2?'MEDIUM':'LOW';
   const divergence=comparables.length && central>0 ? Math.max(...comparables.map(a=>Math.abs(a.normalizedValue!-central)/central)):0;
-  const overall:ConfidenceLevel=!hasTarget || !evaluationKnown || rateConfidence==='LOW' || divergence>.4 || assumptionShare>.2?'LOW':quantityConfidence==='HIGH' && rateConfidence==='HIGH' && competitionConfidence==='HIGH'?'HIGH':'MEDIUM';
+  const packageGaps=analysis.meta?.packageCoverage?.documents.filter(d=>['UNREADABLE','UNSUPPORTED','EXCERPTS'].includes(d.status))||[];
+  const overall:ConfidenceLevel=packageGaps.length>0 || !hasTarget || !evaluationKnown || rateConfidence==='LOW' || divergence>.4 || assumptionShare>.2?'LOW':quantityConfidence==='HIGH' && rateConfidence==='HIGH' && competitionConfidence==='HIGH'?'HIGH':'MEDIUM';
   const confidenceLabel=overall==='HIGH'?'STRONG':overall==='MEDIUM'?'MODERATE':'LIMITED';
   const confidenceReason=overall==='LOW'
-    ? `Use as an assumption-led planning position. ${!evaluationKnown?'Evaluation posture needs confirmation. ':''}${assumptionShare>0?`${Math.round(assumptionShare*100)}% of modeled price depends on explicit pricing assumptions. `:''}${divergence>.4?'Comparable evidence materially disagrees with the model. ':''}Validate the largest price driver before adopting the target.`
+    ? `Use as a provisional planning position. ${packageGaps.length?`${packageGaps.length} package documents need review; omitted requirements could change price. `:''}${!evaluationKnown?'Evaluation posture needs confirmation. ':''}${assumptionShare>0?`${Math.round(assumptionShare*100)}% of modeled price depends on explicit pricing assumptions. `:''}${divergence>.4?'Comparable evidence materially disagrees with the model. ':''}Validate the largest price driver before adopting the target.`
     : overall==='MEDIUM'?'Use to frame the pricing decision. The evaluated basket and rate evidence support this position; competing bids and the most influential mapping judgments still need validation.'
     : 'Use as a well-supported market position. The evaluated basket, qualified rates and independent comparable/competitive evidence converge. This is not a probability of winning.';
   const judgment:CompetitivePosition['judgment']=[

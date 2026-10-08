@@ -1,0 +1,54 @@
+import assert from 'node:assert/strict';
+import {test} from 'node:test';
+import {mkdtemp,rm} from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import JSZip from 'jszip';
+import {inventoryPackage,screenDocument,safeArchivePath} from './packageInventory';
+import {PackageJobs} from './packageJobs';
+import {RecordStore} from './store';
+import {pricedServicesFixture} from '../testFixtures/pricedServices';
+import {calculateCompetitivePosition} from '../domain/ptw/competitivePosition';
+import {PACKAGE_LIMITS} from '../packageTypes';
+const file=(name:string,buffer:Buffer)=>({originalname:name,mimetype:'application/zip',size:buffer.length,buffer});
+test('ZIP inventory preserves unique evidence, rejects traversal and identifies duplicates and unsupported files',async()=>{
+ const z=new JSZip();z.file('scope.txt','PWS scope');z.file('copy.txt','PWS scope');z.file('../escape.txt','bad');z.file('diagram.dwg','drawing');
+ const r=await inventoryPackage([file('package.zip',await z.generateAsync({type:'nodebuffer'}))]);
+ assert.equal(r.documents.filter(d=>d.status==='QUEUED').length,1);
+ assert.equal(r.documents.filter(d=>d.status==='DUPLICATE').length,1);
+ assert.equal(r.documents.filter(d=>d.status==='UNREADABLE').length,1);
+ assert.equal(r.documents.filter(d=>d.status==='UNSUPPORTED').length,1);
+ assert.ok(r.files[0].documentId);assert.equal(safeArchivePath('folder/../../x'),false);
+});
+test('screening a long unbroken document retains usable text and labels partial coverage',()=>{
+ const s=screenDocument('pricing.txt','Unit price '.repeat(25000));assert.ok(s.text.length>0);assert.ok(s.text.length<=160000);assert.equal(s.excerpted,true);
+});
+test('saved stages survive service failure, skip a corrupt attachment, and remain workspace isolated',async(t)=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'fmp-package-'));const options={file:path.join(dir,'db.sqlite'),url:undefined,hosted:false};let store=new RecordStore(options);
+ t.after(async()=>{await store.close();await rm(dir,{recursive:true,force:true});});
+ const z=new JSZip();z.file('pricing.txt','CLIN 0001 services base 12 months; lowest price acceptable');z.file('broken.pdf','corrupt');
+ const input=file('package.zip',await z.generateAsync({type:'nodebuffer'}));let extracts=0,researches=0;
+ const deps={normalize:async(files:any[])=>{if(files[0].originalname.endsWith('.pdf'))throw new Error('Damaged PDF');return files.map(f=>({...f,mimetype:'text/plain'}));},extract:async()=>{extracts++;return pricedServicesFixture() as any;},research:async()=>{researches++;if(researches===1)throw new Error('Temporary research interruption');return pricedServicesFixture();},price:async(a:any)=>({...a,competitivePosition:calculateCompetitivePosition(a)})};
+ let jobs=new PackageJobs(store,deps);let j=await jobs.create('alice',{files:[{name:input.originalname,size:input.size}]});
+ await assert.rejects(jobs.get('bob',j.id),/workspace/);
+ j=await jobs.chunk('alice',j.id,'input-0',0,input.buffer);
+ for(let n=0;n<12&&j.status!=='PAUSED';n++)j=await jobs.advance('alice',j.id);
+ assert.equal(j.stage,'RESEARCH');assert.equal(j.status,'PAUSED');assert.equal(extracts,1);
+ await store.close();store=new RecordStore(options);jobs=new PackageJobs(store,deps);
+ for(let n=0;n<5&&j.status!=='COMPLETE';n++)j=await jobs.advance('alice',j.id);
+ assert.equal(j.status,'COMPLETE');assert.equal(extracts,1);assert.equal(researches,2);
+ const saved=await store.get<any>('alice','analysis',j.runId!);assert.ok(saved?.value.competitivePosition.target>0);assert.equal(saved?.value.competitivePosition.confidenceLabel,'LIMITED');
+ assert.equal(saved?.value.meta.packageCoverage.documents.find((d:any)=>d.name.endsWith('broken.pdf')).status,'UNREADABLE');
+ assert.equal((await store.list('alice','package-chunk')).length,0);assert.equal((await store.list('alice','package-source')).length,0);
+ assert.equal(await store.get('bob','analysis',j.runId!),null);
+});
+test('large uploads use bounded chunks and reject changed or incomplete retries',async(t)=>{
+ const dir=await mkdtemp(path.join(os.tmpdir(),'fmp-chunks-')),store=new RecordStore({file:path.join(dir,'db'),url:undefined,hosted:false});t.after(async()=>{await store.close();await rm(dir,{recursive:true,force:true});});
+ const deps:any={};const jobs=new PackageJobs(store,deps),size=5*1024*1024;
+ let j=await jobs.create('alice',{files:[{name:'large.zip',size}]});assert.equal(j.files[0].chunks,3);
+ await assert.rejects(jobs.chunk('alice',j.id,'input-0',0,Buffer.alloc(5)),/Incomplete/);
+ const chunk=Buffer.alloc(PACKAGE_LIMITS.chunkBytes,1);await jobs.chunk('alice',j.id,'input-0',0,chunk);await jobs.chunk('alice',j.id,'input-0',0,chunk);
+ await assert.rejects(jobs.chunk('alice',j.id,'input-0',0,Buffer.alloc(chunk.length,2)),/differs/);
+ j=await jobs.advance('alice',j.id);assert.equal(j.status,'PAUSED');assert.equal(j.stage,'UPLOADING');
+ await assert.rejects(jobs.create('alice',{files:[{name:'huge.zip',size:51*1024*1024}]}),/50 MB/);
+});

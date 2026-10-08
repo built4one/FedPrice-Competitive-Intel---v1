@@ -341,6 +341,7 @@ export interface ConnectorStatus {
 }
 
 export interface AnalysisMeta {
+  packageCoverage?: import('./packageTypes').PackageCoverage;
   mode: 'MARKET_ONLY' | 'MARKET_AND_COMPANY_DEPRECATED';
   model: string;
   analyzedAt: string;
