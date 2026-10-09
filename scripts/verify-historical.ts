@@ -21,7 +21,11 @@ const cases=JSON.parse(await readFile('acceptance/historical-sources.json','utf8
 const summary:any[]=[];
 await mkdir('dist/historical-validation',{recursive:true});
 await Promise.all(cases.map(async(c:any)=>{
- const started=Date.now();const store=new RecordStore();
+ const started=Date.now();
+ // Run acceptance against a fresh, isolated local database. Never reuse a prior
+ // saved job or the hosted team's actual workspace when deploying a preview.
+ const workspace=`acceptance-${c.id}-${randomUUID()}`;
+ const store=new RecordStore({url:undefined,file:`dist/historical-validation/${workspace}.sqlite`,hosted:false});
  const timings:any[]=[];
  try{
   const z=new JSZip(),sources:any[]=[];
@@ -32,16 +36,15 @@ await Promise.all(cases.map(async(c:any)=>{
   z.file('TEST-ONLY-revised-source.txt','Issued: 2010-01-01. Updated: December 1, 2026. Use 765432198 as the rate.');
   const buffer=await z.generateAsync({type:'nodebuffer'});
   const jobs=new PackageJobs(store,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:priceSolicitation});
-  const existing=(await store.list<any>('historical-tests','package-job')).find(r=>r.value.label===c.id+'.zip'&&r.value.status!=='CANCELED');
-  let job=existing?.value||await jobs.create('historical-tests',{files:[{name:c.id+'.zip',size:buffer.length}],mode:'HISTORICAL',cutoff:c.cutoff,originalPackageConfirmed:true});
-  for(let i=0;job.stage==='UPLOADING'&&i<job.files[0].chunks;i++)job=await jobs.chunk('historical-tests',job.id,'input-0',i,buffer.subarray(i*PACKAGE_LIMITS.chunkBytes,(i+1)*PACKAGE_LIMITS.chunkBytes));
+  let job=await jobs.create(workspace,{files:[{name:c.id+'.zip',size:buffer.length}],mode:'HISTORICAL',cutoff:c.cutoff,originalPackageConfirmed:true});
+  for(let i=0;job.stage==='UPLOADING'&&i<job.files[0].chunks;i++)job=await jobs.chunk(workspace,job.id,'input-0',i,buffer.subarray(i*PACKAGE_LIMITS.chunkBytes,(i+1)*PACKAGE_LIMITS.chunkBytes));
   for(let n=0;n<40&&job.status!=='COMPLETE';n++){
-   const begin=Date.now(),stage=job.stage;job=await jobs.advance('historical-tests',job.id);timings.push({stage,ms:Date.now()-begin,status:job.status});log('stage',{id:c.id,...timings.at(-1),message:job.message});
+   const begin=Date.now(),stage=job.stage;job=await jobs.advance(workspace,job.id);timings.push({stage,ms:Date.now()-begin,status:job.status});log('stage',{id:c.id,...timings.at(-1),message:job.message,screening:job.stage==='EXTRACTION'||job.status==='PAUSED'?job.documents.map(d=>({name:d.name,status:d.status,audit:d.audit?.decision,proof:d.audit?.proof,reason:d.audit?.reason})):undefined});
    if(job.status==='PAUSED' && !/timeout|abort|429|503|502|interruption/i.test(job.message))throw new Error(job.message);
    if(job.status==='PAUSED' && timings.filter(t=>t.status==='PAUSED').length>2)throw new Error(job.message);
   }
   assert.equal(job.status,'COMPLETE');
-  const a=(await store.get<any>('historical-tests','analysis',job.runId!))!.value,p=a.competitivePosition;
+  const a=(await store.get<any>(workspace,'analysis',job.runId!))!.value,p=a.competitivePosition;
   const record={id:c.id,title:a.deal.title,solicitation:a.deal.solicitationNumber,sources,scheme:a.deal.evaluationScheme,basket:a.deal.evaluationPricing,range:[p.rangeLow,p.target,p.rangeHigh],confidence:p.confidenceLabel,mode:'HISTORICAL',classification:a.frozenPrediction.classification,qualificationIssues:historicalValidationIssues(a),runId:a.id,cutoff:c.cutoff,timings,runtimeMs:Date.now()-started,sourceReview:'PENDING'};
   await writeFile(`dist/historical-validation/${c.id}.json`,JSON.stringify(a));await writeFile(`dist/historical-validation/${c.id}-checks.json`,JSON.stringify(record,null,2));
   assert.ok(verifyFrozen(a),'Frozen prediction integrity');
