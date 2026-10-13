@@ -24,6 +24,8 @@ export default function App() {
   const [runs, setRuns] = useState<OpportunityAnalysis[]>([]);
   const [loadingRuns, setLoadingRuns] = useState(true);
   const [notice, setNotice] = useState('');
+  const [lastArchived, setLastArchived] = useState<OpportunityAnalysis | null>(null);
+  const [archiveBusy, setArchiveBusy] = useState(false);
   const [view, setView] = useState<View>('home');
   const [example,setExample]=useState<OpportunityAnalysis|null>(null);
   const [examples,setExamples]=useState<Array<{id:string;title:string;automatedPass:boolean}>>([]);
@@ -69,6 +71,29 @@ export default function App() {
       if (!response.ok) throw new Error((await response.json()).error || 'Delete failed.');
       setRuns((current) => current.filter((run) => run.id !== id));
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Delete failed.'); }
+  };
+
+  const archiveRun = async (id: string, archived = true) => {
+    if (archiveBusy) return;
+    const run = archived ? runs.find(item => item.id === id) : lastArchived;
+    setArchiveBusy(true);
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(id)}/archive`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ archived }),
+      });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || 'Archive update failed.');
+      if (archived) {
+        setRuns(current => current.filter(item => item.id !== id));
+        setLastArchived(run || null);
+        setNotice('Run archived. Hidden from saved runs and the scorecard; the original record is preserved.');
+      } else {
+        if (run) setRuns(current => [run, ...current.filter(item => item.id !== id)]);
+        setLastArchived(null);
+        setNotice('Run restored.');
+      }
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Archive update failed.'); }
+    finally { setArchiveBusy(false); }
   };
 
   const importOldRuns = async () => {
@@ -136,14 +161,14 @@ export default function App() {
       <span>{session.user.username}{session.accessMode === 'vercel-preview' ? ' · Private Vercel preview' : ''}</span>
       {session.accessMode !== 'vercel-preview' && <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>}
     </div>
-    {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}</div>}
+    {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}{lastArchived && <button disabled={archiveBusy} onClick={() => archiveRun(lastArchived.id, false)} className="ml-3 font-bold underline disabled:opacity-50">Undo archive</button>}</div>}
     <main>
       {loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
         {view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-teal-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{e.title}</button>)}</div></details></section>}</>}
-        {view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />}
+        {view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />}
         {view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />}
         {view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />}
-        {view === 'workspace' && !selected && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} />}
+        {view === 'workspace' && !selected && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} />}
       </>}
     </main>
   </div>;

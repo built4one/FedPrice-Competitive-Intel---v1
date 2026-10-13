@@ -7,6 +7,8 @@ import path from 'node:path';
 import { passwordHash } from './auth.js';
 import { opportunityAnalysisFixture } from '../testFixtures/opportunityAnalysis.js';
 import ExcelJS from 'exceljs';
+import { RecordStore } from './store';
+import { freezeAnalysis, verifyFrozen } from './predictions';
 
 test('run API saves only within the signed-in tester workspace and detects stale updates', async (t) => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'fmp-api-'));
@@ -65,4 +67,36 @@ test('run API saves only within the signed-in tester workspace and detects stale
   assert.equal(totals[3],900);assert.equal(totals[4],1000);assert.equal(totals[5],1100);
   const pdf=await fetch(`${base}/api/export-pdf`,{method:'POST',headers:{'content-type':'application/json',cookie:alice},body:JSON.stringify(reopened)});
   assert.equal(pdf.status,200);assert.equal(Buffer.from(await pdf.arrayBuffer()).subarray(0,4).toString(),'%PDF');
+  // Archive the real frozen record without altering its prediction or related records.
+  const store = new RecordStore({ url: undefined, file: process.env.STUDIO_DB_PATH!, hosted: false });
+  t.after(() => store.close());
+  const frozen = freezeAnalysis({ ...reopened, id: 'frozen-archive', competitivePosition: { ...reopened.competitivePosition, target: 1000, rangeLow: 900, rangeHigh: 1100 }, historical: { cutoff: '2025-04-25' } } as any);
+  await store.put('alice', 'analysis', frozen.id, frozen);
+  await store.put('alice', 'prediction', frozen.id, frozen);
+  await store.put('alice', 'package-job', 'archived-package', { runId: frozen.id, status: 'COMPLETE' });
+  await store.put('alice', 'prediction-export', frozen.id, { pdf: 'original-pdf', excel: 'original-excel' });
+  const archive = (cookie: string, archived: unknown) => fetch(`${base}/api/runs/${frozen.id}/archive`, {
+    method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify({ archived }),
+  });
+  const before = await store.get('alice', 'prediction', frozen.id);
+  assert.equal((await archive('', true)).status, 401);
+  assert.equal((await archive(bob, true)).status, 404);
+  assert.equal((await archive(alice, 'yes')).status, 400);
+  assert.match(await (await fetch(`${base}/api/historical-scorecard.csv`, { headers: { cookie: alice } })).text(), /frozen-archive/);
+  assert.equal((await archive(alice, true)).status, 200);
+  assert.equal((await archive(alice, true)).status, 200, 'archive is idempotent');
+  const visible = (await (await fetch(`${base}/api/runs`, { headers: { cookie: alice } })).json()).data;
+  assert.ok(visible.some((r: any) => r.id === reopened.id), 'other runs remain visible');
+  assert.ok(!visible.some((r: any) => r.id === frozen.id));
+  assert.doesNotMatch(await (await fetch(`${base}/api/historical-scorecard.csv`, { headers: { cookie: alice } })).text(), /frozen-archive/);
+  const jobs = (await (await fetch(`${base}/api/package-jobs`, { headers: { cookie: alice } })).json()).data;
+  assert.ok(!jobs.some((j: any) => j.runId === frozen.id));
+  assert.deepEqual(await store.get('alice', 'prediction', frozen.id), before, 'frozen snapshot is byte-for-byte preserved');
+  assert.ok(verifyFrozen((await store.get('alice', 'prediction', frozen.id))!.value));
+  assert.deepEqual((await store.get('alice', 'prediction-export', frozen.id))!.value, { pdf: 'original-pdf', excel: 'original-excel' });
+  assert.equal((await fetch(`${base}/api/runs/${frozen.id}`, { method: 'DELETE', headers: { cookie: alice } })).status, 409);
+  assert.equal((await archive(alice, false)).status, 200);
+  assert.match(await (await fetch(`${base}/api/historical-scorecard.csv`, { headers: { cookie: alice } })).text(), /frozen-archive/);
+  assert.ok((await (await fetch(`${base}/api/runs`, { headers: { cookie: alice } })).json()).data.some((r: any) => r.id === frozen.id));
+
 });

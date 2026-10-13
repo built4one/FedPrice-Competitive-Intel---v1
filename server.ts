@@ -1,3 +1,4 @@
+import { archivedRunIds, installArchiveRoutes } from './src/server/runArchive.js';
 import {predictionExport} from './src/server/predictionExports.js';
 import {blindHistoricalInput} from './src/server/historical.js';
 import {freezeAndStore,loadPrediction,withOutcome,recordOutcome,validateHistorical} from './src/server/predictions.js';
@@ -782,19 +783,22 @@ app.post('/api/ptw-strategy', async (req, res) => {
 
 app.post('/api/runs/:id/outcome',async(req,res)=>{try{const a=await recordOutcome(runStore,req.principal.workspace,String(req.params.id),req.body);res.json({data:a});}catch(e){res.status(400).json({error:e instanceof Error?e.message:'Outcome could not be recorded.'});}});
 app.post('/api/runs/:id/historical-review',async(req,res)=>{try{const r=await validateHistorical(runStore,req.principal.workspace,String(req.params.id),req.principal.username,req.body.confirmed===true);res.json({data:r});}catch(e){res.status(400).json({error:e instanceof Error?e.message:'Historical review failed.'});}});
+installArchiveRoutes(app, runStore);
 app.get('/api/historical-scorecard.csv',async(req,res)=>{
  try{
   const rows=await runStore.list<OpportunityAnalysis>(req.principal.workspace,'prediction');
+  const archived = await archivedRunIds(runStore, req.principal.workspace);
   const csv=(v:unknown)=>'"'+String(v??'').replace(/^[=+@-]/,"'").replaceAll('"','""')+'"';
   const result=[['Run','Solicitation','Cutoff','Classification','Frozen at','Prediction hash','Lower','Target','Upper','Actual','Actual type','Comparable','Absolute error percent','In corridor','Actual source']];
-  for(const r of rows){const a=await withOutcome(runStore,req.principal.workspace,r.value);if(!a.historical)continue;const f=a.frozenPrediction!,v=a.validation;result.push([a.id,a.deal.solicitationNumber,a.historical.cutoff,v?.comparisonClass||(a.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION'),f.frozenAt,f.hash,f.low,f.target,f.high,v?.actualValue,v?.actualValueType,v?.comparableToPrediction,v?.expectedErrorPct,v?.inRange,v?.actualSource] as any);}
+  for(const r of rows){if(archived.has(r.id))continue;const a=await withOutcome(runStore,req.principal.workspace,r.value);if(!a.historical)continue;const f=a.frozenPrediction!,v=a.validation;result.push([a.id,a.deal.solicitationNumber,a.historical.cutoff,v?.comparisonClass||(a.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION'),f.frozenAt,f.hash,f.low,f.target,f.high,v?.actualValue,v?.actualValueType,v?.comparableToPrediction,v?.expectedErrorPct,v?.inRange,v?.actualSource] as any);}
   res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition','attachment; filename="historical-scorecard.csv"');res.send(result.map(r=>r.map(csv).join(',')).join('\r\n'));
  }catch(e){res.status(503).json({error:'Historical scorecard unavailable.'});}
 });
 
 app.get('/api/runs', async (req, res) => {
   try {
-    const saved = await runStore.list<OpportunityAnalysis>(req.principal.workspace, 'analysis');
+    const archived = await archivedRunIds(runStore, req.principal.workspace);
+    const saved = (await runStore.list<OpportunityAnalysis>(req.principal.workspace, 'analysis')).filter(item => !archived.has(item.id));
     res.json({ data: await Promise.all(saved.map(async item=>{const frozen=await loadPrediction(runStore,req.principal.workspace,item.id);return{...(frozen?await withOutcome(runStore,req.principal.workspace,frozen):normalizeIncomingRun(item.value,true)),storageVersion:item.version};})) });
   } catch (error) {
     res.status(503).json({ error: error instanceof Error ? error.message : 'Saved analyses are unavailable.' });

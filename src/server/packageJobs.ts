@@ -1,3 +1,4 @@
+import { archivedRunIds } from './runArchive';
 import {auditHistoricalDocument,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
 import {freezeAndStore} from './predictions';
 import {preservePredictionExports} from './predictionExports';
@@ -171,7 +172,7 @@ async function readVisual(file:PackageFile,context=''){
 export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependencies){
   const jobs=new PackageJobs(store,deps);
   const route=(fn:(req:Request,res:Response)=>Promise<void>)=>async(req:Request,res:Response)=>{try{await fn(req,res);}catch(e){res.status(e instanceof ConflictError?409:400).json({error:e instanceof Error?e.message:'Package request failed.'});}};
-  app.get('/api/package-jobs',route(async(req,res)=>{res.json({data:(await store.list<PackageJob>(req.principal.workspace,'package-job')).map(r=>r.value)});}));
+  app.get('/api/package-jobs',route(async(req,res)=>{const archived=await archivedRunIds(store,req.principal.workspace);res.json({data:(await store.list<PackageJob>(req.principal.workspace,'package-job')).filter(r=>!r.value.runId||!archived.has(r.value.runId)).map(r=>r.value)});}));
   app.post('/api/package-jobs',route(async(req,res)=>{res.json({data:await jobs.create(req.principal.workspace,req.body)});}));
   app.get('/api/package-jobs/:id',route(async(req,res)=>{res.json({data:(await jobs.get(req.principal.workspace,String(req.params.id))).value});}));
   app.put('/api/package-jobs/:id/chunks/:file/:index',express.raw({type:'application/octet-stream',limit:'2100kb'}),route(async(req,res)=>{res.json({data:await jobs.chunk(req.principal.workspace,String(req.params.id),String(req.params.file),Number(req.params.index),req.body)});}));
