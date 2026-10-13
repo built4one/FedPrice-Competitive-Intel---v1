@@ -82,3 +82,35 @@ test('large uploads use bounded chunks and reject changed or incomplete retries'
  j=await jobs.advance('alice',j.id);assert.equal(j.status,'PAUSED');assert.equal(j.stage,'UPLOADING');
  await assert.rejects(jobs.create('alice',{files:[{name:'huge.zip',size:51*1024*1024}]}),/50 MB/);
 });
+
+test('deleting paused packages frees the active limit, removes staging data and preserves other workspaces and recommendations',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
+ const jobs=new PackageJobs(store,{} as any);
+ const ids:string[]=[];
+ for(let i=0;i<5;i++)ids.push((await jobs.create('alice',{files:[{name:'scope.txt',size:1}]})).id);
+ await assert.rejects(jobs.create('alice',{files:[{name:'new.txt',size:1}]}),/five active/);
+ const id=ids[0],row=await jobs.get('alice',id);
+ await store.put('alice','package-job',id,{...row.value,status:'PAUSED',documents:[{id:'doc'}]},row.version);
+ const records=[['package-chunk',`${id}:input-0:0`],['package-source',`${id}:doc`],['package-text',`${id}:doc`],...['package-draft','historical-context','package-result'].map(kind=>[kind,id])];
+ for(const [kind,key] of records){await store.put('alice',kind,key,'staged');await store.put('bob',kind,key,'keep');}
+ await store.put('alice','analysis','saved-run',{frozenPrediction:'unchanged'});
+ await assert.rejects(jobs.deletePaused('bob',id),/workspace/);
+ await jobs.deletePaused('alice',id);
+ await assert.rejects(jobs.get('alice',id),/workspace/);
+ for(const [kind,key] of records){assert.equal(await store.get('alice',kind,key),null);assert.equal((await store.get('bob',kind,key))?.value,'keep');}
+ assert.deepEqual((await store.get('alice','analysis','saved-run'))?.value,{frozenPrediction:'unchanged'});
+ assert.equal((await store.list('alice','package-job')).length,4);
+ assert.ok(await jobs.create('alice',{files:[{name:'new.txt',size:1}]}));
+});
+
+test('package deletion rejects resumable workers and completed predictions',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
+ const jobs=new PackageJobs(store,{} as any);
+ const job=await jobs.create('alice',{files:[{name:'scope.txt',size:1}]});
+ for(const patch of [{status:'READY'},{status:'WORKING'},{status:'CANCELED',leaseUntil:Date.now()+60000},{status:'COMPLETE',stage:'COMPLETE'},{status:'PAUSED',runId:'saved-run'}]){
+  const row=await jobs.get('alice',job.id);
+  await store.put('alice','package-job',job.id,{...job,...patch},row.version);
+  await assert.rejects(jobs.deletePaused('alice',job.id),/Only paused packages/);
+  assert.ok(await jobs.get('alice',job.id));
+ }
+});

@@ -157,10 +157,10 @@ export default function App() {
 
   return <div className="min-h-screen bg-[#f7f8f5] text-slate-950">
     <Header view={view} activeTitle={selected?.deal.solicitationNumber || selected?.deal.title} onNavigate={setView} />
-    <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
-      <span>{session.user.username}{session.accessMode === 'vercel-preview' ? ' · Private Vercel preview' : ''}</span>
-      {session.accessMode !== 'vercel-preview' && <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>}
-    </div>
+    {session.accessMode !== 'vercel-preview' && <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
+      <span>{session.user.username}</span>
+      <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>
+    </div>}
     {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}{lastArchived && <button disabled={archiveBusy} onClick={() => archiveRun(lastArchived.id, false)} className="ml-3 font-bold underline disabled:opacity-50">Undo archive</button>}</div>}
     <main>
       {loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>

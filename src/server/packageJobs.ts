@@ -53,6 +53,17 @@ export class PackageJobs {
     await this.store.put(workspace,'package-job',id,job,row.version);return job;
   }
   async cancel(workspace:string,id:string){const r=await this.get(workspace,id);r.value.status='CANCELED';r.value.message='Canceled. Saved analyses are unchanged.';await this.store.put(workspace,'package-job',id,r.value,r.version);return r.value;}
+  async deletePaused(workspace:string,id:string){
+    const row=await this.get(workspace,id),job=row.value;
+    if(!['PAUSED','CANCELED'].includes(job.status)||job.stage==='COMPLETE'||job.runId||(job.leaseUntil||0)>Date.now())throw new Error('Only paused packages without a saved recommendation can be deleted.');
+    // Claim cancellation with the same version used by advance, before deleting data.
+    // A concurrent resume wins or loses this check; it cannot start after cancellation.
+    await this.store.put(workspace,'package-job',id,{...job,status:'CANCELED'},row.version);
+    for(const f of job.files)for(let i=0;i<f.chunks;i++)await this.store.remove(workspace,'package-chunk',`${id}:${f.id}:${i}`);
+    for(const d of job.documents)for(const kind of ['package-source','package-text'])await this.store.remove(workspace,kind,`${id}:${d.id}`);
+    for(const kind of ['package-draft','historical-context','package-result'])await this.store.remove(workspace,kind,id);
+    await this.store.remove(workspace,'package-job',id);
+  }
   async advance(workspace:string,id:string){
     const row=await this.get(workspace,id);let job=row.value;
     if(['COMPLETE','CANCELED'].includes(job.status))return job;
@@ -177,6 +188,7 @@ export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependen
   app.get('/api/package-jobs/:id',route(async(req,res)=>{res.json({data:(await jobs.get(req.principal.workspace,String(req.params.id))).value});}));
   app.put('/api/package-jobs/:id/chunks/:file/:index',express.raw({type:'application/octet-stream',limit:'2100kb'}),route(async(req,res)=>{res.json({data:await jobs.chunk(req.principal.workspace,String(req.params.id),String(req.params.file),Number(req.params.index),req.body)});}));
   app.post('/api/package-jobs/:id/advance',route(async(req,res)=>{res.json({data:await jobs.advance(req.principal.workspace,String(req.params.id))});}));
+  app.delete('/api/package-jobs/:id',route(async(req,res)=>{await jobs.deletePaused(req.principal.workspace,String(req.params.id));res.json({deleted:true});}));
   app.post('/api/package-jobs/:id/cancel',route(async(req,res)=>{res.json({data:await jobs.cancel(req.principal.workspace,String(req.params.id))});}));
   app.get('/api/package-jobs/:id/result',route(async(req,res)=>{const j=(await jobs.get(req.principal.workspace,String(req.params.id))).value;const r=j.runId?await store.get<OpportunityAnalysis>(req.principal.workspace,'analysis',j.runId):await store.get<OpportunityAnalysis>(req.principal.workspace,'package-result',j.id);if(!r)throw new Error('The analysis has not reached a saved result yet.');res.json({data:{...r.value,...(j.runId?{storageVersion:r.version}:{})}});}));
   return jobs;
