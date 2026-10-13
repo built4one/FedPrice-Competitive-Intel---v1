@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {execFileSync} from 'node:child_process';
 import {cutoffDate,screenHistoricalDocument,filterHistoricalDraft,historicalContext,historicalValidationIssues} from './historical';
 import {freezeAnalysis,verifyFrozen,freezeAndStore,loadPrediction,recordOutcome,validateHistorical} from './predictions';
 import {RecordStore} from './store';
@@ -16,6 +17,38 @@ test('publication proof must occur verbatim and support the claimed date',()=>{
  assert.equal(screen('scope.txt',text,{kind:'SOLICITATION',publishedAt:'2020-01-02',dateQuote:'Issued: January 2, 2020.'}).proof,'DATED_DOCUMENT');
  assert.equal(screen('scope.txt',text,{kind:'SOLICITATION',publishedAt:'2019-01-02',dateQuote:'Issued: January 2, 2020.'}).proof,'ATTESTED_ORIGINAL');
  assert.equal(screen('rates.txt',text,{kind:'MARKET',publishedAt:'2019-01-02',dateQuote:'fabricated passage'}).decision,'EXCLUDED');
+});
+test('publication cutoff and date proof are identical across server timezones',()=>{
+ const script=`
+  import assert from 'node:assert/strict';
+  import {screenHistoricalDocument} from './src/server/historical.ts';
+  const screen=(text,audit)=>screenHistoricalDocument('scope.txt',text,'2020-06-30',audit,true);
+  for(const date of ['July 1, 2020','Jul. 1, 2020','7/1/2020','2020-07-01']){
+   for(const text of ['Published: '+date+'.','Issued: 2010-01-01. Updated: '+date+'.']){
+    assert.equal(screen(text,{kind:'SOLICITATION',publishedAt:'2019-01-01',dateQuote:'2019-01-01'}).decision,'EXCLUDED',text);
+   }
+  }
+  for(const date of ['June 30, 2020','Jun. 30, 2020','6/30/2020','2020-06-30']){
+   const quote='Issued: '+date+'.';
+   const result=screen(quote+' Delivery July 1, 2021.',{kind:'SOLICITATION',publishedAt:'2020-06-30',dateQuote:quote});
+   assert.equal(result.decision,'ADMITTED',quote);assert.equal(result.proof,'DATED_DOCUMENT',quote);
+  }
+  const quote='Issued: January 2, 2020.';
+  assert.equal(screen(quote,{kind:'SOLICITATION',publishedAt:'2020-01-02',dateQuote:quote}).proof,'DATED_DOCUMENT');
+  assert.equal(screen(quote,{kind:'SOLICITATION',publishedAt:'2020-01-01',dateQuote:quote}).proof,'ATTESTED_ORIGINAL');
+  assert.equal(screen('Issued: 2020-01-01. The winning price was $987654.',{kind:'SOLICITATION'}).decision,'EXCLUDED');
+ `;
+ for(const timezone of ['UTC','America/New_York','Asia/Jerusalem','Pacific/Kiritimati','Pacific/Honolulu']){
+  assert.doesNotThrow(()=>execFileSync(process.execPath,['--import','tsx','--input-type=module','-e',script],{cwd:process.cwd(),env:{...process.env,TZ:timezone},stdio:'pipe'}),timezone);
+ }
+});
+test('invalid calendar dates cannot supply publication proof',()=>{
+ for(const [date,publishedAt] of [['February 30, 2020','2020-03-01'],['2/30/2020','2020-03-01'],['2020-02-30','2020-02-30'],['February 29, 2019','2019-03-01']]){
+  const quote='Issued: '+date+'.';
+  assert.equal(screen('rates.txt',quote,{kind:'MARKET',publishedAt,dateQuote:quote}).decision,'EXCLUDED',date);
+ }
+ const quote='Issued: February 29, 2020.';
+ assert.equal(screen('rates.txt',quote,{kind:'MARKET',publishedAt:'2020-02-29',dateQuote:quote}).proof,'DATED_DOCUMENT');
 });
 test('undated original scope remains an approximation; undated market data is excluded',()=>{assert.equal(screen('scope.txt','Original scope',{kind:'SOLICITATION'}).proof,'ATTESTED_ORIGINAL');assert.equal(screen('rates.txt','Rate $100',{kind:'MARKET'}).decision,'EXCLUDED');});
 test('numerical evidence cannot cite a number elsewhere in the source or a quarantined source',()=>{

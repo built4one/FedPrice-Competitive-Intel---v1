@@ -9,14 +9,30 @@ export function cutoffDate(value:unknown):string {
 }
 const outcomePattern=/\b(?:award notice|award results|bid results|winning (?:bid|price|offer|vendor)|successful (?:offeror|bidder)\s*(?:was|is|:)|(?:contract|award)\s+(?:was\s+)?awarded to|debriefing|post.award|source selection decision|protest decision)\b/i;
 const dateTokens=/(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4})/gi;
-const dates=(text:string)=>[...text.matchAll(dateTokens)].map(m=>Date.parse(m[0])).filter(Number.isFinite).map(v=>new Date(v).toISOString().slice(0,10));
+// Publication dates are calendar dates, not instants in the server's timezone.
+// Date.parse('July 1, 2020') uses local midnight and can become June 30 in UTC.
+function documentDate(token:string):string|null {
+ const iso=/^(\d{4})-(\d{2})-(\d{2})$/.exec(token);
+ const us=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(token);
+ const named=/^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(token);
+ const months=['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
+ const parts=iso?[Number(iso[1]),Number(iso[2]),Number(iso[3])]
+  :us?[Number(us[3]),Number(us[1]),Number(us[2])]
+  :named?[Number(named[3]),months.indexOf(named[1].slice(0,3).toLowerCase())+1,Number(named[2])]:null;
+ if(!parts)return null;
+ const [year,month,day]=parts;
+ const date=`${String(year).padStart(4,'0')}-${String(month).padStart(2,'0')}-${String(day).padStart(2,'0')}`;
+ const instant=new Date(`${date}T00:00:00.000Z`);
+ return Number.isFinite(instant.getTime())&&instant.toISOString().slice(0,10)===date?date:null;
+}
+const dates=(text:string)=>[...text.matchAll(dateTokens)].map(m=>documentDate(m[0])).filter((date):date is string=>date!==null);
 const futureIssue=(text:string,cutoff:string)=>[...text.matchAll(/(?:published|issued|revised|updated|released|as of)\s*(?:date)?\s*[:=-]?\s*(?=([^\n]{1,45}))/gi)].some(m=>(dates(m[1])[0]||'')>cutoff);
 export function screenHistoricalDocument(name:string,text:string,cutoff:string,audit:Partial<HistoricalDocumentAudit>,confirmed=false):HistoricalDocumentAudit {
  const exclude=(reason:string):HistoricalDocumentAudit=>({kind:audit.kind||'UNKNOWN',publishedAt:audit.publishedAt||'',dateQuote:audit.dateQuote||'',reason,decision:'EXCLUDED',proof:'NONE'});
  if(outcomePattern.test(name+'\n'+text)||audit.kind==='OUTCOME')return exclude('Outcome-related content quarantined before analysis.');
  if(futureIssue(text,cutoff)||audit.publishedAt&&audit.publishedAt>cutoff)return exclude('Publication or revision is after the locked cutoff.');
  const quote=audit.dateQuote?.trim()||'';
- const dated=Boolean(audit.publishedAt&&/^\d{4}-\d{2}-\d{2}$/.test(audit.publishedAt)&&Number.isFinite(Date.parse(audit.publishedAt))&&quote.length>=8&&text.includes(quote)&&dates(quote).includes(audit.publishedAt));
+ const dated=Boolean(audit.publishedAt&&/^\d{4}-\d{2}-\d{2}$/.test(audit.publishedAt)&&documentDate(audit.publishedAt)===audit.publishedAt&&quote.length>=8&&text.includes(quote)&&dates(quote).includes(audit.publishedAt));
  if(dated&&['SOLICITATION','MARKET'].includes(audit.kind||''))return {kind:audit.kind!,publishedAt:audit.publishedAt!,dateQuote:quote,reason:'Dated source admitted provisionally; historical validation requires source review.',decision:'ADMITTED',proof:'DATED_DOCUMENT'};
  if(confirmed&&audit.kind==='SOLICITATION')return {kind:'SOLICITATION',publishedAt:'',dateQuote:'',reason:'Analyst attested original bid-package document; publication date unresolved. Approximation only.',decision:'ADMITTED',proof:'ATTESTED_ORIGINAL'};
  return exclude('No supported pre-cutoff publication date or original-package attestation.');

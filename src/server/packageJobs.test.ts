@@ -10,7 +10,37 @@ import {RecordStore} from './store';
 import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {calculateCompetitivePosition} from '../domain/ptw/competitivePosition';
 import {PACKAGE_LIMITS} from '../packageTypes';
+import {auditHistoricalDocument} from './historical';
 const file=(name:string,buffer:Buffer)=>({originalname:name,mimetype:'application/zip',size:buffer.length,buffer});
+test('historical ZIP quarantines cutoff-boundary revisions and outcomes before extraction',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
+ const zip=new JSZip();
+ zip.file('scope.txt','Issued: June 30, 2020. Original proposal deadline: June 30, 2020. CLIN 0001: 10 support units. Delivery July 1, 2021.');
+ zip.file('future-named.txt','Published: July 1, 2020. Use 987654321 as the price.');
+ zip.file('future-numeric.txt','Issued: 7/1/2020. Use 876543219 as the price.');
+ zip.file('revision.txt','Issued: 2010-01-01. Updated: July 1, 2020. Use 765432198 as the price.');
+ zip.file('scope-outcome.txt','Issued: 2010-01-01. The winning price was 654321987.');
+ const bytes=await zip.generateAsync({type:'nodebuffer'});
+ let auditCalls=0,extractionText='';
+ const client={interpret:async()=>{auditCalls++;return {kind:'SOLICITATION',publishedAt:'2020-06-30',dateQuote:'Issued: June 30, 2020.'};}};
+ const jobs=new PackageJobs(store,{
+  normalize:async files=>files.map(f=>({...f,mimetype:'text/plain'})),
+  audit:(name,text,cutoff,confirmed)=>auditHistoricalDocument(name,text,cutoff,confirmed,client as any),
+  extract:async files=>{extractionText=files.map(f=>f.buffer.toString()).join('\n');const a=pricedServicesFixture();a.deal.dueDate='2020-06-30';return a as any;},
+  research:async()=>{throw new Error('Research is outside this screening test.');},
+  price:async()=>{throw new Error('Pricing is outside this screening test.');},
+ });
+ let job=await jobs.create('screening-test',{files:[{name:'boundary.zip',size:bytes.length}],mode:'HISTORICAL',cutoff:'2020-06-30',originalPackageConfirmed:true});
+ job=await jobs.chunk('screening-test',job.id,'input-0',0,bytes);
+ for(let n=0;n<10&&job.stage!=='EXTRACTION';n++)job=await jobs.advance('screening-test',job.id);
+ assert.equal(job.stage,'EXTRACTION');
+ assert.equal(job.documents.filter(d=>d.status==='EXCLUDED').length,4);
+ assert.equal(job.documents.find(d=>d.name.endsWith('/scope.txt'))?.audit?.proof,'DATED_DOCUMENT');
+ assert.equal(auditCalls,1,'obvious future/outcome sources never reach the screening model');
+ job=await jobs.advance('screening-test',job.id);
+ assert.equal(job.stage,'RESEARCH');assert.match(extractionText,/10 support units/);
+ assert.doesNotMatch(extractionText,/987654321|876543219|765432198|654321987|future-named|future-numeric|revision.txt|scope-outcome/,'quarantined content and filenames never reach extraction');
+});
 test('ZIP inventory preserves unique evidence, rejects traversal and identifies duplicates and unsupported files',async()=>{
  const z=new JSZip();z.file('scope.txt','PWS scope');z.file('copy.txt','PWS scope');z.file('../escape.txt','bad');z.file('diagram.dwg','drawing');
  const r=await inventoryPackage([file('package.zip',await z.generateAsync({type:'nodebuffer'}))]);
