@@ -25,3 +25,6 @@ button:disabled { cursor: not-allowed; }
 .fmp-secondary { background: white; color: #153344; border: 1px solid #cbd5d8; padding: .85rem 1.1rem; border-radius: .65rem; min-height: 44px; }
 .fmp-link { color: #146c62; min-height: 36px; }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
+
+/* Shared action colors align with the intelligence home. */
+.fmp-primary {background:#0f62fe;} .fmp-primary:hover {background:#0353e9;} .fmp-link,.fmp-eyebrow {color:#0f62fe;}
