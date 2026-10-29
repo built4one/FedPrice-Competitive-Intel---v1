@@ -138,7 +138,7 @@ export default function App() {
     setRuns([]); setSelectedId(null); setView('home');
   };
 
-  if (!session?.user) return <div className="grid min-h-screen place-items-center bg-[#f7f8f5] px-4">
+  if (!session?.user) return <div className="grid min-h-screen place-items-center bg-[#f4f7fc] px-4">
     <form onSubmit={signIn} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-lg">
       <h1 className="text-2xl font-black text-slate-950">Federal Market Position</h1>
       <p className="mt-2 text-sm text-slate-600">Private opportunity intelligence</p>
@@ -155,16 +155,17 @@ export default function App() {
     </form>
   </div>;
 
-  return <div className="min-h-screen bg-[#f7f8f5] text-slate-950">
+  return <div className="min-h-screen bg-[#f4f7fc] text-slate-950">
+    <a className="fmp-skip" href="#main-content">Skip to content</a>
     <Header view={view} activeTitle={selected?.deal.solicitationNumber || selected?.deal.title} onNavigate={setView} />
     {session.accessMode !== 'vercel-preview' && <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
       <span>{session.user.username}</span>
       <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>
     </div>}
     {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}{lastArchived && <button disabled={archiveBusy} onClick={() => archiveRun(lastArchived.id, false)} className="ml-3 font-bold underline disabled:opacity-50">Undo archive</button>}</div>}
-    <main>
+    <main id="main-content" tabIndex={-1}>
       {loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
-        {view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-teal-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{e.title}</button>)}</div></details></section>}</>}
+        {view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-blue-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{e.title}</button>)}</div></details></section>}</>}
         {view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />}
         {view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />}
         {view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />}
