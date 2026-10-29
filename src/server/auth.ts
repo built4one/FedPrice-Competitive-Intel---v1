@@ -15,7 +15,7 @@ export const localMode = () => process.env.STUDIO_LOCAL_MODE === '1' && process.
 // Owner-only testing on a specific Vercel-protected preview alias. Never applies
 // to production, local servers, custom domains, or other preview aliases.
 function previewOwner(req: Request): Principal | null {
-  const historicalPreview=process.env.STUDIO_HISTORICAL_PREVIEW_ACCESS==='1' && process.env.VERCEL_GIT_COMMIT_REF==='codex/historical-testing-safeguards';
+  const historicalPreview=process.env.STUDIO_HISTORICAL_PREVIEW_ACCESS==='1' && ['codex/historical-testing-safeguards', 'codex/atlas-home-blue'].includes(process.env.VERCEL_GIT_COMMIT_REF || '');
   const host = historicalPreview?process.env.VERCEL_URL:process.env.STUDIO_PREVIEW_OWNER_HOST;
   if (process.env.VERCEL !== '1' || process.env.VERCEL_ENV !== 'preview'
     || !host?.endsWith('.vercel.app') || req.headers.host !== host) return null;

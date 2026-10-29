@@ -101,7 +101,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between print:hidden">
       <div>
         <button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button>
-        <p className="mt-4 text-xs font-bold uppercase tracking-widest text-teal-700">Federal Market Position · Executive brief</p>
+        <p className="mt-4 text-xs font-bold uppercase tracking-widest text-blue-700">Federal Market Position · Executive brief</p>
         <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1>
         <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
       </div>
@@ -117,10 +117,10 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     
     <div className="print:hidden">
     <div className="mt-5 flex items-center gap-5 border-b border-slate-200">
-      <button onClick={()=>{setAnalystMode(false);setTab('decision-center');}} className={`py-3 text-sm font-bold border-b-2 ${!analystMode?'border-teal-700 text-teal-800':'border-transparent text-slate-500'}`}>Executive brief</button>
-      <button onClick={()=>{setAnalystMode(true);setTab('market-evidence');}} className={`py-3 text-sm font-bold border-b-2 ${analystMode?'border-teal-700 text-teal-800':'border-transparent text-slate-500'}`}>Analyst workspace</button>
+      <button onClick={()=>{setAnalystMode(false);setTab('decision-center');}} className={`py-3 text-sm font-bold border-b-2 ${!analystMode?'border-blue-700 text-blue-800':'border-transparent text-slate-500'}`}>Executive brief</button>
+      <button onClick={()=>{setAnalystMode(true);setTab('market-evidence');}} className={`py-3 text-sm font-bold border-b-2 ${analystMode?'border-blue-700 text-blue-800':'border-transparent text-slate-500'}`}>Analyst workspace</button>
     </div>
-    {analystMode && <div className="mt-4 flex gap-1 overflow-x-auto">{tabs.filter(([id])=>id!=='decision-center').map(([id,label])=><button key={id} onClick={()=>setTab(id)} className={`shrink-0 rounded-lg px-3 py-3 text-xs font-bold ${tab===id?'bg-teal-50 text-teal-800':'text-slate-500'}`}>{label}</button>)}</div>}
+    {analystMode && <div className="mt-4 flex gap-1 overflow-x-auto">{tabs.filter(([id])=>id!=='decision-center').map(([id,label])=><button key={id} onClick={()=>setTab(id)} className={`shrink-0 rounded-lg px-3 py-3 text-xs font-bold ${tab===id?'bg-blue-50 text-blue-800':'text-slate-500'}`}>{label}</button>)}</div>}
 
     <div className="mt-8">
       {tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />}

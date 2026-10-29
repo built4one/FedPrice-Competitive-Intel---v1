@@ -6,7 +6,7 @@ import express from 'express';
 import { installAuth, passwordHash } from './auth.js';
 
 test('owner preview opens without a second login only on the configured protected Vercel alias', async (t) => {
-  const keys = ['VERCEL', 'VERCEL_ENV', 'STUDIO_PREVIEW_OWNER_HOST', 'STUDIO_USERS_JSON', 'SESSION_SECRET', 'STUDIO_LOCAL_MODE'];
+  const keys = ['VERCEL', 'VERCEL_ENV', 'STUDIO_PREVIEW_OWNER_HOST', 'STUDIO_USERS_JSON', 'SESSION_SECRET', 'STUDIO_LOCAL_MODE', 'STUDIO_HISTORICAL_PREVIEW_ACCESS', 'VERCEL_GIT_COMMIT_REF', 'VERCEL_URL'];
   const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   t.after(() => { for (const key of keys) { if (previous[key] === undefined) delete process.env[key]; else process.env[key] = previous[key]; } });
   process.env.VERCEL = '1';
@@ -30,6 +30,21 @@ test('owner preview opens without a second login only on the configured protecte
     });
     req.on('error', reject); req.end();
   });
+  process.env.STUDIO_HISTORICAL_PREVIEW_ACCESS = '1';
+  process.env.VERCEL_URL = 'new-preview.vercel.app';
+  for (const branch of ['codex/historical-testing-safeguards', 'codex/atlas-home-blue']) {
+    process.env.VERCEL_GIT_COMMIT_REF = branch;
+    assert.deepEqual((await get('/api/session', 'new-preview.vercel.app')).body.user, {username:'boss',workspace:'historical-tests'});
+    assert.equal((await get('/api/private', 'other.vercel.app')).status, 503);
+    process.env.VERCEL_ENV = 'production';
+    assert.equal((await get('/api/private', 'new-preview.vercel.app')).status, 503);
+    process.env.VERCEL_ENV = 'preview';
+  }
+  process.env.VERCEL_GIT_COMMIT_REF = 'unrelated-branch';
+  assert.equal((await get('/api/private', 'new-preview.vercel.app')).status, 503);
+  process.env.STUDIO_HISTORICAL_PREVIEW_ACCESS = '0';
+  process.env.VERCEL_GIT_COMMIT_REF = 'codex/atlas-home-blue';
+  assert.equal((await get('/api/private', 'new-preview.vercel.app')).status, 503);
   const session = (await get('/api/session')).body;
   assert.deepEqual(session.user, { username: 'boss', workspace: 'boss' });
   assert.equal(session.accessMode, 'vercel-preview');
