@@ -23,6 +23,50 @@ function previewOwner(req: Request): Principal | null {
 }
 export const authConfigured = () => localMode() || (accounts().length > 0 && (process.env.SESSION_SECRET?.length || 0) >= 32);
 const sign = (text: string) => crypto.createHmac('sha256', process.env.SESSION_SECRET || '').update(text).digest('base64url');
+
+
+// Opt-in, link-only tester access for this single preview branch.
+// A signed browser cookie maps each tester to an independent data workspace.
+// No access is granted to the owner/historical workspace or production.
+const guestCookieName = 'fmp_preview_guest';
+const guestLifetimeSeconds = 7 * 24 * 60 * 60;
+function previewGuest(req: Request, res: Response): Principal | null {
+  if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== '1'
+    || process.env.VERCEL !== '1'
+    || process.env.VERCEL_ENV !== 'preview'
+    || process.env.VERCEL_GIT_COMMIT_REF !== 'codex/atlas-team-guest-preview'
+    || !process.env.VERCEL_URL?.endsWith('.vercel.app')
+    || req.headers.host !== process.env.VERCEL_URL
+    || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
+
+  const cookie = /(?:^|;\s*)fmp_preview_guest=([^;]+)/.exec(req.headers.cookie || '')?.[1];
+  let visitorId: string | null = null;
+  if (cookie) {
+    const separator = cookie.lastIndexOf('.');
+    if (separator > 0) {
+      const payload = cookie.slice(0, separator);
+      const signature = cookie.slice(separator + 1);
+      const expected = sign(payload);
+      if (signature.length === expected.length
+        && crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+        try {
+          const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
+          if (typeof data.id === 'string' && /^[a-f0-9]{32}$/.test(data.id)
+            && typeof data.expires === 'number' && data.expires > Date.now()) visitorId = data.id;
+        } catch { /* Invalid/expired guest cookies create a fresh isolated workspace. */ }
+      }
+    }
+  }
+  if (!visitorId) {
+    visitorId = crypto.randomBytes(16).toString('hex');
+    const payload = Buffer.from(JSON.stringify({
+      id: visitorId, expires: Date.now() + guestLifetimeSeconds * 1000,
+    })).toString('base64url');
+    res.append('Set-Cookie', guestCookieName + '=' + payload + '.' + sign(payload)
+      + '; Path=/; HttpOnly; SameSite=Lax; Secure; Max-Age=' + guestLifetimeSeconds);
+  }
+  return { username: 'tester', workspace: 'preview-guest-' + visitorId };
+}
 function principal(req: Request): Principal | null {
   const owner = previewOwner(req); if (owner) return owner;
   if (localMode() && ['127.0.0.1','::1','::ffff:127.0.0.1'].includes(req.socket.remoteAddress || '')) return {username:'local-analyst',workspace:'local'};
@@ -46,7 +90,11 @@ export function installAuth(app: Express) {
     }
     next();
   });
-  app.get('/api/session', (req,res) => res.json({user:principal(req),configured:!!previewOwner(req) || authConfigured(),local:localMode(),accessMode:previewOwner(req) ? 'vercel-preview' : 'password'}));
+  app.get('/api/session', (req,res) => {
+    const guest = previewGuest(req,res);
+    const owner = previewOwner(req);
+    res.json({user:guest || principal(req),configured:!!guest || !!owner || authConfigured(),local:localMode(),accessMode:guest || owner ? 'vercel-preview' : 'password'});
+  });
   app.post('/api/session', async (req,res) => {
     if (!authConfigured()) return res.status(503).json({error:'Private access is not configured. Set STUDIO_USERS_JSON and SESSION_SECRET on the server.'});
     const username=String(req.body?.username || '').slice(0,100); const password=String(req.body?.password || '').slice(0,1024);
@@ -62,7 +110,7 @@ export function installAuth(app: Express) {
   app.delete('/api/session', (_req,res) => { res.setHeader('Set-Cookie','fmp_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0');res.json({success:true}); });
   app.use('/api', (req:Request,res:Response,next:NextFunction) => {
     if(req.path==='/health') return next();
-    const user=principal(req); if(!user) return res.status(authConfigured()?401:503).json({error:authConfigured()?'Sign in to continue.':'Private access is not configured.'});
+    const user=previewGuest(req,res) || principal(req); if(!user) return res.status(authConfigured()?401:503).json({error:authConfigured()?'Sign in to continue.':'Private access is not configured.'});
     req.principal=user; next();
   });
 }
