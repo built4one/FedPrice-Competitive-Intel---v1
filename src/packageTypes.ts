@@ -16,5 +16,6 @@ export interface PackageJob {
   id:string; label:string; mode?:'LIVE'|'HISTORICAL'; stage:PackageStage; status:'READY'|'WORKING'|'PAUSED'|'COMPLETE'|'CANCELED';
   files:Array<{id:string;name:string;size:number;type:string;chunks:number;sha256?:string}>;
   receivedChunks:string[]; documents:PackageDocument[]; warnings:string[]; receivedAt:string;
-  message:string; opportunityRef?:string; cursor:number; leaseUntil?:number; attempts:number; runId?:string;
+  retryable?:boolean; message:string; opportunityRef?:string; cursor:number; leaseUntil?:number; attempts:number; runId?:string;
 }
+

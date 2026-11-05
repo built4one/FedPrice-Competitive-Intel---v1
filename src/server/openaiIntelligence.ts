@@ -53,6 +53,9 @@ function omitNulls(value: unknown): unknown {
 export function getOpenAIModel() { return process.env.OPENAI_MODEL || 'gpt-5.4'; }
 export function openAIConfigured() { return Boolean(process.env.OPENAI_API_KEY); }
 
+export class OpenAIRequestError extends Error {
+  constructor(message:string,readonly retryable:boolean){super(message);this.name='OpenAIRequestError';}
+}
 export class OpenAIIntelligence {
   constructor(
     private readonly key = process.env.OPENAI_API_KEY,
@@ -64,16 +67,33 @@ export class OpenAIIntelligence {
 
   private async respond(body: Record<string, unknown>): Promise<OpenAIResponse> {
     if (!this.key) throw new Error('OPENAI_API_KEY is not configured in the server environment.');
-    const response = await this.request('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${this.key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.model, store: false, ...(this.reasoningEffort?{reasoning:{effort:this.reasoningEffort}}:{}), ...body }),
-      signal: AbortSignal.timeout(this.timeoutMs),
-    });
-    const data = await response.json() as OpenAIResponse;
-    if (!response.ok) throw new Error(`OpenAI request failed (${response.status}): ${data.error?.message || 'unknown error'}`);
-    if (data.status && data.status !== 'completed') throw new Error(`OpenAI response did not complete (${data.status}).`);
-    return data;
+    const signal=AbortSignal.timeout(this.timeoutMs);
+    // Both attempts share one deadline, leaving time for the job checkpoint.
+    for(let attempt=0;attempt<2;attempt++){
+      try{
+        const response = await this.request('https://api.openai.com/v1/responses', {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${this.key}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.model, store: false, ...(this.reasoningEffort?{reasoning:{effort:this.reasoningEffort}}:{}), ...body }),
+          signal,
+        });
+        const data = await response.json() as OpenAIResponse;
+        if (!response.ok){
+          const quota=/insufficient_quota|quota|billing|credit/i.test(data.error?.message||'');
+          const retryable=!quota&&[408,429,500,502,503,504].includes(response.status);
+          throw new OpenAIRequestError(`OpenAI request failed (${response.status}): ${data.error?.message || 'unknown error'}`,retryable);
+        }
+        if (data.status && data.status !== 'completed') throw new OpenAIRequestError(`OpenAI response did not complete (${data.status}).`,false);
+        return data;
+      }catch(error){
+        if(signal.aborted)throw new OpenAIRequestError(`AI processing reached its ${Math.round(this.timeoutMs/1000)}-second limit. Completed work is saved; resume to retry the unfinished step.`,true);
+        const retryable=error instanceof OpenAIRequestError?error.retryable:error instanceof TypeError;
+        if(attempt===0&&retryable){await new Promise(resolve=>setTimeout(resolve,1000));continue;}
+        if(error instanceof OpenAIRequestError)throw error;
+        throw new OpenAIRequestError('AI connection interrupted. Completed work is saved; resume to retry the unfinished step.',retryable);
+      }
+    }
+    throw new OpenAIRequestError('AI request could not complete.',true);
   }
 
   private parse<T>(response: OpenAIResponse): T {
@@ -141,3 +161,4 @@ export class OpenAIIntelligence {
     };
   }
 }
+

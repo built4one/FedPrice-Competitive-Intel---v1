@@ -8,7 +8,7 @@ const canonical=(v:any):any=>Array.isArray(v)?v.map(canonical):v&&typeof v==='ob
 export const fingerprint=(value:unknown)=>crypto.createHash('sha256').update(JSON.stringify(canonical(value))).digest('hex');
 export function freezeAnalysis(input:OpportunityAnalysis):OpportunityAnalysis {
  const a=structuredClone(input);delete a.historicalReview;delete a.validation;delete a.storageVersion;delete a.frozenPrediction;
- const p=a.competitivePosition;if(!p?.target)throw new Error('Cannot freeze an incomplete recommendation.');
+ const p=a.competitivePosition;if(!p)throw new Error('Cannot freeze an assessment before pricing review.');
  a.frozenPrediction={id:a.id,hash:fingerprint(a),frozenAt:new Date().toISOString(),version:PREDICTION_VERSION,target:p.target,low:p.rangeLow,high:p.rangeHigh,classification:a.historical?'RETROSPECTIVE_APPROXIMATION':'LIVE_ASSESSMENT'};
  return a;
 }
@@ -27,7 +27,7 @@ export async function recordOutcome(store:RecordStore,workspace:string,id:string
  const types=['EVALUATED_PRICE','TOTAL_AWARD_VALUE','CONTRACT_CEILING','INITIAL_OBLIGATION','CURRENT_OBLIGATIONS','EVENTUAL_SPEND'];
  if(!types.includes(raw.actualValueType))throw new Error('Choose an actual value type.');
  const source=String(raw.actualSource||'').trim().slice(0,2000);
- const comparable=raw.sameBasis===true&&raw.actualValueType==='EVALUATED_PRICE'&&source.length>5;
+ const comparable=typeof a.frozenPrediction!.target==='number'&&a.frozenPrediction!.target>0&&raw.sameBasis===true&&raw.actualValueType==='EVALUATED_PRICE'&&source.length>5;
  const f=a.frozenPrediction!;
  const review=await store.get<any>(workspace,'historical-review',id);
  const classification=a.historical?(review?.value.predictionHash===f.hash?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION'):'LIVE_ASSESSMENT';
@@ -41,3 +41,4 @@ export async function validateHistorical(store:RecordStore,workspace:string,id:s
  if(!confirmed)throw new Error('Confirm the original deadline, source availability and evaluated scope were independently verified without consulting the outcome.');
  return (await store.put(workspace,'historical-review',id,{reviewer,reviewedAt:new Date().toISOString(),predictionHash:a.frozenPrediction!.hash,statement:'Original deadline, pre-cutoff availability, priced quantities and evaluation basis independently reviewed before outcome entry.'})).value;
 }
+

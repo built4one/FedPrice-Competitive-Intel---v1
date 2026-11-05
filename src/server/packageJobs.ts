@@ -1,14 +1,15 @@
 import { archivedRunIds } from './runArchive';
-import {auditHistoricalDocument,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
+import {auditHistoricalDocument,historicalScreeningChunks,combineHistoricalAudits,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
 import {freezeAndStore} from './predictions';
 import {preservePredictionExports} from './predictionExports';
 import crypto from 'node:crypto';
 import {officeImages,validateOfficeArchive} from './officeImages';
 import express, {type Express, type Request, type Response} from 'express';
 import {RecordStore,ConflictError} from './store';
-import {OpenAIIntelligence} from './openaiIntelligence';
+import {OpenAIIntelligence,OpenAIRequestError} from './openaiIntelligence';
 import {inventoryPackage,screenDocument,digest,type PackageFile} from './packageInventory';
 import {PACKAGE_LIMITS,type PackageJob,type PackageCoverage} from '../packageTypes';
+import type {HistoricalDocumentAudit} from '../historicalTypes';
 import type {AiAnalysisDraft,OpportunityAnalysis} from '../types';
 
 interface Dependencies {
@@ -60,7 +61,7 @@ export class PackageJobs {
     // A concurrent resume wins or loses this check; it cannot start after cancellation.
     await this.store.put(workspace,'package-job',id,{...job,status:'CANCELED'},row.version);
     for(const f of job.files)for(let i=0;i<f.chunks;i++)await this.store.remove(workspace,'package-chunk',`${id}:${f.id}:${i}`);
-    for(const d of job.documents)for(const kind of ['package-source','package-text'])await this.store.remove(workspace,kind,`${id}:${d.id}`);
+    for(const d of job.documents)for(const kind of ['package-source','package-text','package-reading'])await this.store.remove(workspace,kind,`${id}:${d.id}`);
     for(const kind of ['package-draft','historical-context','package-result'])await this.store.remove(workspace,kind,id);
     await this.store.remove(workspace,'package-job',id);
   }
@@ -86,6 +87,9 @@ export class PackageJobs {
         const doc=job.documents.filter(d=>d.status==='QUEUED').sort((a,b)=>Number(a.categories.includes('Wages'))-Number(b.categories.includes('Wages')))[0];
         if(doc){
           try{
+            const key=`${id}:${doc.id}`;
+            let reading=(await this.store.get<{text:string;visual:boolean;warning?:string;audits:HistoricalDocumentAudit[]}>(workspace,'package-reading',key))?.value;
+            if(!reading){
             const source=(await this.store.get<any>(workspace,'package-source',`${id}:${doc.id}`))!;
             const original=fromStored(source.value);
             if(/\.pdf$/i.test(original.originalname)&&!original.buffer.subarray(0,5).equals(Buffer.from('%PDF-')))throw new Error('PDF signature is invalid; this attachment is unreadable.');
@@ -103,31 +107,58 @@ export class PackageJobs {
             const embedded=await officeImages(original);
             if(embedded.file){text+='\n\nEMBEDDED VISUAL EVIDENCE:\n'+await (this.deps.visual||readVisual)(embedded.file);visual=true;}
             if(embedded.warning){doc.note=embedded.warning;job.warnings.push(`${doc.name}: ${embedded.warning}`);}
-            if(!text.trim())throw new Error('No usable text or visual content could be read.');
-            if(job.mode==='HISTORICAL'){
-              doc.audit=await (this.deps.audit||auditHistoricalDocument)(doc.name,text,job.cutoff!,job.originalPackageConfirmed);
-              if(doc.audit.decision==='EXCLUDED'){doc.status='EXCLUDED';doc.note=doc.audit.reason;}
+              reading={text,visual,warning:embedded.warning,audits:[]};
+              await this.put(workspace,'package-reading',key,reading);
             }
-            const screen=screenDocument(doc.name,text);
-            doc.categories=screen.categories;doc.priority=screen.priority;doc.references=screen.references;
-            if(doc.status!=='EXCLUDED')doc.status=screen.excerpted||embedded.warning?'EXCERPTS':visual?'VISUAL':'READ';
-            if(screen.excerpted)doc.note='All text screened; selected intact pricing-related sections used for detailed extraction. Unselected context may require review.';
-            await this.put(workspace,'package-text',`${id}:${doc.id}`,screen.text);
+            const {text,visual,warning}=reading;
+            if(!text.trim())throw new Error('No usable text or visual content could be read.');
+            let pending=false;
+            if(job.mode==='HISTORICAL'){
+              const chunks=historicalScreeningChunks(text);
+              const index=reading.audits.length;
+              if(index<chunks.length){
+                reading.audits.push(await (this.deps.audit||auditHistoricalDocument)(doc.name,chunks[index],job.cutoff!,job.originalPackageConfirmed));
+                await this.put(workspace,'package-reading',key,reading);
+              }
+              pending=reading.audits.length<chunks.length;
+              if(pending){
+                doc.note=`Historical screening: ${reading.audits.length} of ${chunks.length} sections saved. No content admitted until screening completes.`;
+                job.message=`Screening ${doc.name}: ${reading.audits.length} of ${chunks.length} sections saved.`;
+              }else{
+                doc.audit=combineHistoricalAudits(doc.name,text,job.cutoff!,reading.audits,job.originalPackageConfirmed);
+                if(doc.audit.decision==='EXCLUDED'){doc.status='EXCLUDED';doc.note=doc.audit.reason;}
+              }
+            }
+            if(!pending){
+              const screen=screenDocument(doc.name,text);
+              doc.categories=screen.categories;doc.priority=screen.priority;doc.references=screen.references;
+              if(doc.status!=='EXCLUDED'){
+                doc.status=screen.excerpted||warning?'EXCERPTS':visual?'VISUAL':'READ';
+                doc.note=[screen.excerpted?'Full document screened; selected scope, evaluation and pricing sections used for detailed extraction. Unselected context requires review.':'',warning,doc.audit?.reason].filter(Boolean).join(' ');
+              }
+              await this.put(workspace,'package-text',key,screen.text);
+            }
           }catch(error){
             const message=error instanceof Error?error.message:String(error);
-            if(/OpenAI|timeout|abort|429|quota|402|503|502/i.test(message))throw new Error(`Reading ${doc.name} paused: ${message}. Completed documents are saved; resume to retry this document.`);
+            if(error instanceof OpenAIRequestError||/OpenAI|timeout|abort|429|quota|402|503|502/i.test(message))throw new OpenAIRequestError(`Reading ${doc.name} paused: ${message}. Completed sections are saved; resume to retry the unfinished section.`,error instanceof OpenAIRequestError?error.retryable:/timeout|abort|429|503|502/i.test(message));
             doc.status='UNREADABLE';doc.note=message;job.warnings.push(`${doc.name}: ${message}`);
           }
-          job.cursor++;job.message=`Reviewed ${job.cursor} documents. ${job.documents.filter(d=>d.status==='QUEUED').length} remaining.`;
+          if(doc.status!=='QUEUED'){job.cursor++;job.message=`Reviewed ${job.cursor} documents. ${job.documents.filter(d=>d.status==='QUEUED').length} remaining.`;}
         }
         if(!job.documents.some(d=>d.status==='QUEUED')){job.stage='EXTRACTION';job.message='Reconciling scope, amendments, quantities and Government evaluation instructions.';}
       }else if(job.stage==='EXTRACTION'){
         // Original admitted and quarantined files remain separately retained for audit; only admitted text reaches extraction.
         const ordered=[...job.documents].filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status)).sort((a,b)=>b.priority-a.priority);
-        const files:PackageFile[]=[];let chars=0;
-        for(const doc of ordered){const text=(await this.store.get<string>(workspace,'package-text',`${id}:${doc.id}`))?.value||'';
-          if(chars+text.length>450000){doc.note=(doc.note||'')+' Detail review budget reached; this file was screened but not included in final extraction.';doc.status='EXCERPTS';job.warnings.push(`${doc.name}: detailed extraction deferred by context budget.`);continue;}
-          const buffer=Buffer.from(`SOURCE DOCUMENT: ${doc.name}\n${text}`);chars+=text.length;files.push({originalname:doc.name+'.txt',mimetype:'text/plain',size:buffer.length,buffer});}
+        const files:PackageFile[]=[];
+        const perDocumentBudget=Math.floor(450000/Math.max(1,ordered.length));
+        for(const doc of ordered){let text=(await this.store.get<string>(workspace,'package-text',`${id}:${doc.id}`))?.value||'';
+          if(text.length>perDocumentBudget){
+            text=screenDocument(doc.name,text,perDocumentBudget).text;
+            doc.note=(doc.note||'')+' Package context budget: selected sections included; full extraction coverage requires review.';
+            doc.status='EXCERPTS';
+            job.warnings.push(`${doc.name}: partial detailed extraction coverage.`);
+          }
+          const buffer=Buffer.from(`SOURCE DOCUMENT: ${doc.name}\n${text}`);files.push({originalname:doc.name+'.txt',mimetype:'text/plain',size:buffer.length,buffer});}
         if(!files.length)throw new Error('No readable content remains. Add a readable solicitation or pricing schedule.');
         const manifest=Buffer.from('PACKAGE INVENTORY — missing or unreadable files are gaps, never evidence that requirements are absent.\n'+JSON.stringify(job.documents.filter(d=>d.status!=='EXCLUDED')));
         files.push({originalname:'Package inventory.txt',mimetype:'text/plain',size:manifest.length,buffer:manifest});
@@ -157,7 +188,13 @@ export class PackageJobs {
           await this.put(workspace,'package-result',id,analysis);
           const completed=analysis.deal.planningInputs?.length||0;
           if(completed>completedBefore){job.message=`${completed} bounded price inputs saved. Completing the remaining basket.`;}
-          else throw new Error('Pricing review needed: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
+          else {
+            analysis.meta.warnings.push('Numerical recommendation unavailable: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
+            const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
+            const saved=await this.store.put(workspace,'analysis',analysis.id,frozen);
+            if(frozen.frozenPrediction)await preservePredictionExports(this.store,workspace,frozen);
+            job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message='Assessment saved. Numerical evidence is insufficient; review the scope, limitations and required inputs.';
+          }
         }else{
           const stored=await this.store.get(workspace,'analysis',analysis.id);
           const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
@@ -166,8 +203,8 @@ export class PackageJobs {
           job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message='Recommendation and source review saved. Open the executive brief.';
         }
       }
-      if(job.status!=='COMPLETE')job.status='READY';job.attempts=0;job.leaseUntil=undefined;
-    }catch(error){job.status='PAUSED';job.leaseUntil=undefined;job.message=error instanceof Error?error.message:'Processing paused. Your completed stages are saved.';}
+      if(job.status!=='COMPLETE')job.status='READY';job.attempts=0;job.retryable=false;job.leaseUntil=undefined;
+    }catch(error){job.status='PAUSED';job.leaseUntil=undefined;job.retryable=error instanceof OpenAIRequestError&&error.retryable;job.message=error instanceof Error?error.message:'Processing paused. Your completed stages are saved.';}
     const current=await this.get(workspace,id);
     if(current.value.status==='CANCELED')return current.value;
     // A lease protects one stage; optimistic version check prevents overwriting a newer worker.
@@ -193,3 +230,4 @@ export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependen
   app.get('/api/package-jobs/:id/result',route(async(req,res)=>{const j=(await jobs.get(req.principal.workspace,String(req.params.id))).value;const r=j.runId?await store.get<OpportunityAnalysis>(req.principal.workspace,'analysis',j.runId):await store.get<OpportunityAnalysis>(req.principal.workspace,'package-result',j.id);if(!r)throw new Error('The analysis has not reached a saved result yet.');res.json({data:{...r.value,...(j.runId?{storageVersion:r.version}:{})}});}));
   return jobs;
 }
+

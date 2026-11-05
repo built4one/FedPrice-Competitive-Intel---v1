@@ -50,12 +50,21 @@ export async function inventoryPackage(inputs:PackageFile[]) {
 }
 
 /** Screen all text. Preserve complete short documents; select intact relevant pages/paragraphs in long ones. */
-export function screenDocument(name:string,text:string){
+export function screenDocument(name:string,text:string,budget=160000){
   const tags=classifyDocument(name,text),references=[...new Set((text.match(/(?:attachment|appendix|exhibit)\s+[A-Z0-9][A-Z0-9 ._-]{0,45}/gi)||[]).map(v=>v.trim()))].slice(0,40);
-  if(text.length<=90000)return {...tags,text,references,excerpted:false};
-  const blocks=text.split(/(?=SOURCE: .*?\| PAGE \d+)|\n\s*\n/).flatMap(block=>block.length>60000?block.match(/[\s\S]{1,60000}/g)!:[block]);
-  const ranked=blocks.map((v,i)=>({v,i,score:classifyDocument('',v).priority+(i<3?5:0)})).sort((a,b)=>b.score-a.score||a.i-b.i);
+  if(text.length<=Math.min(90000,budget))return {...tags,text,references,excerpted:false};
+  const blocks=text.split(/(?=SOURCE: .*?\| PAGE \d+)|\n\s*\n/).flatMap(block=>block.length>Math.min(60000,budget)?(block.match(new RegExp(`[\\s\\S]{1,${Math.min(60000,budget)}}`,'g'))||[]):[block]);
+  let section='';
+  // Carry section headings onto continuation pages. Generic FAR price references
+  // must not crowd out the actual Section B, L and M at the ends of long RFPs.
+  const sectionWeights:Record<string,number>={B:60,C:40,F:40,L:60,M:70};
+  const ranked=blocks.map((v,i)=>{
+    const heading=/(?:^|\n)\s*SECTION\s+([A-M])\s*[-–—]/i.exec(v);
+    if(heading)section=heading[1].toUpperCase();
+    return {v,i,score:classifyDocument('',v).priority+(sectionWeights[section]||0)+(i<3?80:0)};
+  }).sort((a,b)=>b.score-a.score||a.i-b.i);
   const selected:Array<{v:string;i:number}>=[];let size=0;
-  for(const b of ranked){if(size+b.v.length>160000)continue;selected.push(b);size+=b.v.length;}
+  for(const b of ranked){if(size+b.v.length+(selected.length?2:0)>budget)continue;selected.push(b);size+=b.v.length+(selected.length>1?2:0);}
   return {...tags,text:selected.sort((a,b)=>a.i-b.i).map(b=>b.v).join('\n\n'),references,excerpted:true};
 }
+
