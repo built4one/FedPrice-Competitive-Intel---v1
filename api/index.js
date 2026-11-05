@@ -3223,7 +3223,7 @@ async function noteSamQuota(body) {
 // src/server/planningInputs.ts
 var fields = { id: { type: "STRING" }, label: { type: "STRING" }, kind: { type: "STRING", enum: ["LABOR_RATE", "UNIT_PRICE", "TOTAL"] }, quantity: { type: "NUMBER" }, unit: { type: "STRING" }, quantitySource: { type: "STRING" }, low: { type: "NUMBER" }, central: { type: "NUMBER" }, high: { type: "NUMBER" }, basis: { type: "STRING", enum: ["ANALOGY", "PLANNING_ASSUMPTION"] }, rationale: { type: "STRING" }, evidenceIds: { type: "ARRAY", items: { type: "STRING" } }, lowerCondition: { type: "STRING" }, upperCondition: { type: "STRING" } };
 var schema = { type: "OBJECT", properties: { inputs: { type: "ARRAY", items: { type: "OBJECT", properties: fields, required: Object.keys(fields) } } }, required: ["inputs"] };
-async function completePlanningInputs(deal, evidence, client = new OpenAIIntelligence(void 0, void 0, fetch, 75e3), batchSize = Infinity, cutoff) {
+async function completePlanningInputs(deal, evidence, client = new OpenAIIntelligence(void 0, void 0, fetch, 18e4, "low"), batchSize = Infinity, cutoff) {
   const model2 = buildLaborModel(deal, evidence);
   const missingRoles = [...new Set(model2.quantityRows.filter((q) => !model2.rows.some((r) => r.id === q.id)).map((q) => q.title))];
   const needs = [
@@ -5363,7 +5363,7 @@ async function analyzeFiles(files) {
     return analysis;
   }
 }
-installPackageRoutes(app, runStore, { normalize: normalizeAnalysisFiles, extract: extractSolicitation, research: enrichSolicitation, price: (analysis) => priceSolicitation(analysis, 12) });
+installPackageRoutes(app, runStore, { normalize: normalizeAnalysisFiles, extract: extractSolicitation, research: enrichSolicitation, price: (analysis) => priceSolicitation(analysis, 6) });
 app.get("/api/source-availability", async (_req, res) => res.json({ sam: await samAvailability() }));
 app.get("/api/health", (_req, res) => res.json({
   status: "ok",

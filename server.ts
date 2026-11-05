@@ -692,7 +692,7 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
   const analysis=await enrichSolicitation(await extractSolicitation(files),files.map(f=>f.originalname));
   try{return await priceSolicitation(analysis);}catch(error){analysis.meta.warnings.push(`Bounded price completion needs a retry: ${error instanceof Error?error.message:String(error)}`);return analysis;}
 }
-installPackageRoutes(app,runStore,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:analysis=>priceSolicitation(analysis,12)});
+installPackageRoutes(app,runStore,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:analysis=>priceSolicitation(analysis,6)});
 app.get('/api/source-availability',async(_req,res)=>res.json({sam:await samAvailability()}));
 
 app.get('/api/health', (_req, res) => res.json({

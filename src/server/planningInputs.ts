@@ -8,7 +8,7 @@ const fields={id:{type:'STRING'},label:{type:'STRING'},kind:{type:'STRING',enum:
 const schema:LegacySchema={type:'OBJECT',properties:{inputs:{type:'ARRAY',items:{type:'OBJECT',properties:fields,required:Object.keys(fields)}}},required:['inputs']};
 
 /** Bounded planning hypotheses are stored separately from source facts and rates. */
-export async function completePlanningInputs(deal:DealProfile,evidence:EvidenceItem[],client=new OpenAIIntelligence(undefined,undefined,fetch,75_000),batchSize=Infinity,cutoff?:string):Promise<string[]> {
+export async function completePlanningInputs(deal:DealProfile,evidence:EvidenceItem[],client=new OpenAIIntelligence(undefined,undefined,fetch,180_000,'low'),batchSize=Infinity,cutoff?:string):Promise<string[]> {
   const model=buildLaborModel(deal,evidence);
   const missingRoles=[...new Set(model.quantityRows.filter(q=>!model.rows.some(r=>r.id===q.id)).map(q=>q.title))];
   const needs=[...missingRoles.map(title=>({id:`PLAN-${title}`,label:title,kind:'LABOR_RATE',quantity:1,unit:'loaded USD/hour',quantitySource:deal.laborSignals.find(s=>s.title===title)?.section||model.quantityRows.find(q=>q.title===title)?.source})),
@@ -44,3 +44,4 @@ SOURCE EVIDENCE: ${JSON.stringify(promptEvidence)}`,schema);
   deal.planningInputs=inputs;
   return warnings;
 }
+
