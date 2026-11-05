@@ -34,7 +34,7 @@ function previewGuest(req: Request, res: Response): Principal | null {
   if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== '1'
     || process.env.VERCEL !== '1'
     || process.env.VERCEL_ENV !== 'preview'
-    || process.env.VERCEL_GIT_COMMIT_REF !== 'codex/atlas-team-guest-preview'
+    || !['codex/atlas-team-guest-preview','codex/historical-recovery'].includes(process.env.VERCEL_GIT_COMMIT_REF||'')
     || !process.env.VERCEL_URL?.endsWith('.vercel.app')
     || req.headers.host !== process.env.VERCEL_URL
     || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
@@ -114,3 +114,4 @@ export function installAuth(app: Express) {
     req.principal=user; next();
   });
 }
+

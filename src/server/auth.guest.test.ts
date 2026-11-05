@@ -63,6 +63,11 @@ test('preview guest access is login-free, isolated by browser, and disabled else
     assert.equal((await get('/api/whoami', a.cookie)).body.workspace, a.body.user.workspace);
     assert.equal((await get('/api/whoami', b.cookie)).body.workspace, b.body.user.workspace);
 
+    process.env.VERCEL_GIT_COMMIT_REF = 'codex/historical-recovery';
+    assert.equal((await get('/api/session',a.cookie)).body.user.workspace,a.body.user.workspace);
+    process.env.VERCEL_GIT_COMMIT_REF = 'unrelated-branch';
+    assert.equal((await get('/api/session',a.cookie)).body.user,null);
+    process.env.VERCEL_GIT_COMMIT_REF = 'codex/historical-recovery';
     process.env.VERCEL_ENV = 'production';
     assert.equal((await get('/api/session', a.cookie)).body.user, null);
     assert.notEqual((await get('/api/whoami', a.cookie)).status, 200);
@@ -78,3 +83,4 @@ test('preview guest access is login-free, isolated by browser, and disabled else
     }
   }
 });
+

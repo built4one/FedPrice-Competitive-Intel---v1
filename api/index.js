@@ -3320,7 +3320,7 @@ var sign = (text2) => crypto5.createHmac("sha256", process.env.SESSION_SECRET ||
 var guestCookieName = "fmp_preview_guest";
 var guestLifetimeSeconds = 7 * 24 * 60 * 60;
 function previewGuest(req, res) {
-  if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== "1" || process.env.VERCEL !== "1" || process.env.VERCEL_ENV !== "preview" || process.env.VERCEL_GIT_COMMIT_REF !== "codex/atlas-team-guest-preview" || !process.env.VERCEL_URL?.endsWith(".vercel.app") || req.headers.host !== process.env.VERCEL_URL || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
+  if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== "1" || process.env.VERCEL !== "1" || process.env.VERCEL_ENV !== "preview" || !["codex/atlas-team-guest-preview", "codex/historical-recovery"].includes(process.env.VERCEL_GIT_COMMIT_REF || "") || !process.env.VERCEL_URL?.endsWith(".vercel.app") || req.headers.host !== process.env.VERCEL_URL || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
   const cookie = /(?:^|;\s*)fmp_preview_guest=([^;]+)/.exec(req.headers.cookie || "")?.[1];
   let visitorId = null;
   if (cookie) {
