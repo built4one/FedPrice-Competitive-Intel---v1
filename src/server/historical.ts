@@ -70,7 +70,7 @@ export function historicalContext(cutoff:string,confirmed:boolean,documents:Pack
   documents:documents.map(d=>({id:d.id,name:d.name,sha256:d.sha256,audit:d.audit||{kind:'UNKNOWN',publishedAt:'',dateQuote:'',decision:'EXCLUDED',proof:'NONE',reason:'Document not admitted to historical analysis.'}})),excludedEvidence:[]};
 }
 /** Reject untraceable claims; a retrieval timestamp is never publication proof. */
-export function filterHistoricalDraft(draft:AiAnalysisDraft,context:HistoricalContext,texts:Map<string,string>):AiAnalysisDraft {
+export function filterHistoricalDraft<T extends Omit<AiAnalysisDraft,'marketAssessment'>>(draft:T,context:HistoricalContext,texts:Map<string,string>):T {
  const evidence:EvidenceItem[]=[];
  for(const e of draft.evidence||[]){
   const loc=`${e.sourceLabel||''} ${e.section||''}`;

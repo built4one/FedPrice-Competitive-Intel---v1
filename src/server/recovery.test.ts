@@ -67,3 +67,20 @@ test('a saved assessment without numerical evidence stays frozen and cannot rece
  const result=await recordOutcome(store,'assessment',saved.id,{actualValue:100,actualValueType:'EVALUATED_PRICE',actualSource:'Original evaluated price',sameBasis:true});
  assert.equal(result.validation?.comparableToPrediction,false);assert.equal(result.validation?.expectedErrorPct,null);
 });
+
+test('package completion saves a usable assessment and exports when numerical pricing is unsupported',async t=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
+ const bytes=Buffer.from('Original scope.');const jobs=new PackageJobs(store,{
+  normalize:async files=>files.map(f=>({...f,mimetype:'text/plain'})),
+  audit:async()=>({kind:'SOLICITATION',publishedAt:'',dateQuote:'',decision:'ADMITTED',proof:'ATTESTED_ORIGINAL',reason:'Original package attested.'}),
+  extract:async()=>{const a=pricedServicesFixture();a.deal.dueDate='2025-06-30';return a as any;},
+  research:async()=>pricedServicesFixture(),
+  price:async a=>({...a,competitivePosition:{...a.competitivePosition!,target:null,rangeLow:null,rangeHigh:null,status:'NOT_SUPPORTABLE'}}),
+ });
+ let j=await jobs.create('no-numbers',{files:[{name:'scope.txt',size:bytes.length}],mode:'HISTORICAL',cutoff:'2025-06-30',originalPackageConfirmed:true});await jobs.chunk('no-numbers',j.id,'input-0',0,bytes);
+ for(let i=0;i<10&&j.status!=='COMPLETE';i++)j=await jobs.advance('no-numbers',j.id);
+ assert.equal(j.status,'COMPLETE',j.message);assert.match(j.message,/Numerical evidence is insufficient/);
+ const saved=(await store.get<any>('no-numbers','analysis',j.runId!))!.value;
+ assert.ok(verifyFrozen(saved));assert.equal(saved.frozenPrediction.target,null);
+ assert.ok((await store.list('no-numbers','prediction-export')).length>=2);
+});

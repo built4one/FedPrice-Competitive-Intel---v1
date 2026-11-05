@@ -1173,7 +1173,14 @@ function reconcileBasket(input) {
     } else if (children.length) blockers.push(`Resolve aggregate row ${l.label} before combining it with individual price lines.`);
   }
   pricing.unitLines = lines.filter((l) => !removed.has(l.id));
-  const cs = pricing.components || [];
+  const cs = (pricing.components || []).filter((c) => {
+    const laborRollup = c.category === "OTHER" && c.amount == null && deal.laborSignals.some((s) => s.periods?.length) && /^labor (?:pricing scenario|schedule|subtotal|total|costs?)(?:\b|$)/i.test(c.label);
+    if (laborRollup) {
+      removed.add(c.id);
+      notes.push(`Excluded labor rollup ${c.label}; its documented hours are priced in the labor schedule.`);
+    }
+    return !laborRollup;
+  });
   for (const c of cs) {
     if (!/grand total|overall total|combined total|subtotal|total (?:contract|project|invitation)/i.test(c.label) || c.amount == null) continue;
     const children = cs.filter((x) => x !== c && x.amount != null && !/grand total|overall total|combined total|subtotal/i.test(x.label));
@@ -2596,6 +2603,87 @@ async function validateHistorical(store2, workspace, id, reviewer, confirmed) {
   return (await store2.put(workspace, "historical-review", id, { reviewer, reviewedAt: (/* @__PURE__ */ new Date()).toISOString(), predictionHash: a.frozenPrediction.hash, statement: "Original deadline, pre-cutoff availability, priced quantities and evaluation basis independently reviewed before outcome entry." })).value;
 }
 
+// src/server/workbookLabor.ts
+function reconcileWorkbookLabor(input, files) {
+  const draft = structuredClone(input);
+  const schedules = [];
+  for (const file of files) {
+    if (file.mimetype !== "text/plain") continue;
+    const text2 = file.buffer.toString("utf8");
+    const name = /SOURCE SPREADSHEET: ([^\n]+)/.exec(text2)?.[1]?.trim();
+    if (!name) continue;
+    for (const section of text2.split(/\nSHEET: /).slice(1)) {
+      const sheet = section.split("\n")[0].trim();
+      const rows = /* @__PURE__ */ new Map(), raw = /* @__PURE__ */ new Map();
+      for (const line of section.split("\n").slice(1)) {
+        for (const match of line.matchAll(/(?:^|\t)([A-Z]+)(\d+): ([^\t]*)/g)) {
+          const number = Number(match[2]);
+          if (!rows.has(number)) rows.set(number, /* @__PURE__ */ new Map());
+          rows.get(number).set(match[1], match[3].trim());
+          raw.set(number, line);
+        }
+      }
+      const headers = [...rows].filter(([, row]) => [...row.values()].some((v) => /^labor categor(?:y|ies)$/i.test(v)));
+      if (headers.length !== 1) continue;
+      const [headerNumber, header] = headers[0];
+      const titleColumn = [...header].find(([, v]) => /^labor categor(?:y|ies)$/i.test(v))[0];
+      const columnNumber = (column) => [...column].reduce((n, c) => n * 26 + c.charCodeAt(0) - 64, 0);
+      const hourColumns = [...header].filter(([, v]) => /^(?:estimated |total |evaluated )?hours$/i.test(v)).map(([c]) => c).sort((a, b) => columnNumber(a) - columnNumber(b));
+      if (!hourColumns.length) continue;
+      let startMonth = 0;
+      const periods = hourColumns.map((column) => {
+        const above = [...rows].filter(([n]) => n < headerNumber).map(([n, row]) => ({ n, value: row.get(column) || "" }));
+        const duration = above.map((r) => r.value.match(/\b(\d+)\s*[- ]?\s*months?\b/i)).find(Boolean);
+        const months = duration ? Number(duration[1]) : 0;
+        const label = above.map((r) => r.value).find((v) => /base|option|extension/i.test(v) && /month/i.test(v)) || "";
+        const result = { column, label, startMonth, months };
+        startMonth += months;
+        return result;
+      });
+      if (periods.some((p) => !p.months || p.months > 120) || startMonth !== draft.deal.performanceMonths) continue;
+      const signals2 = [];
+      let invalid = false;
+      for (const [rowNumber, row] of rows) {
+        if (rowNumber <= headerNumber) continue;
+        const title = row.get(titleColumn)?.trim();
+        if (!title || /^(?:labor |grand |sub)?total\b/i.test(title)) continue;
+        const values = periods.map((p) => row.get(p.column));
+        if (!values.some((v) => v !== void 0)) continue;
+        if (values.some((v) => !v || !/^\d[\d,]*(?:\.\d+)?$/.test(v))) {
+          invalid = true;
+          break;
+        }
+        const original = draft.deal.laborSignals.find((s) => s.title.trim().toLowerCase() === title.toLowerCase());
+        signals2.push({
+          ...original,
+          title,
+          quantity: void 0,
+          annualHours: void 0,
+          section: `${name} | ${sheet} | ${titleColumn}${rowNumber}`,
+          periods: periods.map((p, i) => ({
+            label: p.label,
+            startMonth: p.startMonth,
+            months: p.months,
+            quantity: Number(values[i].replace(/,/g, "")) === 0 ? 0 : 1,
+            totalHours: Number(values[i].replace(/,/g, "")),
+            section: `${name} | ${sheet} | ${p.column}${rowNumber} (documented row hours; quantity counts one worksheet line, not inferred FTE)`
+          }))
+        });
+        const id = `WORKBOOK-${name}-${sheet}-${rowNumber}`;
+        draft.evidence = draft.evidence.filter((e) => e.id !== id);
+        draft.evidence.push({ id, type: "SOLICITATION_FACT", sourceLabel: name, section: `${sheet} | row ${rowNumber}`, claim: `Documented evaluated hours for ${title}; every supplied base and option period retained.`, excerpt: raw.get(rowNumber), confidence: 100 });
+      }
+      if (!invalid && signals2.length) schedules.push({ signals: signals2, source: `${name} | ${sheet}`, months: startMonth });
+    }
+  }
+  if (schedules.length !== 1) return input;
+  const schedule = schedules[0];
+  draft.deal.laborSignals = schedule.signals;
+  draft.deal.laborModelComplete = true;
+  draft.deal.laborModelSource = `${schedule.source}: ${schedule.signals.length} documented rows across all ${schedule.months} stated performance months. Hours are read directly from worksheet cells; no headcount or annual hours inferred. Separately listed extension scenarios require evaluation-basis review.`;
+  return draft;
+}
+
 // src/server/packageJobs.ts
 import crypto4 from "node:crypto";
 
@@ -2968,7 +3056,7 @@ ${text2}`);
         if (!files.length) throw new Error("No readable content remains. Add a readable solicitation or pricing schedule.");
         const manifest = Buffer.from("PACKAGE INVENTORY \u2014 missing or unreadable files are gaps, never evidence that requirements are absent.\n" + JSON.stringify(job.documents.filter((d) => d.status !== "EXCLUDED")));
         files.push({ originalname: "Package inventory.txt", mimetype: "text/plain", size: manifest.length, buffer: manifest });
-        let draft = await this.deps.extract(files, { historical: job.mode === "HISTORICAL" });
+        let draft = reconcileWorkbookLabor(await this.deps.extract(files, { historical: job.mode === "HISTORICAL" }), files);
         if (job.mode === "HISTORICAL") {
           const context = historicalContext(job.cutoff, !!job.originalPackageConfirmed, job.documents);
           const texts = /* @__PURE__ */ new Map();
@@ -2988,7 +3076,19 @@ ${text2}`);
         job.stage = "PRICING";
         job.message = "Research saved. Completing bounded price assumptions and calculating the recommendation.";
       } else if (job.stage === "PRICING") {
-        const prior = (await this.store.get(workspace, "package-result", id)).value;
+        let prior = (await this.store.get(workspace, "package-result", id)).value;
+        const sourceFiles = [];
+        for (const d of job.documents.filter((d2) => ["READ", "EXCERPTS", "VISUAL"].includes(d2.status))) {
+          const text2 = (await this.store.get(workspace, "package-text", `${id}:${d.id}`))?.value || "";
+          const buffer = Buffer.from(text2);
+          sourceFiles.push({ originalname: d.name, mimetype: "text/plain", buffer, size: buffer.length });
+        }
+        prior = reconcileWorkbookLabor(prior, sourceFiles);
+        if (prior.historical) {
+          const texts = /* @__PURE__ */ new Map();
+          for (const d of job.documents) texts.set(d.id, (await this.store.get(workspace, "package-text", `${id}:${d.id}`))?.value || "");
+          prior = filterHistoricalDraft(prior, prior.historical, texts);
+        }
         const coverage = { documents: job.documents, warnings: job.warnings, receivedAt: job.receivedAt, mode: job.mode, freshness: { status: "UNVERIFIED", message: job.mode === "HISTORICAL" ? `Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.` : "Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency." } };
         prior.meta.packageCoverage = coverage;
         const completedBefore = prior.deal.planningInputs?.length || 0;

@@ -1,3 +1,4 @@
+import {reconcileWorkbookLabor} from './workbookLabor';
 import { archivedRunIds } from './runArchive';
 import {auditHistoricalDocument,historicalScreeningChunks,combineHistoricalAudits,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
 import {freezeAndStore} from './predictions';
@@ -162,7 +163,7 @@ export class PackageJobs {
         if(!files.length)throw new Error('No readable content remains. Add a readable solicitation or pricing schedule.');
         const manifest=Buffer.from('PACKAGE INVENTORY — missing or unreadable files are gaps, never evidence that requirements are absent.\n'+JSON.stringify(job.documents.filter(d=>d.status!=='EXCLUDED')));
         files.push({originalname:'Package inventory.txt',mimetype:'text/plain',size:manifest.length,buffer:manifest});
-        let draft=await this.deps.extract(files,{historical:job.mode==='HISTORICAL'});
+        let draft=reconcileWorkbookLabor(await this.deps.extract(files,{historical:job.mode==='HISTORICAL'}),files);
         if(job.mode==='HISTORICAL'){
           const context=historicalContext(job.cutoff!,!!job.originalPackageConfirmed,job.documents);
           const texts=new Map<string,string>();for(const d of ordered)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');
@@ -177,7 +178,11 @@ export class PackageJobs {
         if(job.mode==='HISTORICAL')analysis.historical=(await this.store.get<any>(workspace,'historical-context',id))!.value;
         await this.put(workspace,'package-result',id,analysis);job.stage='PRICING';job.message='Research saved. Completing bounded price assumptions and calculating the recommendation.';
       }else if(job.stage==='PRICING'){
-        const prior=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+        let prior=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+        const sourceFiles:PackageFile[]=[];
+        for(const d of job.documents.filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status))){const text=(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'';const buffer=Buffer.from(text);sourceFiles.push({originalname:d.name,mimetype:'text/plain',buffer,size:buffer.length});}
+        prior=reconcileWorkbookLabor(prior,sourceFiles);
+        if(prior.historical){const texts=new Map<string,string>();for(const d of job.documents)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');prior=filterHistoricalDraft(prior,prior.historical,texts);}
         
         const coverage:PackageCoverage={documents:job.documents,warnings:job.warnings,receivedAt:job.receivedAt,mode:job.mode,freshness:{status:'UNVERIFIED',message:job.mode==='HISTORICAL'?`Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.`:'Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency.'}};
         prior.meta.packageCoverage=coverage;

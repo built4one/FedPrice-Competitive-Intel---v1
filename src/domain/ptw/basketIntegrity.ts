@@ -20,7 +20,11 @@ export function reconcileBasket(input:DealProfile):{deal:DealProfile;notes:strin
   else if(children.length)blockers.push(`Resolve aggregate row ${l.label} before combining it with individual price lines.`);
  }
  pricing.unitLines=lines.filter(l=>!removed.has(l.id));
- const cs=pricing.components||[];
+ const cs=(pricing.components||[]).filter(c=>{
+  const laborRollup=c.category==='OTHER'&&c.amount==null&&deal.laborSignals.some(s=>s.periods?.length)&&/^labor (?:pricing scenario|schedule|subtotal|total|costs?)(?:\b|$)/i.test(c.label);
+  if(laborRollup){removed.add(c.id);notes.push(`Excluded labor rollup ${c.label}; its documented hours are priced in the labor schedule.`);}
+  return !laborRollup;
+ });
  for(const c of cs){
   if(!/grand total|overall total|combined total|subtotal|total (?:contract|project|invitation)/i.test(c.label)||c.amount==null)continue;
   const children=cs.filter(x=>x!==c&&x.amount!=null&&!/grand total|overall total|combined total|subtotal/i.test(x.label));
@@ -33,3 +37,4 @@ export function reconcileBasket(input:DealProfile):{deal:DealProfile;notes:strin
  deal.planningInputs=deal.planningInputs?.filter(p=>!removed.has(p.id));
  return{deal,notes,blockers};
 }
+
