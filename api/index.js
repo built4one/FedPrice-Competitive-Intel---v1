@@ -2405,7 +2405,7 @@ function cutoffDate(value) {
   return value;
 }
 var outcomeNamePattern = /\b(?:award notice|award results|bid results|debriefing report|source selection decision|protest decision)\b/i;
-var outcomePattern = /\b(?:winning (?:bid|price|offer|vendor)\s+(?:was|is|of)\b|winning (?:bid|price|offer|vendor)\s*:|successful (?:offeror|bidder)\s*(?:was|is|:)|(?:contract|award)\s+(?:was\s+|has been\s+)?awarded to)\b/i;
+var outcomePattern = /\b(?:winning (?:bid|price|offer)\s*(?:(?:was|is|of)\s+|:\s*)(?:USD\s*|US\s*\$\s*|\$\s*)?\d|(?:contract|award)\s+(?:was\s+|has been\s+)?awarded to\b)/i;
 var hasOutcome = (name, text2) => outcomeNamePattern.test(name) || outcomePattern.test(text2);
 function historicalScreeningChunks(text2) {
   const chunks = [];

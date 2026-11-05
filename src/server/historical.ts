@@ -10,7 +10,7 @@ export function cutoffDate(value:unknown):string {
 // Generic solicitation clauses (debriefing, post-award duties, basis of award)
 // describe the procurement process; they do not disclose an actual result.
 const outcomeNamePattern=/\b(?:award notice|award results|bid results|debriefing report|source selection decision|protest decision)\b/i;
-const outcomePattern=/\b(?:winning (?:bid|price|offer|vendor)\s+(?:was|is|of)\b|winning (?:bid|price|offer|vendor)\s*:|successful (?:offeror|bidder)\s*(?:was|is|:)|(?:contract|award)\s+(?:was\s+|has been\s+)?awarded to)\b/i;
+const outcomePattern=/\b(?:winning (?:bid|price|offer)\s*(?:(?:was|is|of)\s+|:\s*)(?:USD\s*|US\s*\$\s*|\$\s*)?\d|(?:contract|award)\s+(?:was\s+|has been\s+)?awarded to\b)/i;
 const hasOutcome=(name:string,text:string)=>outcomeNamePattern.test(name)||outcomePattern.test(text);
 export function historicalScreeningChunks(text:string):string[]{
  // Overlap protects dates and outcome statements crossing a batch boundary.

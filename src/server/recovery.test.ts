@@ -9,10 +9,10 @@ import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {freezeAndStore,verifyFrozen,recordOutcome} from './predictions';
 
 test('ordinary award clauses do not quarantine an original RFP, but actual results do',async()=>{
- const text='Issued: June 27, 2025. Post-award responsibilities apply. Offerors may request debriefing. The winning price will be evaluated under Section M.';
+ const text='Issued: June 27, 2025. Post-award responsibilities apply. Offerors may request debriefing. The winning price will be evaluated under Section M. The successful offeror is responsible for delivery. The winning price is determined by the evaluation process.';
  const client={interpret:async()=>({kind:'SOLICITATION',publishedAt:'2025-06-27',dateQuote:'Issued: June 27, 2025.'})};
  assert.equal((await auditHistoricalDocument('RFP.pdf',text,'2025-06-30',false,client as any)).decision,'ADMITTED');
- for(const result of ['The winning price was $100.','The contract was awarded to Acme.'])assert.equal(screenHistoricalDocument('RFP.pdf',text+result,'2025-06-30',{kind:'SOLICITATION'},true).decision,'EXCLUDED');
+ for(const result of ['The winning price was $100.','The winning price: $100.','The contract was awarded to Acme.'])assert.equal(screenHistoricalDocument('RFP.pdf',text+result,'2025-06-30',{kind:'SOLICITATION'},true).decision,'EXCLUDED');
  assert.equal(screenHistoricalDocument('Award notice.txt',text,'2025-06-30',{kind:'SOLICITATION'},true).decision,'EXCLUDED');
 });
 
