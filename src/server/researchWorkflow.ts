@@ -12,7 +12,7 @@ import {documentDate} from './historical';
 import {normalizeGaps} from '../domain/analysisQuality';
 import {laborFamily} from '../domain/laborMatching';
 
-export const RESEARCH_VERSION='evidence-research-1.2';
+export const RESEARCH_VERSION='evidence-research-1.3';
 const tasks=['SOLICITATION','COMPETITION','BENCHMARKS'] as const;
 export type ResearchTask=typeof tasks[number];
 export interface ResearchSource {
@@ -35,6 +35,22 @@ interface Dependencies {
 }
 const flat=(s:string)=>s.replace(/\s+/g,' ').trim();
 const sha=(s:string|Buffer)=>crypto.createHash('sha256').update(s).digest('hex');
+// Reviewed discovery leads, not pre-admitted evidence or stored rate amounts.
+// Every run still downloads the original and validates its date and excerpts.
+export function referenceRateCatalogs(deal:AiAnalysisDraft['deal'],cutoff?:string){
+ const technical=/information|\bIT\b|software|network|system|cyber|cloud|collab|computer|developer|engineer/i.test([deal.title,...deal.laborSignals.map(s=>`${s.title} ${s.duties||''}`)].join(' '));
+ return technical&&(!cutoff||cutoff>='2025-05-01')?[{name:'ManTech MAS pricelist PS-0021, May 2025',url:'https://www.mantech.com/wp-content/uploads/2025/05/GSAPricelist47QTCA21D0031PS0021.pdf'}]:[];
+}
+export function supplementalAttachment(name:string,providedNames:string[]){
+ const norm=(s:string)=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
+ if(providedNames.some(n=>norm(n)===norm(name)))return false;
+ const qa=/question|answer|clarification/i.test(name);
+ if(!qa&&/rfp|solicitation|conform|synopsis/i.test(name)&&providedNames.some(n=>/rfp|solicitation|conform|synopsis/i.test(n)))return false;
+ const revision=(s:string)=>Number(s.match(/(?:amend(?:ment)?\s*|amd\s*|a)(0*\d{1,4})(?=\D|$)/i)?.[1]||0);
+ const supplied=Math.max(0,...providedNames.map(revision));
+ if(!qa&&/amend|amd/i.test(name)&&revision(name)&&revision(name)<=supplied)return false;
+ return /question|answer|clarification|amend|rfp|solicitation|conform/i.test(name);
+}
 export function privateAddress(address:string):boolean {
  const a=address.toLowerCase().replace(/^\[|\]$/g,'');
  if(a.includes(':'))return !/^2[0-9a-f]{3}:|^3[0-9a-f]{3}:/.test(a);
@@ -129,6 +145,10 @@ function contextText(text:string,deal:AiAnalysisDraft['deal']){
  if(text.length<=150000)return text;
  const needles=['price','rate','hour','evaluation','ATO','incumbent','52.217',...deal.laborSignals.map(s=>s.title)];
  const blocks=text.split(/\n\s*\n|SOURCE: .*?PAGE \d+/).filter(s=>needles.some(n=>s.toLowerCase().includes(n.toLowerCase())));
+ // Numeric rate tables must not be crowded out by early boilerplate or long
+ // qualification descriptions in a several-hundred-page schedule catalog.
+ const score=(s:string)=>Math.min(40,(s.match(/\$\s*\d|\d{2,3}\.\d{2}/g)||[]).length)*3+deal.laborSignals.filter(r=>s.toLowerCase().includes(laborFamily(r.pwsTitle||r.title).toLowerCase())).length*8;
+ blocks.sort((a,b)=>score(b)-score(a));
  return text.slice(0,10000)+'\n[Selected relevant sections; full source retained]\n'+blocks.join('\n').slice(0,110000)+'\n'+text.slice(-30000);
 }
 export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,options:ResearchOptions,deps:Dependencies){
@@ -156,14 +176,13 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
    const cited=new Set(found.sources.map(s=>s.url));
    const urls=[...(found.analysis.urls||[]).filter(u=>cited.has(u)),...found.sources.map(s=>s.url)].filter(primaryUrl);
    const candidates:Array<{url:string;name:string;publishedAt?:string;publicationBasis?:string}>=[];
+   if(task==='BENCHMARKS')candidates.push(...referenceRateCatalogs(draft.deal,options.cutoff));
    if(task==='SOLICITATION'){
     const samRefs=[options.opportunityRef,...urls].filter((v):v is string=>Boolean(v&&/^https:\/\/sam.gov\//.test(v)));
     for(const url of [...new Set(samRefs)].slice(0,2)){
      try{let rfpSeen=false;for(const a of await (deps.samAttachments||publicSamAttachments)(url,options.cutoff)){
-      const norm=(s:string)=>s.toLowerCase().replace(/[^a-z0-9]/g,'');
+      if(!supplementalAttachment(a.name,options.providedNames))continue;
       if(/rfp|solicitation|conform/i.test(a.name)&&!/question|answer/i.test(a.name)){if(rfpSeen)continue;rfpSeen=true;}
-      if(options.providedNames.some(n=>norm(n)===norm(a.name)))continue;
-      if(!/question|answer|amend|rfp|solicitation|conform/i.test(a.name))continue;
       candidates.push({...a,publicationBasis:`SAM attachment version posted ${a.publishedAt}; ${a.url}`});
      }}catch(e){state.warnings.push(`SAM attachment discovery: ${e instanceof Error?e.message:String(e)}`);}
     }

@@ -481,11 +481,25 @@ function qualificationMatch(signal, record) {
 }
 
 // src/server/researchWorkflow.ts
-var RESEARCH_VERSION = "evidence-research-1.2";
+var RESEARCH_VERSION = "evidence-research-1.3";
 var tasks = ["SOLICITATION", "COMPETITION", "BENCHMARKS"];
 var newResearchState = () => ({ version: RESEARCH_VERSION, index: 0, phase: "DISCOVER", cursor: 0, sources: [], attempts: [], warnings: [], done: false });
 var flat = (s) => s.replace(/\s+/g, " ").trim();
 var sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
+function referenceRateCatalogs(deal, cutoff) {
+  const technical = /information|\bIT\b|software|network|system|cyber|cloud|collab|computer|developer|engineer/i.test([deal.title, ...deal.laborSignals.map((s) => `${s.title} ${s.duties || ""}`)].join(" "));
+  return technical && (!cutoff || cutoff >= "2025-05-01") ? [{ name: "ManTech MAS pricelist PS-0021, May 2025", url: "https://www.mantech.com/wp-content/uploads/2025/05/GSAPricelist47QTCA21D0031PS0021.pdf" }] : [];
+}
+function supplementalAttachment(name, providedNames) {
+  const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (providedNames.some((n) => norm(n) === norm(name))) return false;
+  const qa = /question|answer|clarification/i.test(name);
+  if (!qa && /rfp|solicitation|conform|synopsis/i.test(name) && providedNames.some((n) => /rfp|solicitation|conform|synopsis/i.test(n))) return false;
+  const revision = (s) => Number(s.match(/(?:amend(?:ment)?\s*|amd\s*|a)(0*\d{1,4})(?=\D|$)/i)?.[1] || 0);
+  const supplied = Math.max(0, ...providedNames.map(revision));
+  if (!qa && /amend|amd/i.test(name) && revision(name) && revision(name) <= supplied) return false;
+  return /question|answer|clarification|amend|rfp|solicitation|conform/i.test(name);
+}
 function privateAddress(address) {
   const a = address.toLowerCase().replace(/^\[|\]$/g, "");
   if (a.includes(":")) return !/^2[0-9a-f]{3}:|^3[0-9a-f]{3}:/.test(a);
@@ -626,6 +640,8 @@ function contextText(text2, deal) {
   if (text2.length <= 15e4) return text2;
   const needles = ["price", "rate", "hour", "evaluation", "ATO", "incumbent", "52.217", ...deal.laborSignals.map((s) => s.title)];
   const blocks = text2.split(/\n\s*\n|SOURCE: .*?PAGE \d+/).filter((s) => needles.some((n) => s.toLowerCase().includes(n.toLowerCase())));
+  const score = (s) => Math.min(40, (s.match(/\$\s*\d|\d{2,3}\.\d{2}/g) || []).length) * 3 + deal.laborSignals.filter((r) => s.toLowerCase().includes(laborFamily(r.pwsTitle || r.title).toLowerCase())).length * 8;
+  blocks.sort((a, b) => score(b) - score(a));
   return text2.slice(0, 1e4) + "\n[Selected relevant sections; full source retained]\n" + blocks.join("\n").slice(0, 11e4) + "\n" + text2.slice(-3e4);
 }
 async function advanceResearch(draft, state, options, deps) {
@@ -664,19 +680,18 @@ ${JSON.stringify(keys)}`);
       const cited = new Set(found.sources.map((s) => s.url));
       const urls = [...(found.analysis.urls || []).filter((u) => cited.has(u)), ...found.sources.map((s) => s.url)].filter(primaryUrl);
       const candidates = [];
+      if (task === "BENCHMARKS") candidates.push(...referenceRateCatalogs(draft.deal, options.cutoff));
       if (task === "SOLICITATION") {
         const samRefs = [options.opportunityRef, ...urls].filter((v) => Boolean(v && /^https:\/\/sam.gov\//.test(v)));
         for (const url of [...new Set(samRefs)].slice(0, 2)) {
           try {
             let rfpSeen = false;
             for (const a of await (deps.samAttachments || publicSamAttachments)(url, options.cutoff)) {
-              const norm = (s) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+              if (!supplementalAttachment(a.name, options.providedNames)) continue;
               if (/rfp|solicitation|conform/i.test(a.name) && !/question|answer/i.test(a.name)) {
                 if (rfpSeen) continue;
                 rfpSeen = true;
               }
-              if (options.providedNames.some((n) => norm(n) === norm(a.name))) continue;
-              if (!/question|answer|amend|rfp|solicitation|conform/i.test(a.name)) continue;
               candidates.push({ ...a, publicationBasis: `SAM attachment version posted ${a.publishedAt}; ${a.url}` });
             }
           } catch (e) {

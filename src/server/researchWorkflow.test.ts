@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,type ResearchSource} from './researchWorkflow';
+import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,referenceRateCatalogs,supplementalAttachment,type ResearchSource} from './researchWorkflow';
 import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {historicalContext,filterHistoricalDraft} from './historical';
 import {PackageJobs} from './packageJobs';
@@ -84,11 +84,25 @@ test('all admitted clarifications reach one scope reconciliation and later check
  await advanceResearch(draft,state,options,deps as any);assert.equal(extractions,2);assert.deepEqual(state.reconciledSourceIds,['one','two']);
 });
 test('failed benchmark leads trigger a bounded different-source search rather than silently completing',async()=>{
- const draft=pricedServicesFixture() as any,state=newResearchState();state.index=2;state.phase='READ';state.discoveryPasses={BENCHMARKS:1};
+ const draft=pricedServicesFixture() as any,state=newResearchState();draft.deal.title='Grounds maintenance';draft.deal.laborSignals=[];state.index=2;state.phase='READ';state.discoveryPasses={BENCHMARKS:1};
  state.sources=[{...source(),status:'FAILED',reason:'Source HTTP 404.'}];
  const prompts:string[]=[];const deps={client:{research:async(p:string)=>{prompts.push(p);return{analysis:{urls:[]},sources:[]};},interpret:async()=>raw()},normalize:async(f:any)=>f,extract:async()=>draft};
  const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
  await advanceResearch(draft,state,opts,deps as any);assert.equal(state.phase,'DISCOVER');assert.equal(state.done,false);
  await advanceResearch(draft,state,opts,deps as any);assert.match(prompts[0],/RECOVERY SEARCH/);assert.match(prompts[0],/Source HTTP 404/);
  await advanceResearch(draft,state,opts,deps as any);assert.equal(state.done,true);assert.equal(prompts.length,1,'only one recovery search is permitted');
+});
+test('reviewed rate discovery leads respect scope and cutoff without admitting prices',()=>{
+ const deal=pricedServicesFixture().deal;
+ deal.title='Enterprise IT systems support';assert.equal(referenceRateCatalogs(deal,'2025-06-30').length,1);
+ assert.equal(referenceRateCatalogs(deal,'2025-04-30').length,0);
+ assert.equal('publishedAt' in referenceRateCatalogs(deal,'2025-06-30')[0],false,'catalog date must still be proved from retrieved original');
+ const unrelated={...deal,title:'Grounds maintenance',laborSignals:[]};assert.equal(referenceRateCatalogs(unrelated,'2025-06-30').length,0);
+});
+test('research cannot replace a supplied RFP with an older base or earlier amendment',()=>{
+ const supplied=['Alliant 3 RFP A0012 - Version12.pdf','SF30 Amend 0012 Alliant 3.pdf'];
+ assert.equal(supplementalAttachment('Alliant 3 RFP 47QTCB24R0009.pdf',supplied),false);
+ assert.equal(supplementalAttachment('SF30 Amend 0001 Alliant 3.pdf',supplied),false);
+ assert.equal(supplementalAttachment('SF30 Amend 0013 Alliant 3.pdf',supplied),true);
+ assert.equal(supplementalAttachment('Questions and Answers June 2025.pdf',supplied),true);
 });
