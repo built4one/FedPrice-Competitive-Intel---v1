@@ -21,7 +21,7 @@ export interface ResearchSource {
 export interface ResearchState {
  version:typeof RESEARCH_VERSION;index:number;phase:'DISCOVER'|'READ'|'INTERPRET'|'RECONCILE';cursor:number;
  sources:ResearchSource[];attempts:Array<{task:ResearchTask;status:'RUNNING'|'COMPLETE'|'FAILED';message:string}>;
- warnings:string[];done:boolean;
+ warnings:string[];done:boolean;reconciledSourceIds?:string[];
 }
 export const newResearchState=():ResearchState=>({version:RESEARCH_VERSION,index:0,phase:'DISCOVER',cursor:0,sources:[],attempts:[],warnings:[],done:false});
 export interface ResearchOptions {cutoff?:string;historical?:boolean;opportunityRef?:string;providedNames:string[];originalFiles:PackageFile[]}
@@ -130,11 +130,13 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
  if(state.done)return{draft,state};
  const task=tasks[state.index];
  if(state.phase==='RECONCILE'){
-  const additions=state.sources.filter(s=>s.status==='ADMITTED'&&s.audit?.kind==='SOLICITATION'&&s.text).map(s=>{const buffer=Buffer.from(`SOURCE DOCUMENT: ${s.name}\n${s.text}`);return{originalname:s.name+'.txt',mimetype:'text/plain',buffer,size:buffer.length};});
+  const admitted=state.sources.filter(s=>s.status==='ADMITTED'&&s.audit?.kind==='SOLICITATION'&&s.text);
+  const additions=admitted.map(s=>{const buffer=Buffer.from(`SOURCE DOCUMENT: ${s.name}\n${s.text}`);return{originalname:s.name+'.txt',mimetype:'text/plain',buffer,size:buffer.length};});
   const evidence=draft.evidence,incumbent=draft.incumbent,competitors=draft.competitors;
   draft=await deps.extract([...options.originalFiles,...additions],{historical:options.historical});
   draft.evidence=[...draft.evidence,...evidence].filter((e,i,a)=>a.findIndex(v=>v.id===e.id)===i);
   if(incumbent.name)draft.incumbent=incumbent;draft.competitors=[...draft.competitors,...competitors];
+  state.reconciledSourceIds=admitted.map(s=>s.id);
   state.phase='READ';return{draft:reconcileSourceFacts(draft),state};
  }
  if(state.phase==='DISCOVER'){
@@ -166,7 +168,12 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
  }
  const source=state.sources.find(s=>s.task===task&&s.status==='DISCOVERED');
  if(state.phase==='READ'){
-  if(!source){state.index++;state.phase='DISCOVER';state.done=state.index>=tasks.length;const a=state.attempts.find(a=>a.task===task);if(a&&a.status!=='FAILED'){a.status='COMPLETE';a.message=`${state.sources.filter(s=>s.task===task&&s.status==='ADMITTED').length} source versions admitted; limitations retained.`;}return{draft,state};}
+  if(!source){
+   // Reconcile collected clarifications once per batch, rather than extracting
+   // the entire original RFP again for each individual source. Source IDs keep
+   // older in-flight checkpoints compatible and catch later clarifications.
+   if(state.sources.some(s=>s.status==='ADMITTED'&&s.audit?.kind==='SOLICITATION'&&s.text&&!state.reconciledSourceIds?.includes(s.id))){state.phase='RECONCILE';return{draft,state};}
+   state.index++;state.phase='DISCOVER';state.done=state.index>=tasks.length;const a=state.attempts.find(a=>a.task===task);if(a&&a.status!=='FAILED'){a.status='COMPLETE';a.message=`${state.sources.filter(s=>s.task===task&&s.status==='ADMITTED').length} source versions admitted; limitations retained.`;}return{draft,state};}
   try{
    const got=await(deps.read||readPublicDocument)(source.url);source.sha256=sha(got.buffer);
    let text:string;
@@ -190,9 +197,8 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
   const refs=(name:string)=>items.filter(e=>flat(e.excerpt||'').toLowerCase().includes(name.toLowerCase())).map(e=>e.id);
   if(parsed.incumbent?.name&&refs(parsed.incumbent.name).length)draft.incumbent={name:parsed.incumbent.name,status:'IDENTIFIED',strengths:parsed.incumbent.strengths,vulnerabilities:parsed.incumbent.vulnerabilities,transitionRisk:'UNKNOWN',confidence:60,sourceRefs:refs(parsed.incumbent.name)};
   for(const c of parsed.competitors)if(refs(c.name).length)draft.competitors.push({name:c.name,role:'POSSIBLE_BIDDER',pricingPosture:'UNKNOWN',rationale:`${c.rationale} Bid intent: ${c.bidIntent}.`,differentiators:[],risks:['Bid intent and actual offer remain unverified.'],sourceRefs:refs(c.name),confidence:50,evidenceType:'EXTERNAL_SOURCE'});
-  if(parsed.kind==='SOLICITATION')state.phase='RECONCILE';
   draft.gaps=normalizeGaps([...draft.gaps,...parsed.gaps.map(question=>({question,impact:'Research source requires review.',priority:'MEDIUM' as const}))]);
   draft=reconcileSourceFacts(draft);
  }
- if(state.phase!=='RECONCILE')state.phase='READ';return{draft,state};
+ state.phase='READ';return{draft,state};
 }

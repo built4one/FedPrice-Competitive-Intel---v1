@@ -61,3 +61,19 @@ test('research fetch boundary rejects private addresses including IPv4-mapped IP
  for(const a of ['127.0.0.1','10.2.3.4','169.254.169.254','172.16.0.1','192.168.1.1','100.100.100.200','::1','::ffff:127.0.0.1','fc00::1'])assert.equal(privateAddress(a),true,a);
  assert.equal(privateAddress('8.8.8.8'),false);
 });
+test('all admitted clarifications reach one scope reconciliation and later checkpoints remain resumable',async()=>{
+ const draft=pricedServicesFixture() as any,state=newResearchState();
+ state.phase='READ';state.sources=['one','two'].map(id=>({...source(),id,task:'SOLICITATION' as const,status:'DISCOVERED' as const,url:`https://example.gov/${id}`}));
+ let extractions=0;const seen:string[][]=[];
+ const deps={client:{research:async()=>{throw Error('Discovery already saved');},interpret:async()=>({...raw(),kind:'SOLICITATION'})},read:async()=>({buffer:Buffer.from(source().text!+' Original source clarification with dated procurement requirements.'),type:'text/plain'}),normalize:async(f:any)=>f,extract:async(files:any[])=>{extractions++;seen.push(files.map(f=>f.originalname));return draft;}};
+ const options={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
+ for(let i=0;i<4;i++)await advanceResearch(draft,state,options,deps as any);
+ assert.equal(extractions,0,'both sources must be read before the full scope is reconciled');
+ await advanceResearch(draft,state,options,deps as any);assert.equal(state.phase,'RECONCILE');
+ await advanceResearch(draft,state,options,deps as any);assert.equal(extractions,1);assert.equal(seen[0].length,2);
+ await advanceResearch(draft,state,options,deps as any);assert.equal(state.index,1);
+ // An older deployed checkpoint may already have reconciled one source.
+ state.index=0;state.phase='READ';state.reconciledSourceIds=['one'];
+ await advanceResearch(draft,state,options,deps as any);assert.equal(state.phase,'RECONCILE');
+ await advanceResearch(draft,state,options,deps as any);assert.equal(extractions,2);assert.deepEqual(state.reconciledSourceIds,['one','two']);
+});
