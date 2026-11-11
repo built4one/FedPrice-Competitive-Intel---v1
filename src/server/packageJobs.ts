@@ -77,6 +77,11 @@ export class PackageJobs {
     job={...job,status:'WORKING',leaseUntil:Date.now()+330_000,attempts:job.attempts+1};
     const locked=await this.store.put(workspace,'package-job',id,job,row.version);
     try{
+      if(['PRICING','STRATEGY'].includes(job.stage)){
+        const saved=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))?.value;
+        const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
+        if(saved&&research&&rateRechecks(research,saved).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';}
+      }
       if(job.stage==='UPLOADING'){
         if(job.receivedChunks.length!==job.files.reduce((n,f)=>n+f.chunks,0))throw new Error('Reselect the original files to finish uploading the remaining chunks.');
         job.stage='INVENTORY';job.message='Upload complete. Opening and inventorying the package.';
@@ -205,8 +210,6 @@ export class PackageJobs {
         }
       }else if(job.stage==='PRICING'){
         let prior=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
-        const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
-        if(research&&rateRechecks(research,prior).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';job.status='READY';job.attempts=0;job.retryable=false;job.leaseUntil=undefined;return(await this.store.put(workspace,'package-job',id,job,locked.version)).value;}
         const sourceFiles:PackageFile[]=[];
         for(const d of job.documents.filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status))){const text=(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'';const buffer=Buffer.from(text);sourceFiles.push({originalname:d.name,mimetype:'text/plain',buffer,size:buffer.length});}
         prior=reconcileWorkbookLabor(prior,sourceFiles);

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,referenceRateCatalogs,supplementalAttachment,sourceVersionAfterCutoff,rateRechecks,RATE_EXTRACTION_VERSION,type ResearchSource} from './researchWorkflow';
+import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,referenceRateCatalogs,supplementalAttachment,sourceVersionAfterCutoff,rateRechecks,RATE_EXTRACTION_VERSION,type ResearchState,type ResearchSource} from './researchWorkflow';
 import {reconcileSourceFacts} from '../domain/sourceConsistency';
 import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {historicalContext,filterHistoricalDraft} from './historical';
@@ -128,4 +128,13 @@ test('a named incumbent fact and exact Q&A excerpt repair missing model referenc
  a.evidence.push({id:'QA-47',type:'SOLICITATION_FACT',sourceLabel:'Official Q&A',section:'Q47',claim:`Example Software LLC is the incumbent for ${a.deal.solicitationNumber}.`,excerpt:'Example Software LLC - predecessor contract ABC123',confidence:80});
  const r=reconcileSourceFacts(a);assert.equal(r.incumbent.name,'Example Software LLC');assert.ok(r.incumbent.sourceRefs.includes('QA-47'));
  a.evidence=a.evidence.filter((e:any)=>e.id!=='QA-47');assert.equal(reconcileSourceFacts(a).incumbent.name,'');
+});
+test('a resumed strategy checkpoint rechecks saved unusable rate evidence before freezing',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());let strategyCalls=0;
+ const a=pricedServicesFixture();const jobs=new PackageJobs(store,{normalize:async f=>f,extract:async()=>a as any,research:async()=>a,price:async x=>enforceAuthoritativeAnalysis(x),intelligenceStep:async(d,s)=>({draft:d,state:{...s,done:s.sources.length===0}}),strategy:async()=>{strategyCalls++;return{status:'UNAVAILABLE',version:'test',reason:'Not expected before rate recheck'};}});
+ const bytes=Buffer.from('Public solicitation scope.');let job=await jobs.create('resumed-rate',{mode:'LIVE',files:[{name:'scope.txt',size:bytes.length}]});await jobs.chunk('resumed-rate',job.id,'input-0',0,bytes);
+ for(let n=0;n<10&&job.stage!=='STRATEGY';n++)job=await jobs.advance('resumed-rate',job.id);
+ assert.equal(job.stage,'STRATEGY');const row=(await store.get<ResearchState>('resumed-rate','package-research',job.id))!;
+ await store.put('resumed-rate','package-research',job.id,{...newResearchState(),done:true,index:3,sources:[{...source(),status:'ADMITTED'}]},row.version);
+ job=await jobs.advance('resumed-rate',job.id);assert.equal(job.stage,'RESEARCH');assert.equal(strategyCalls,0);assert.equal(job.runId,undefined);
 });

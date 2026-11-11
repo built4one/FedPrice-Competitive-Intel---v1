@@ -3338,6 +3338,18 @@ var PackageJobs = class {
     job = { ...job, status: "WORKING", leaseUntil: Date.now() + 33e4, attempts: job.attempts + 1 };
     const locked = await this.store.put(workspace, "package-job", id, job, row.version);
     try {
+      if (["PRICING", "STRATEGY"].includes(job.stage)) {
+        const saved = (await this.store.get(workspace, "package-result", id))?.value;
+        const research = (await this.store.get(workspace, "package-research", id))?.value;
+        if (saved && research && rateRechecks(research, saved).length) {
+          research.done = false;
+          research.index = 2;
+          research.phase = "READ";
+          await this.put(workspace, "package-research", id, research);
+          job.stage = "RESEARCH";
+          job.message = "Rechecking saved rate excerpts before completing the price recommendation.";
+        }
+      }
       if (job.stage === "UPLOADING") {
         if (job.receivedChunks.length !== job.files.reduce((n, f) => n + f.chunks, 0)) throw new Error("Reselect the original files to finish uploading the remaining chunks.");
         job.stage = "INVENTORY";
@@ -3514,20 +3526,6 @@ ${text2}`);
         }
       } else if (job.stage === "PRICING") {
         let prior = (await this.store.get(workspace, "package-result", id)).value;
-        const research = (await this.store.get(workspace, "package-research", id))?.value;
-        if (research && rateRechecks(research, prior).length) {
-          research.done = false;
-          research.index = 2;
-          research.phase = "READ";
-          await this.put(workspace, "package-research", id, research);
-          job.stage = "RESEARCH";
-          job.message = "Rechecking saved rate excerpts before completing the price recommendation.";
-          job.status = "READY";
-          job.attempts = 0;
-          job.retryable = false;
-          job.leaseUntil = void 0;
-          return (await this.store.put(workspace, "package-job", id, job, locked.version)).value;
-        }
         const sourceFiles = [];
         for (const d of job.documents.filter((d2) => ["READ", "EXCERPTS", "VISUAL"].includes(d2.status))) {
           const text2 = (await this.store.get(workspace, "package-text", `${id}:${d.id}`))?.value || "";
@@ -3538,8 +3536,8 @@ ${text2}`);
         if (prior.historical) {
           const texts = /* @__PURE__ */ new Map();
           for (const d of job.documents) texts.set(d.id, (await this.store.get(workspace, "package-text", `${id}:${d.id}`))?.value || "");
-          const research2 = (await this.store.get(workspace, "package-research", id))?.value;
-          for (const source of research2?.sources || []) if (source.text) texts.set(source.id, source.text);
+          const research = (await this.store.get(workspace, "package-research", id))?.value;
+          for (const source of research?.sources || []) if (source.text) texts.set(source.id, source.text);
           prior = filterHistoricalDraft(prior, prior.historical, texts);
         }
         const coverage = { documents: job.documents, warnings: job.warnings, receivedAt: job.receivedAt, mode: job.mode, freshness: { status: "UNVERIFIED", message: job.mode === "HISTORICAL" ? `Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.` : "Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency." } };
