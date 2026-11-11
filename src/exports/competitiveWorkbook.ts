@@ -2,9 +2,18 @@ import type ExcelJS from 'exceljs';
 import type { OpportunityAnalysis } from '../types';
 import { buildLaborModel } from '../domain/ptw/laborModel';
 import { sourceConflictStatus } from '../domain/sourceConsistency';
+import {strategyStatements} from '../domain/ptw/strategy';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
+  const strategic=workbook.addWorksheet('Strategic Assessment');
+  strategic.columns=[{header:'Section',key:'section',width:38},{header:'Assessment',key:'text',width:100},{header:'Claim type',key:'kind',width:24},{header:'Evidence IDs',key:'evidence',width:45},{header:'Validation action',key:'validation',width:90}];
+  if(analysis.ptwStrategy?.status==='DRAFT'){
+    const s=analysis.ptwStrategy.strategy;
+    strategic.addRow({section:'Selected approach',text:s.options.find(o=>o.id===s.recommendation.selectedOptionId)?.name,kind:'UNREVIEWED'});
+    strategyStatements(s).forEach(({section,statement})=>strategic.addRow({section,text:statement.text,kind:statement.kind,evidence:statement.evidenceIds.join('; '),validation:statement.validationAction}));
+    s.missingInputs.forEach(text=>strategic.addRow({section:'Required validation input',text}));
+  }else strategic.addRow({section:'Strategy status',text:analysis.ptwStrategy?.reason||'Strategic assessment has not been generated for this legacy result.'});
   if(analysis.meta.intelligence){
     const research=workbook.addWorksheet('Research Coverage');
     research.columns=[{header:'Task / source',key:'name',width:45},{header:'Status',key:'status',width:20},{header:'Source date',key:'date',width:18},{header:'URL',key:'url',width:85},{header:'Evidence limitation',key:'reason',width:110}];
@@ -90,7 +99,7 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i],componentColumn=['H','D','I'][i];strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!${componentColumn}2:${componentColumn}${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
   const decision=workbook.getWorksheet('Executive Decision')!;
   decision.addRows([
-    {field:'Recommended PTW',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},
+    {field:'Recommended market position',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},
     {field:'Competitive corridor lower',value:p.rangeLow == null ? 'Not established' : {formula:"'Competitive Strategies'!D2",result:p.rangeLow}},
     {field:'Competitive corridor upper',value:p.rangeHigh == null ? 'Not established' : {formula:"'Competitive Strategies'!D4",result:p.rangeHigh}},
     {field:'Range meaning',value:p.rangeMeaning},

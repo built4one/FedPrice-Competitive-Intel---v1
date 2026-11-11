@@ -2693,6 +2693,14 @@ function createExecutivePdf(raw) {
 // src/exports/competitiveWorkbook.ts
 function addCompetitiveWorkbook(workbook, analysis) {
   const p = analysis.competitivePosition;
+  const strategic = workbook.addWorksheet("Strategic Assessment");
+  strategic.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "text", width: 100 }, { header: "Claim type", key: "kind", width: 24 }, { header: "Evidence IDs", key: "evidence", width: 45 }, { header: "Validation action", key: "validation", width: 90 }];
+  if (analysis.ptwStrategy?.status === "DRAFT") {
+    const s = analysis.ptwStrategy.strategy;
+    strategic.addRow({ section: "Selected approach", text: s.options.find((o) => o.id === s.recommendation.selectedOptionId)?.name, kind: "UNREVIEWED" });
+    strategyStatements(s).forEach(({ section, statement: statement2 }) => strategic.addRow({ section, text: statement2.text, kind: statement2.kind, evidence: statement2.evidenceIds.join("; "), validation: statement2.validationAction }));
+    s.missingInputs.forEach((text2) => strategic.addRow({ section: "Required validation input", text: text2 }));
+  } else strategic.addRow({ section: "Strategy status", text: analysis.ptwStrategy?.reason || "Strategic assessment has not been generated for this legacy result." });
   if (analysis.meta.intelligence) {
     const research = workbook.addWorksheet("Research Coverage");
     research.columns = [{ header: "Task / source", key: "name", width: 45 }, { header: "Status", key: "status", width: 20 }, { header: "Source date", key: "date", width: 18 }, { header: "URL", key: "url", width: 85 }, { header: "Evidence limitation", key: "reason", width: 110 }];

@@ -5,6 +5,7 @@ import JSZip from 'jszip';
 import { pricedServicesFixture } from '../testFixtures/pricedServices';
 import { addCompetitiveWorkbook } from './competitiveWorkbook';
 import { enforceAuthoritativeAnalysis } from '../domain/marketPosition/authoritative';
+import {ptwStrategyFixture} from '../testFixtures/ptwStrategy';
 
 test('workbook exposes distribution, role and total formulas with matching cached calculations',async()=>{
   const a=pricedServicesFixture(),p=a.competitivePosition!,w=new ExcelJS.Workbook();
@@ -68,4 +69,14 @@ test('partial workbook retains unpriced source quantities and separates subtotal
   assert.match(String(w.getWorksheet('Competitive Strategies')!.getCell('A3').value),/PARTIAL SUBTOTAL/);
   assert.equal(w.getWorksheet('Competitive Strategies')!.getCell('E3').value,'NO');
   assert.equal(w.getWorksheet('Executive Decision')!.getCell('B2').value,'No complete quantity/rate basis');
+});
+test('Excel retains the selected strategic approach, evidence and validation actions after serialization',async()=>{
+ const a=pricedServicesFixture(),{strategy}=ptwStrategyFixture();
+ a.ptwStrategy={status:'DRAFT',version:'test',inputHash:'fixture',generatedAt:new Date().toISOString(),reviewStatus:'UNREVIEWED',strategy};
+ const w=new ExcelJS.Workbook();w.addWorksheet('Executive Decision').columns=[{header:'Field',key:'field'},{header:'Value',key:'value'}];addCompetitiveWorkbook(w,a);
+ const bytes=await w.xlsx.writeBuffer(),read=new ExcelJS.Workbook();await read.xlsx.load(bytes as never);
+ const sheet=read.getWorksheet('Strategic Assessment')!;assert.ok(sheet);
+ assert.equal(sheet.getCell('B2').value,strategy.options.find(o=>o.id===strategy.recommendation.selectedOptionId)!.name);
+ const serialized=JSON.stringify(sheet.getSheetValues());assert.ok(serialized.includes(strategy.recommendation.rationale.text));assert.ok(serialized.includes(strategy.recommendation.rationale.evidenceIds[0]));
+ assert.ok(serialized.includes(strategy.recommendation.rationale.validationAction));
 });
