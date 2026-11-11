@@ -83,3 +83,12 @@ test('all admitted clarifications reach one scope reconciliation and later check
  await advanceResearch(draft,state,options,deps as any);assert.equal(state.phase,'RECONCILE');
  await advanceResearch(draft,state,options,deps as any);assert.equal(extractions,2);assert.deepEqual(state.reconciledSourceIds,['one','two']);
 });
+test('failed benchmark leads trigger a bounded different-source search rather than silently completing',async()=>{
+ const draft=pricedServicesFixture() as any,state=newResearchState();state.index=2;state.phase='READ';state.discoveryPasses={BENCHMARKS:1};
+ state.sources=[{...source(),status:'FAILED',reason:'Source HTTP 404.'}];
+ const prompts:string[]=[];const deps={client:{research:async(p:string)=>{prompts.push(p);return{analysis:{urls:[]},sources:[]};},interpret:async()=>raw()},normalize:async(f:any)=>f,extract:async()=>draft};
+ const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
+ await advanceResearch(draft,state,opts,deps as any);assert.equal(state.phase,'DISCOVER');assert.equal(state.done,false);
+ await advanceResearch(draft,state,opts,deps as any);assert.match(prompts[0],/RECOVERY SEARCH/);assert.match(prompts[0],/Source HTTP 404/);
+ await advanceResearch(draft,state,opts,deps as any);assert.equal(state.done,true);assert.equal(prompts.length,1,'only one recovery search is permitted');
+});

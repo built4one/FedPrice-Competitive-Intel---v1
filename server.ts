@@ -1,4 +1,4 @@
-import {advanceResearch} from './src/server/researchWorkflow.js';
+import {advanceResearch,RESEARCH_VERSION} from './src/server/researchWorkflow.js';
 import { archivedRunIds, installArchiveRoutes } from './src/server/runArchive.js';
 import {predictionExport} from './src/server/predictionExports.js';
 import {blindHistoricalInput} from './src/server/historical.js';
@@ -714,6 +714,8 @@ app.get('/api/health', (_req, res) => res.json({
   samConfigured: Boolean(process.env.SAM_API_KEY),
   model,
   calculationEngine: MARKET_POSITION_ENGINE_VERSION,
+  researchWorkflow: RESEARCH_VERSION,
+  buildCommit: process.env.VERCEL_GIT_COMMIT_SHA || 'local',
 }));
 
 function legacyNarrative(raw: any): DecisionNarrative {
