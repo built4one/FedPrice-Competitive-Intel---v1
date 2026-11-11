@@ -77,9 +77,12 @@ export async function publicSamAttachments(value:string,cutoff?:string){
   .map((a:any)=>({name:String(a.name),publishedAt:a.postedDate.slice(0,10),url:`https://sam.gov/api/prod/opps/v3/opportunities/resources/files/${a.resourceId}/download`}))
   .sort((a:any,b:any)=>Number(/question|answer|clarification/i.test(b.name))-Number(/question|answer|clarification/i.test(a.name))||b.publishedAt.localeCompare(a.publishedAt));
 }
+const researchEvidenceSchema=z.object({claim:z.string().min(5).max(1800),excerpt:z.string().min(8).max(4000),section:z.string().max(350).default(''),numeric:z.record(z.unknown()).optional()});
 const extractedSchema=z.object({
  kind:z.enum(['SOLICITATION','MARKET','TARGET_OUTCOME','UNKNOWN']),publishedAt:z.string().default(''),dateQuote:z.string().default(''),
- evidence:z.array(z.object({claim:z.string().min(5).max(1800),excerpt:z.string().min(8).max(4000),section:z.string().max(350).default(''),numeric:z.record(z.unknown()).optional()})).max(45).default([]),
+ // A malformed individual claim is rejected without discarding independently
+ // supported claims from the same source or stopping the entire package.
+ evidence:z.array(z.unknown()).max(45).default([]).transform(rows=>rows.flatMap(row=>{const parsed=researchEvidenceSchema.safeParse(row);return parsed.success?[parsed.data]:[];})),
  incumbent:z.object({name:z.string(),strengths:z.array(z.string()).default([]),vulnerabilities:z.array(z.string()).default([])}).optional(),
  competitors:z.array(z.object({name:z.string(),rationale:z.string(),bidIntent:z.enum(['CONFIRMED','POSSIBLE','UNKNOWN']).default('UNKNOWN')})).max(8).default([]),
  gaps:z.array(z.string().max(1000)).max(10).default([]),
@@ -117,6 +120,8 @@ export function admitExtractedEvidence(raw:unknown,source:ResearchSource,cutoff?
   items.push({id:`${source.id}-${i+1}`,type:p.kind==='SOLICITATION'?'SOLICITATION_FACT':'EXTERNAL_SOURCE',sourceLabel:source.name,section:v.section||'Source excerpt',claim:v.claim,excerpt:v.excerpt,url:source.url,confidence:60,retrievedAt:new Date().toISOString(),numeric,
    historicalProof:cutoff?{documentId:source.id,publishedAt:date,sha256:source.sha256||'',quote:source.audit.dateQuote}:undefined});
  }
+ const supplied=(raw as {evidence?:unknown[]})?.evidence?.length||0;
+ if(supplied>items.length)source.reason+=` ${supplied-items.length} unsupported or malformed claims rejected.`;
  return{items,parsed:p};
 }
 function contextText(text:string,deal:AiAnalysisDraft['deal']){

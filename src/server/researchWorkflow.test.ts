@@ -25,6 +25,12 @@ test('future revisions, target outcomes and unsupported dates never become histo
  assert.equal(admitExtractedEvidence({...raw(),publishedAt:'2025-07-01',dateQuote:'Revised July 1, 2025.'},s,'2025-06-30').items.length,0,'old metadata cannot override a later document revision');
  assert.equal(supportedDate('2020-03-01','Issued February 30, 2020.','Issued February 30, 2020.'),false);
 });
+test('malformed research rows cannot crash a package or promote unsupported claims',()=>{
+ const good=raw();
+ const s=source();const result=admitExtractedEvidence({...good,evidence:[...good.evidence,{claim:'No usable excerpt',excerpt:''},{claim:'Too short an excerpt',excerpt:'$126'},null,{...good.evidence[0],numeric:{...good.evidence[0].numeric,originalValue:999}}]},s,'2025-06-30');
+ assert.equal(result.items.length,1);assert.equal(result.items[0].numeric?.originalValue,126);
+ assert.match(s.reason!,/4 unsupported or malformed claims rejected/);
+});
 test('historical filtering retains a source-backed incumbent and earlier award facts',()=>{
  const a=pricedServicesFixture(),name='Example Incumbent';
  const text=`Issued May 1, 2025. ${a.deal.solicitationNumber}: incumbent ${name}. Predecessor contract awarded to ${name} for $1000.`;
