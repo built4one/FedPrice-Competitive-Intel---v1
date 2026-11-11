@@ -751,7 +751,7 @@ ${JSON.stringify(keys)}`);
       }
       const admitted = state.sources.filter((s) => s.task === task && s.status === "ADMITTED");
       const usable = task === "BENCHMARKS" ? admitted.some((s) => draft.evidence.some((e) => e.url === s.url && e.numeric && ["HOURLY_CEILING_RATE", "TOTAL_AWARD_VALUE"].includes(e.numeric.valueType))) : admitted.length > 0;
-      const passes = state.discoveryPasses?.[task] || state.attempts.filter((a2) => a2.task === task).length;
+      const passes = state.discoveryPasses?.[task] || state.attempts.filter((a) => a.task === task).length;
       if (!usable && passes < 2) {
         state.phase = "DISCOVER";
         state.warnings.push(`${task}: no usable evidence from the first search; trying different original sources.`);
@@ -760,8 +760,7 @@ ${JSON.stringify(keys)}`);
       state.index++;
       state.phase = "DISCOVER";
       state.done = state.index >= tasks.length;
-      const a = state.attempts.find((a2) => a2.task === task);
-      if (a && a.status !== "FAILED") {
+      for (const a of state.attempts.filter((a2) => a2.task === task && a2.status === "RUNNING")) {
         a.status = "COMPLETE";
         a.message = `${state.sources.filter((s) => s.task === task && s.status === "ADMITTED").length} source versions admitted; limitations retained.`;
       }

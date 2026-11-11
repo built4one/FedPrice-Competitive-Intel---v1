@@ -220,7 +220,7 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
    const usable=task==='BENCHMARKS'?admitted.some(s=>draft.evidence.some(e=>e.url===s.url&&e.numeric&&['HOURLY_CEILING_RATE','TOTAL_AWARD_VALUE'].includes(e.numeric.valueType))):admitted.length>0;
    const passes=state.discoveryPasses?.[task]||state.attempts.filter(a=>a.task===task).length;
    if(!usable&&passes<2){state.phase='DISCOVER';state.warnings.push(`${task}: no usable evidence from the first search; trying different original sources.`);return{draft,state};}
-   state.index++;state.phase='DISCOVER';state.done=state.index>=tasks.length;const a=state.attempts.find(a=>a.task===task);if(a&&a.status!=='FAILED'){a.status='COMPLETE';a.message=`${state.sources.filter(s=>s.task===task&&s.status==='ADMITTED').length} source versions admitted; limitations retained.`;}return{draft,state};}
+   state.index++;state.phase='DISCOVER';state.done=state.index>=tasks.length;for(const a of state.attempts.filter(a=>a.task===task&&a.status==='RUNNING')){a.status='COMPLETE';a.message=`${state.sources.filter(s=>s.task===task&&s.status==='ADMITTED').length} source versions admitted; limitations retained.`;}return{draft,state};}
   try{
    const got=await(deps.read||readPublicDocument)(source.url);source.sha256=sha(got.buffer);
    let text:string;

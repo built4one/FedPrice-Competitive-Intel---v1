@@ -91,7 +91,7 @@ test('failed benchmark leads trigger a bounded different-source search rather th
  const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
  await advanceResearch(draft,state,opts,deps as any);assert.equal(state.phase,'DISCOVER');assert.equal(state.done,false);
  await advanceResearch(draft,state,opts,deps as any);assert.match(prompts[0],/RECOVERY SEARCH/);assert.match(prompts[0],/Source HTTP 404/);
- await advanceResearch(draft,state,opts,deps as any);assert.equal(state.done,true);assert.equal(prompts.length,1,'only one recovery search is permitted');
+ await advanceResearch(draft,state,opts,deps as any);assert.equal(state.done,true);assert.equal(prompts.length,1,'only one recovery search is permitted');assert.equal(state.attempts.some(a=>a.status==='RUNNING'),false);
 });
 test('reviewed rate discovery leads respect scope and cutoff without admitting prices',()=>{
  const deal=pricedServicesFixture().deal;
