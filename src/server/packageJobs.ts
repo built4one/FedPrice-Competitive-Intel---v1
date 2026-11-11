@@ -46,6 +46,21 @@ export class PackageJobs {
     return (await this.store.put(workspace,'package-job',job.id,job)).value;
   }
   async get(workspace:string,id:string){const row=await this.store.get<PackageJob>(workspace,'package-job',id);if(!row)throw new Error('Package not found in your workspace.');return row;}
+  async replay(workspace:string,id:string){
+    const original=(await this.get(workspace,id)).value;
+    if(original.status!=='COMPLETE')throw new Error('Finish the existing package before creating a new assessment from its saved evidence.');
+    const savedDraft=(await this.store.get<AiAnalysisDraft>(workspace,'package-draft',id))?.value;
+    if(!savedDraft)throw new Error('This older result has no saved extraction. Upload its original documents for a new assessment.');
+    const created=await this.create(workspace,{files:original.files,mode:original.mode,cutoff:original.cutoff,originalPackageConfirmed:original.originalPackageConfirmed,opportunityRef:original.opportunityRef});
+    const allowed=new Set(['deal','marketAssessment','competitors','incumbent','evidence','gaps','narrative','affordability','gaoFindings','preRfpSignals']);
+    const draft=structuredClone(Object.fromEntries(Object.entries(savedDraft).filter(([key])=>allowed.has(key)))) as unknown as AiAnalysisDraft;
+    draft.deal.planningInputs=[];
+    await this.put(workspace,'package-draft',created.id,draft);
+    for(const kind of ['package-research','historical-context']){const value=(await this.store.get(workspace,kind,id))?.value;if(value)await this.put(workspace,kind,created.id,structuredClone(value));}
+    for(const doc of original.documents)for(const kind of ['package-text','package-source']){const value=(await this.store.get(workspace,kind,`${id}:${doc.id}`))?.value;if(value)await this.put(workspace,kind,`${created.id}:${doc.id}`,value);}
+    const job:PackageJob={...created,label:`Reassessment: ${original.label}`,stage:'RESEARCH',documents:structuredClone(original.documents),warnings:[...original.warnings],cursor:original.cursor,message:'Saved original evidence copied into a new assessment. The prior prediction and exports remain unchanged.'};
+    await this.put(workspace,'package-job',job.id,job);return job;
+  }
   async chunk(workspace:string,id:string,fileId:string,index:number,buffer:Buffer){
     const row=await this.get(workspace,id),job=row.value,file=job.files.find(f=>f.id===fileId);
     if(job.stage!=='UPLOADING'||job.status==='CANCELED'||!file||!Number.isSafeInteger(index)||index<0||index>=file.chunks)throw new Error('Invalid upload chunk.');
@@ -258,6 +273,9 @@ export class PackageJobs {
     return files;
   }
   private async finish(workspace:string,job:PackageJob,analysis:OpportunityAnalysis){
+    // Older resumed checkpoints may retain RUNNING on a completed search
+    // attempt; a finished evidence workflow must not export a stale live status.
+    if(analysis.meta.intelligence?.complete)for(const task of analysis.meta.intelligence.tasks)if(task.status==='RUNNING'){task.status='COMPLETE';task.message='Search completed; source admission decisions and limitations are recorded below.';}
     const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
     const stored=await this.store.get(workspace,'analysis',analysis.id);
     const saved=stored||await this.store.put(workspace,'analysis',analysis.id,frozen);
@@ -278,6 +296,7 @@ export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependen
   app.get('/api/package-jobs/:id',route(async(req,res)=>{res.json({data:(await jobs.get(req.principal.workspace,String(req.params.id))).value});}));
   app.put('/api/package-jobs/:id/chunks/:file/:index',express.raw({type:'application/octet-stream',limit:'2100kb'}),route(async(req,res)=>{res.json({data:await jobs.chunk(req.principal.workspace,String(req.params.id),String(req.params.file),Number(req.params.index),req.body)});}));
   app.post('/api/package-jobs/:id/advance',route(async(req,res)=>{res.json({data:await jobs.advance(req.principal.workspace,String(req.params.id))});}));
+  app.post('/api/package-jobs/:id/replay',route(async(req,res)=>{res.json({data:await jobs.replay(req.principal.workspace,String(req.params.id))});}));
   app.delete('/api/package-jobs/:id',route(async(req,res)=>{await jobs.deletePaused(req.principal.workspace,String(req.params.id));res.json({deleted:true});}));
   app.post('/api/package-jobs/:id/cancel',route(async(req,res)=>{res.json({data:await jobs.cancel(req.principal.workspace,String(req.params.id))});}));
   app.get('/api/package-jobs/:id/result',route(async(req,res)=>{const j=(await jobs.get(req.principal.workspace,String(req.params.id))).value;const r=j.runId?await store.get<OpportunityAnalysis>(req.principal.workspace,'analysis',j.runId):await store.get<OpportunityAnalysis>(req.principal.workspace,'package-result',j.id);if(!r)throw new Error('The analysis has not reached a saved result yet.');res.json({data:{...r.value,...(j.runId?{storageVersion:r.version}:{})}});}));

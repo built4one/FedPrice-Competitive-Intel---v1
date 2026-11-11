@@ -164,6 +164,7 @@ function contextText(text:string,deal:AiAnalysisDraft['deal']){
 }
 export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,options:ResearchOptions,deps:Dependencies){
  const client=deps.client||new OpenAIIntelligence(undefined,undefined,fetch,150_000,'low');
+ draft=reconcileSourceFacts(draft);
  if(state.done&&rateRechecks(state,draft).length){state.done=false;state.index=2;state.phase='READ';}
  if(state.done)return{draft,state};
  state.version=RESEARCH_VERSION;

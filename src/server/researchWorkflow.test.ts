@@ -55,6 +55,7 @@ test('automatic strategy must succeed before a new prediction is frozen',async(t
  const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
  let strategyCalls=0;
  const {analysis,strategy}=ptwStrategyFixture();analysis.deal.dueDate='2025-06-30';analysis.evidence.find(e=>e.id==='SOL-EVAL')!.sourceLabel='scope.txt';
+ analysis.meta.intelligence={version:'legacy-checkpoint',complete:true,tasks:[{task:'COMPETITION',status:'RUNNING',message:'Saved search checkpoint'}],sources:[]};
  const jobs=new PackageJobs(store,{normalize:async f=>f,extract:async()=>analysis as any,research:async()=>analysis,price:async a=>enforceAuthoritativeAnalysis(a),audit:async()=>({kind:'SOLICITATION',publishedAt:'2025-05-01',dateQuote:'Issued May 1, 2025.',decision:'ADMITTED',proof:'DATED_DOCUMENT',reason:'Original'}),strategy:async a=>{strategyCalls++;if(strategyCalls===1)return{status:'UNAVAILABLE',version:'test',reason:'Temporary strategy service failure'};return synthesizePtwStrategy(a,{interpret:async<T>()=>strategy as T});}});
  const bytes=Buffer.from('Issued May 1, 2025. '+analysis.evidence.find(e=>e.id==='SOL-EVAL')!.claim);
  let job=await jobs.create('strategy-test',{mode:'HISTORICAL',cutoff:'2025-06-30',files:[{name:'scope.txt',size:bytes.length}],originalPackageConfirmed:true});await jobs.chunk('strategy-test',job.id,'input-0',0,bytes);
@@ -63,6 +64,7 @@ test('automatic strategy must succeed before a new prediction is frozen',async(t
  job=await jobs.advance('strategy-test',job.id);assert.equal(job.status,'PAUSED');assert.equal(await store.get('strategy-test','prediction',analysis.id),null);
  job=await jobs.advance('strategy-test',job.id);assert.equal(job.status,'COMPLETE',job.message);
  const frozen=await store.get<any>('strategy-test','prediction',analysis.id);assert.equal(frozen?.value.ptwStrategy?.status,'DRAFT');
+ assert.equal(frozen?.value.meta.intelligence.tasks[0].status,'COMPLETE');
 });
 test('research fetch boundary rejects private addresses including IPv4-mapped IPv6',()=>{
  for(const a of ['127.0.0.1','10.2.3.4','169.254.169.254','172.16.0.1','192.168.1.1','100.100.100.200','::1','::ffff:127.0.0.1','fc00::1'])assert.equal(privateAddress(a),true,a);
@@ -137,4 +139,21 @@ test('a resumed strategy checkpoint rechecks saved unusable rate evidence before
  assert.equal(job.stage,'STRATEGY');const row=(await store.get<ResearchState>('resumed-rate','package-research',job.id))!;
  await store.put('resumed-rate','package-research',job.id,{...newResearchState(),done:true,index:3,sources:[{...source(),status:'ADMITTED'}]},row.version);
  job=await jobs.advance('resumed-rate',job.id);assert.equal(job.stage,'RESEARCH');assert.equal(strategyCalls,0);assert.equal(job.runId,undefined);
+});
+test('reassessment copies only owned source evidence into a new job and preserves frozen results',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());const a=pricedServicesFixture();
+ const jobs=new PackageJobs(store,{normalize:async f=>f,extract:async()=>a as any,research:async()=>a,price:async x=>x});
+ const bytes=Buffer.from('Original public source');const original=await jobs.create('owner',{files:[{name:'scope.txt',size:bytes.length}]});
+ const row=await jobs.get('owner',original.id);await store.put('owner','package-job',original.id,{...original,status:'COMPLETE',stage:'COMPLETE',runId:a.id,documents:[{id:'doc-1',name:'scope.txt',bytes:bytes.length,status:'READ',priority:5,categories:['Scope']}]} as any,row.version);
+ await store.put('owner','package-text',`${original.id}:doc-1`,bytes.toString());
+ await store.put('owner','package-draft',original.id,{...a,frozenPrediction:{hash:'original'},validation:{actualAwardValue:999}});
+ await store.put('owner','prediction',a.id,{hash:'untouched'});
+ const next=await jobs.replay('owner',original.id);assert.notEqual(next.id,original.id);assert.equal(next.stage,'RESEARCH');assert.equal(next.runId,undefined);
+ const draft=(await store.get<any>('owner','package-draft',next.id))!.value;assert.equal(draft.frozenPrediction,undefined);assert.equal(draft.validation,undefined);assert.equal(draft.id,undefined);assert.equal((await store.get('owner','package-text',`${next.id}:doc-1`))!.value,bytes.toString());
+ assert.deepEqual((await store.get('owner','prediction',a.id))!.value,{hash:'untouched'});await assert.rejects(jobs.replay('other',original.id),/not found/);
+});
+test('historical strategy is framed at the proposal deadline rather than rejected as expired today',async()=>{
+ const {analysis,strategy}=ptwStrategyFixture();analysis.historical={cutoff:'2025-06-30'} as any;analysis.deal.documentStatus='EXPIRED';
+ const result=await synthesizePtwStrategy(analysis,{interpret:async<T>(prompt:string)=>{assert.match(prompt,/HISTORICAL DECISION SIMULATION AS OF 2025-06-30/);assert.match(prompt,/Do not treat the present-day expired status/);return strategy as T;}});
+ assert.equal(result.status,'DRAFT');
 });
