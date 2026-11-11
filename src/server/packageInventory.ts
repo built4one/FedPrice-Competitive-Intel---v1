@@ -61,7 +61,7 @@ export function screenDocument(name:string,text:string,budget=160000){
   const ranked=blocks.map((v,i)=>{
     const heading=/(?:^|\n)\s*SECTION\s+([A-M])\s*[-–—]/i.exec(v);
     if(heading)section=heading[1].toUpperCase();
-    return {v,i,score:classifyDocument('',v).priority+(sectionWeights[section]||0)+(i<3?80:0)};
+    return {v,i,score:classifyDocument('',v).priority+(sectionWeights[section]||0)+(i<3?80:0)+(/52\s*\.\s*217\s*[-–]?\s*[589]|I\.3\b|option.{0,20}extend.{0,20}services/i.test(v)?90:0)};
   }).sort((a,b)=>b.score-a.score||a.i-b.i);
   const selected:Array<{v:string;i:number}>=[];let size=0;
   for(const b of ranked){if(size+b.v.length+(selected.length?2:0)>budget)continue;selected.push(b);size+=b.v.length+(selected.length>1?2:0);}

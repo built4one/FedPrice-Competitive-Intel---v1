@@ -6,6 +6,7 @@ import { assessmentIssues } from '../domain/analysisQuality';
 import { preserveCurrentStrategy } from '../server/ptwSynthesis';
 import { governmentRules, readableDecisionText } from '../domain/governmentRules';
 import { sourceConflictStatus } from '../domain/sourceConsistency';
+import {strategyStatements} from '../domain/ptw/strategy';
 
 const colors = {navy:'#103243',teal:'#007E7A',ink:'#172D3A',muted:'#617580',line:'#DAE4E8',panel:'#F0F5F7',amber:'#965A12'};
 const pageWidth=612,pageHeight=792,margin=42,contentWidth=528;
@@ -55,10 +56,10 @@ function buildBrief(l:Layout){
   const subtitle=[a.deal.solicitationNumber,a.deal.agency,new Date(a.meta.analyzedAt).toISOString().slice(0,10)].filter(Boolean).join(' | ');
   l.page('Your competitive position',subtitle);
   l.text(a.deal.title,true,11);
-  if(a.meta.packageCoverage?.mode==='HISTORICAL')l.text('HISTORICAL PRACTICE — closed solicitation using current research; not a live bid or historical price backtest.',true,8);
+  if(a.meta.packageCoverage?.mode==='HISTORICAL')l.text(`HISTORICAL PRACTICE — cutoff ${a.historical?.cutoff||'unconfirmed'}. Only admitted source versions support this retrospective assessment.`,true,8);
   const y=l.y;
   d.roundedRect(margin,y,contentWidth,111,5).fill(colors.navy);
-  d.font(boldFont).fontSize(9).fillColor('#B9DDDB').text('RECOMMENDED PTW',margin+16,y+15,{width:contentWidth-32,lineBreak:false});
+  d.font(boldFont).fontSize(9).fillColor('#B9DDDB').text(p.assumptionShare>0||p.missing.length?'CONDITIONAL PLANNING POSITION':'RECOMMENDED MARKET POSITION',margin+16,y+15,{width:contentWidth-32,lineBreak:false});
   d.font(boldFont).fontSize(p.target==null?22:31).fillColor('white').text(money(p.target),margin+16,y+36,{width:contentWidth-32,lineBreak:false});
   d.font(regularFont).fontSize(10).fillColor('#D4E6E7').text(`Competitive corridor: ${money(p.rangeLow)} - ${money(p.rangeHigh)}`,margin+16,y+82,{width:contentWidth-32,lineBreak:false});
   l.y=y+125;
@@ -121,6 +122,19 @@ export function createExecutivePdf(raw:OpportunityAnalysis):Promise<Buffer>{
     doc.registerFont(regularFont,regular);doc.registerFont(boldFont,bold);
     const chunks:Buffer[]=[];doc.on('data',b=>chunks.push(b));doc.on('error',reject);doc.on('end',()=>resolve(Buffer.concat(chunks)));
     try{const layout=new Layout(doc,analysis);buildBrief(layout);
+      if(analysis.ptwStrategy?.status==='DRAFT'){
+       layout.page('Competitive strategy',analysis.deal.solicitationNumber);
+       const s=analysis.ptwStrategy.strategy;
+       layout.text(`Selected approach: ${s.options.find(o=>o.id===s.recommendation.selectedOptionId)?.name}`,true,11);
+       layout.text(s.recommendation.rationale.text);
+       layout.text('AI-generated assessment; source support and assumptions require analyst review.',false,8);
+       for(const row of strategyStatements(s)){layout.title(row.section);layout.text(row.statement.text);layout.text(`${row.statement.kind}; evidence: ${row.statement.evidenceIds.join(', ')||'Working assumption'}`,false,8);}
+      }
+      if(analysis.meta.intelligence){
+       layout.page('Research coverage',analysis.deal.solicitationNumber);
+       analysis.meta.intelligence.tasks.forEach(t=>layout.text(`${t.task}: ${t.status}. ${t.message}`));
+       analysis.meta.intelligence.sources.forEach(s=>{layout.text(`${s.name}: ${s.status}; source date ${s.publishedAt||'unverified'}`,true,8);layout.text(`${s.url}. ${s.reason||''}`,false,8);});
+      }
       if(analysis.historical){layout.page('Historical test record',`Cutoff: ${analysis.historical.cutoff}`);
        layout.text(`Classification: ${analysis.validation?.comparisonClass||(analysis.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION')}`,true);
        layout.text(`Prediction frozen: ${analysis.frozenPrediction?.frozenAt}. SHA-256: ${analysis.frozenPrediction?.hash}`,false,8);

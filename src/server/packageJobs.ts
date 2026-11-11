@@ -1,3 +1,5 @@
+import {newResearchState,type ResearchState} from './researchWorkflow';
+import type {PtwStrategyResult} from '../domain/ptw/strategy';
 import {reconcileWorkbookLabor} from './workbookLabor';
 import { archivedRunIds } from './runArchive';
 import {auditHistoricalDocument,historicalScreeningChunks,combineHistoricalAudits,cutoffDate,historicalContext,filterHistoricalDraft} from './historical';
@@ -14,6 +16,8 @@ import type {HistoricalDocumentAudit} from '../historicalTypes';
 import type {AiAnalysisDraft,OpportunityAnalysis} from '../types';
 
 interface Dependencies {
+  intelligenceStep?:(draft:AiAnalysisDraft,state:ResearchState,options:{cutoff?:string;historical?:boolean;opportunityRef?:string;providedNames:string[];originalFiles:PackageFile[]})=>Promise<{draft:AiAnalysisDraft;state:ResearchState}>;
+  strategy?:(analysis:OpportunityAnalysis)=>Promise<PtwStrategyResult>;
   normalize:(files:PackageFile[])=>Promise<PackageFile[]>;
   extract:(files:PackageFile[],options?:{historical?:boolean})=>Promise<AiAnalysisDraft>;
   research:(draft:AiAnalysisDraft,names:string[],options?:{historical?:boolean})=>Promise<OpportunityAnalysis>;
@@ -63,7 +67,7 @@ export class PackageJobs {
     await this.store.put(workspace,'package-job',id,{...job,status:'CANCELED'},row.version);
     for(const f of job.files)for(let i=0;i<f.chunks;i++)await this.store.remove(workspace,'package-chunk',`${id}:${f.id}:${i}`);
     for(const d of job.documents)for(const kind of ['package-source','package-text','package-reading'])await this.store.remove(workspace,kind,`${id}:${d.id}`);
-    for(const kind of ['package-draft','historical-context','package-result'])await this.store.remove(workspace,kind,id);
+    for(const kind of ['package-draft','historical-context','package-result','package-research'])await this.store.remove(workspace,kind,id);
     await this.store.remove(workspace,'package-job',id);
   }
   async advance(workspace:string,id:string){
@@ -173,16 +177,38 @@ export class PackageJobs {
         }
         await this.put(workspace,'package-draft',id,draft);job.stage='RESEARCH';job.message='Scope extraction saved. Researching applicable rates, comparable awards and competition.';
       }else if(job.stage==='RESEARCH'){
-        const draft=(await this.store.get<AiAnalysisDraft>(workspace,'package-draft',id))!.value;
-        const analysis=await this.deps.research(draft,job.documents.filter(d=>d.status!=='EXCLUDED').map(d=>d.name),{historical:job.mode==='HISTORICAL'});
-        if(job.mode==='HISTORICAL')analysis.historical=(await this.store.get<any>(workspace,'historical-context',id))!.value;
-        await this.put(workspace,'package-result',id,analysis);job.stage='PRICING';job.message='Research saved. Completing bounded price assumptions and calculating the recommendation.';
+        let draft=(await this.store.get<AiAnalysisDraft>(workspace,'package-draft',id))!.value;
+        let research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
+        if(this.deps.intelligenceStep){
+          const originalFiles=await this.analysisFiles(workspace,job);
+          const step=await this.deps.intelligenceStep(draft,research||newResearchState(),{cutoff:job.cutoff,historical:job.mode==='HISTORICAL',opportunityRef:job.opportunityRef,providedNames:job.documents.map(d=>d.name),originalFiles});
+          draft=reconcileWorkbookLabor(step.draft,originalFiles);research=step.state;
+          await this.put(workspace,'package-draft',id,draft);await this.put(workspace,'package-research',id,research);
+          job.message=`Research checkpoint saved: ${research.attempts.at(-1)?.task||'source discovery'} / ${research.phase.toLowerCase()}. ${research.sources.filter(s=>s.status==='ADMITTED').length} original sources admitted.`;
+        }
+        if(!this.deps.intelligenceStep||research?.done){
+          // The server builds the analysis without repeating completed source searches.
+          const analysis=await this.deps.research(draft,job.documents.filter(d=>d.status!=='EXCLUDED').map(d=>d.name),{historical:job.mode==='HISTORICAL'});
+          if(research){
+            analysis.meta.intelligence={version:research.version,complete:research.done,tasks:research.attempts,sources:research.sources.map(({text,sha256,audit,task,publicationBasis,...s})=>s)};
+            analysis.meta.warnings.push(...research.warnings);
+            analysis.meta.researchStatus=research.sources.some(s=>s.status==='ADMITTED')?'PARTIAL':'SOLICITATION_ONLY';
+          }
+          if(job.mode==='HISTORICAL'){
+            const context=(await this.store.get<any>(workspace,'historical-context',id))!.value;
+            context.limitations=context.limitations.filter((v:string)=>!/general web enrichment are disabled|Only admitted historical source documents/.test(v));
+            context.limitations.push('External research uses only admitted source versions dated on or before the cutoff; search discovery and retrieval dates are not historical publication proof.');
+            for(const source of research?.sources||[])if(source.audit){context.documents.push({id:source.id,name:source.name,sha256:source.sha256,audit:source.audit});}
+            analysis.historical=context;
+          }
+          await this.put(workspace,'package-result',id,analysis);job.stage='PRICING';job.message='Source research saved. Reconciling evaluated scope and supported price inputs.';
+        }
       }else if(job.stage==='PRICING'){
         let prior=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
         const sourceFiles:PackageFile[]=[];
         for(const d of job.documents.filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status))){const text=(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'';const buffer=Buffer.from(text);sourceFiles.push({originalname:d.name,mimetype:'text/plain',buffer,size:buffer.length});}
         prior=reconcileWorkbookLabor(prior,sourceFiles);
-        if(prior.historical){const texts=new Map<string,string>();for(const d of job.documents)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');prior=filterHistoricalDraft(prior,prior.historical,texts);}
+        if(prior.historical){const texts=new Map<string,string>();for(const d of job.documents)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;for(const source of research?.sources||[])if(source.text)texts.set(source.id,source.text);prior=filterHistoricalDraft(prior,prior.historical,texts);}
         
         const coverage:PackageCoverage={documents:job.documents,warnings:job.warnings,receivedAt:job.receivedAt,mode:job.mode,freshness:{status:'UNVERIFIED',message:job.mode==='HISTORICAL'?`Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.`:'Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency.'}};
         prior.meta.packageCoverage=coverage;
@@ -195,18 +221,22 @@ export class PackageJobs {
           if(completed>completedBefore){job.message=`${completed} bounded price inputs saved. Completing the remaining basket.`;}
           else {
             analysis.meta.warnings.push('Numerical recommendation unavailable: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
-            const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
-            const saved=await this.store.put(workspace,'analysis',analysis.id,frozen);
-            if(frozen.frozenPrediction)await preservePredictionExports(this.store,workspace,frozen);
-            job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message='Assessment saved. Numerical evidence is insufficient; review the scope, limitations and required inputs.';
+            await this.put(workspace,'package-result',id,analysis);
+            if(this.deps.strategy){job.stage='STRATEGY';job.message='Pricing limitations saved. Developing a source-backed strategic assessment.';}
+            else await this.finish(workspace,job,analysis);
           }
         }else{
-          const stored=await this.store.get(workspace,'analysis',analysis.id);
-          const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
-          if(frozen.frozenPrediction)await preservePredictionExports(this.store,workspace,frozen);
-          const saved=stored||await this.store.put(workspace,'analysis',analysis.id,frozen);
-          job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message='Recommendation and source review saved. Open the executive brief.';
+          await this.put(workspace,'package-result',id,analysis);
+          if(this.deps.strategy){job.stage='STRATEGY';job.message='Price scenarios saved. Comparing competitive strategies before freezing the recommendation.';}
+          else await this.finish(workspace,job,analysis);
         }
+      }else if(job.stage==='STRATEGY'){
+        const analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+        const result=await this.deps.strategy!(analysis);
+        if(result.status!=='DRAFT')throw new OpenAIRequestError(result.reason,true);
+        analysis.ptwStrategy=result;
+        await this.put(workspace,'package-result',id,analysis);
+        await this.finish(workspace,job,analysis);
       }
       if(job.status!=='COMPLETE')job.status='READY';job.attempts=0;job.retryable=false;job.leaseUntil=undefined;
     }catch(error){job.status='PAUSED';job.leaseUntil=undefined;job.retryable=error instanceof OpenAIRequestError&&error.retryable;job.message=error instanceof Error?error.message:'Processing paused. Your completed stages are saved.';}
@@ -215,6 +245,19 @@ export class PackageJobs {
     // A lease protects one stage; optimistic version check prevents overwriting a newer worker.
     if(current.version!==locked.version)throw new ConflictError();
     return(await this.store.put(workspace,'package-job',id,job,current.version)).value;
+  }
+  private async analysisFiles(workspace:string,job:PackageJob):Promise<PackageFile[]>{
+    const docs=job.documents.filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status));
+    const budget=Math.floor(450000/Math.max(1,docs.length)),files:PackageFile[]=[];
+    for(const doc of docs){const full=(await this.store.get<string>(workspace,'package-text',`${job.id}:${doc.id}`))?.value||'';const text=full.length>budget?screenDocument(doc.name,full,budget).text:full;const buffer=Buffer.from(`SOURCE DOCUMENT: ${doc.name}\n${text}`);files.push({originalname:doc.name+'.txt',mimetype:'text/plain',buffer,size:buffer.length});}
+    return files;
+  }
+  private async finish(workspace:string,job:PackageJob,analysis:OpportunityAnalysis){
+    const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
+    const stored=await this.store.get(workspace,'analysis',analysis.id);
+    const saved=stored||await this.store.put(workspace,'analysis',analysis.id,frozen);
+    if(frozen.frozenPrediction)await preservePredictionExports(this.store,workspace,frozen);
+    job.runId=saved.id;job.stage='COMPLETE';job.status='COMPLETE';job.message=analysis.competitivePosition?.target?'Assessment, strategy and evidence saved. Review source coverage and confidence before use.':'Assessment and strategic review saved. Numerical evidence is insufficient; review the scope, limitations and required inputs.';
   }
   private async put(workspace:string,kind:string,id:string,value:unknown){const old=await this.store.get(workspace,kind,id);return this.store.put(workspace,kind,id,value,old?.version||0);}
 }

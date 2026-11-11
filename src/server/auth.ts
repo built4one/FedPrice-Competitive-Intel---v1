@@ -34,9 +34,9 @@ function previewGuest(req: Request, res: Response): Principal | null {
   if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== '1'
     || process.env.VERCEL !== '1'
     || process.env.VERCEL_ENV !== 'preview'
-    || !['codex/atlas-team-guest-preview','codex/historical-recovery'].includes(process.env.VERCEL_GIT_COMMIT_REF||'')
+    || !['codex/atlas-team-guest-preview','codex/historical-recovery','codex/intelligence-completion'].includes(process.env.VERCEL_GIT_COMMIT_REF||'')
     || !process.env.VERCEL_URL?.endsWith('.vercel.app')
-    || req.headers.host !== process.env.VERCEL_URL
+    || ![process.env.VERCEL_URL,process.env.STUDIO_TESTING_HOST].filter(Boolean).includes(req.headers.host)
     || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
 
   const cookie = /(?:^|;\s*)fmp_preview_guest=([^;]+)/.exec(req.headers.cookie || '')?.[1];

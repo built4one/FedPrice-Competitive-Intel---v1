@@ -2,6 +2,7 @@ import type {AiAnalysisDraft,EvidenceItem,OpportunityAnalysis} from '../types';
 import type {HistoricalContext,HistoricalDocumentAudit} from '../historicalTypes';
 import type {PackageDocument} from '../packageTypes';
 import {OpenAIIntelligence} from './openaiIntelligence';
+import {supportedCompetitors} from '../domain/sourceConsistency';
 
 export function cutoffDate(value:unknown):string {
  if(typeof value!=='string'||!/^\d{4}-\d{2}-\d{2}$/.test(value)||!Number.isFinite(Date.parse(value))||new Date(value).toISOString().slice(0,10)!==value||value>new Date().toISOString().slice(0,10))throw new Error('Historical analysis requires the original final proposal deadline as YYYY-MM-DD, no later than today.');
@@ -21,7 +22,7 @@ export function historicalScreeningChunks(text:string):string[]{
 const dateTokens=/(?:\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2},?\s+\d{4})/gi;
 // Publication dates are calendar dates, not instants in the server's timezone.
 // Date.parse('July 1, 2020') uses local midnight and can become June 30 in UTC.
-function documentDate(token:string):string|null {
+export function documentDate(token:string):string|null {
  const iso=/^(\d{4})-(\d{2})-(\d{2})$/.exec(token);
  const us=/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(token);
  const named=/^([A-Za-z]+)\.?\s+(\d{1,2}),?\s+(\d{4})$/.exec(token);
@@ -76,20 +77,22 @@ export function filterHistoricalDraft<T extends Omit<AiAnalysisDraft,'marketAsse
   const loc=`${e.sourceLabel||''} ${e.section||''}`;
   const doc=context.documents.find(d=>d.audit.decision==='ADMITTED'&&(loc.includes(d.name)||loc.includes(d.id)));
   const text=doc?texts.get(doc.id)||'':'';
-  if(!doc || outcomePattern.test(e.claim+' '+(e.excerpt||'')) || e.numeric?.sourceDate&&e.numeric.sourceDate>context.cutoff){context.excludedEvidence.push({id:e.id,reason:'Missing admitted source locator, future date, or outcome-related claim.'});continue;}
+  if(!doc || doc.audit.kind!=='MARKET'&&outcomePattern.test(e.claim+' '+(e.excerpt||'')) || e.numeric?.sourceDate&&e.numeric.sourceDate>context.cutoff){context.excludedEvidence.push({id:e.id,reason:'Missing admitted source locator, future date, or outcome-related claim.'});continue;}
   if(e.numeric){
    const n=e.numeric.originalValue;
    const excerpt=e.excerpt?.trim()||'';
-   if(!excerpt||!text.includes(excerpt)){context.excludedEvidence.push({id:e.id,reason:'Numeric evidence lacks an exact admitted source excerpt.'});continue;}
+   if(!excerpt||!text.replace(/\s+/g,' ').includes(excerpt.replace(/\s+/g,' '))){context.excludedEvidence.push({id:e.id,reason:'Numeric evidence lacks an exact admitted source excerpt.'});continue;}
    const observed=[...excerpt.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map(m=>Number(m[0].replace(/,/g,'')));
    const required=[n,e.numeric.lowerRate,e.numeric.upperRate,...(e.numeric.rateDistribution||[]),...(e.numeric.rateRecords||[]).map(r=>r.rate)].filter((v):v is number=>v!==undefined);
    if(required.some(n=>!Number.isFinite(n)||!observed.some(v=>Math.abs(v-n)<.000001))){context.excludedEvidence.push({id:e.id,reason:'Numeric amount is not present in the admitted source.'});continue;}
   }
   evidence.push({...e,type:doc.audit.kind==='MARKET'?'EXTERNAL_SOURCE':'SOLICITATION_FACT',historicalProof:{documentId:doc.id,publishedAt:doc.audit.publishedAt,sha256:doc.sha256||'',quote:doc.audit.dateQuote}});
  }
- // Extraction does not get to invent an incumbent or rival field from model memory.
- return {...draft,evidence,competitors:[],incumbent:{name:'',status:'UNKNOWN',strengths:[],vulnerabilities:[],transitionRisk:'UNKNOWN',confidence:0,sourceRefs:[]},gaoFindings:[],preRfpSignals:[],affordability:undefined,
-  narrative:{headline:'Historical evaluated-scope assessment',rationale:'Use admitted pre-cutoff documents and explicitly bounded price assumptions.',decisionFactors:[],guardrails:['No target award information is admitted to the recommendation.'],nextActions:['Review the frozen evidence and evaluation basis before comparing the outcome.']}};
+ // Preserve only named entities tied to specific admitted source claims.
+ // A historical cutoff must not erase an incumbent documented in the original Q&A.
+ const competitors=supportedCompetitors(draft.competitors,evidence,draft.deal);
+ const incumbent=draft.incumbent.name&&supportedCompetitors([{name:draft.incumbent.name,sourceRefs:draft.incumbent.sourceRefs} as any],evidence,draft.deal).length?draft.incumbent:{...draft.incumbent,name:'',status:'UNKNOWN' as const,strengths:[],vulnerabilities:[],sourceRefs:[],confidence:0};
+ return {...draft,evidence,competitors,incumbent,gaoFindings:[],preRfpSignals:[],affordability:undefined};
 }
 export function historicalValidationIssues(a:OpportunityAnalysis):string[]{
  const h=a.historical,p=a.competitivePosition;if(!h)return ['Historical evidence controls were not applied to this run.'];
@@ -98,7 +101,7 @@ export function historicalValidationIssues(a:OpportunityAnalysis):string[]{
  if(!p?.target||!p.basisReconstructed)issues.push('The evaluated basket is not reconstructed.');
  if(p?.assumptionShare||p?.planningRows.some(r=>r.basis!=='DOCUMENTED'))issues.push('Prices contain unsupported or analogous planning assumptions.');
  if(a.meta.packageCoverage?.documents.some(d=>['EXCERPTS','UNREADABLE','UNSUPPORTED'].includes(d.status)))issues.push('Package coverage is incomplete.');
- if(h.documents.some(d=>d.audit.decision==='ADMITTED'&&d.audit.proof!=='DATED_DOCUMENT'))issues.push('One or more admitted documents lack dated publication support.');
+ if(h.documents.some(d=>d.audit.decision==='ADMITTED'&&!['DATED_DOCUMENT','DATED_METADATA'].includes(d.audit.proof)))issues.push('One or more admitted documents lack dated publication support.');
  if(!a.deal.evaluationScheme||a.deal.evaluationScheme.method==='UNKNOWN'||a.deal.evaluationPricing?.completeness!=='COMPLETE')issues.push('Government evaluation basis requires confirmation.');
  const used=new Set([...(p?.rows.flatMap(r=>r.evidenceIds)||[]),...(p?.components.flatMap(c=>c.evidenceIds)||[])]);
  for(const id of used){const e=a.evidence.find(e=>e.id===id);if(!e?.historicalProof?.publishedAt||e.historicalProof.publishedAt>h.cutoff)issues.push(`Pricing source ${id} lacks supported pre-cutoff provenance.`);}

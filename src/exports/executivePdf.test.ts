@@ -25,8 +25,8 @@ test('priced executive brief puts selected price before strategy and freezes no 
   if(process.env.WRITE_PDF_FIXTURE==='1'){await mkdir('tmp/pdfs',{recursive:true});await writeFile('tmp/pdfs/priced-services.pdf',buffer);}
   const parsed=await normalizePdfText({originalname:'executive-brief.pdf',mimetype:'application/pdf',size:buffer.length,buffer});
   const text=parsed.buffer.toString();
-  assert.match(text,/RECOMMENDED PTW/);assert.match(text,/PHASE 1/);assert.match(text,/Phase 2/);
-  assert.ok(text.indexOf('RECOMMENDED PTW')<text.indexOf('Pricing judgment'));
+  assert.match(text,/RECOMMENDED MARKET POSITION/);assert.match(text,/PHASE 1/);assert.match(text,/Phase 2/);
+  assert.ok(text.indexOf('RECOMMENDED MARKET POSITION')<text.indexOf('Pricing judgment'));
   assert.match(text,/20,000/);assert.match(text,/Pursuit-specific rival field remains unconfirmed/);assert.doesNotMatch(text,/No priced scenario|IBM execution floor/);
   assert.match(text,/Recommendation Confidence: MODERATE/);
   assert.doesNotMatch(text,/HIGH PTW confidence/);

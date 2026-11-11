@@ -1,6 +1,6 @@
 import type {HistoricalDocumentAudit} from './historicalTypes';
 export const PACKAGE_LIMITS = { uploadBytes: 50*1024*1024, expandedBytes: 200*1024*1024, fileBytes: 25*1024*1024, entries: 500, chunkBytes: 2*1024*1024, inputs: 40 };
-export type PackageStage = 'UPLOADING'|'INVENTORY'|'READING'|'EXTRACTION'|'RESEARCH'|'PRICING'|'COMPLETE';
+export type PackageStage = 'UPLOADING'|'INVENTORY'|'READING'|'EXTRACTION'|'RESEARCH'|'PRICING'|'STRATEGY'|'COMPLETE';
 export interface PackageDocument {
   id:string; name:string; bytes:number; sha256?:string;
   audit?:HistoricalDocumentAudit;

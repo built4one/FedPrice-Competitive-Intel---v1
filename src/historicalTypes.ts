@@ -1,7 +1,7 @@
 export interface HistoricalDocumentAudit {
   kind:'SOLICITATION'|'MARKET'|'OUTCOME'|'UNKNOWN';
   publishedAt:string; dateQuote:string; reason:string;
-  decision:'ADMITTED'|'EXCLUDED'; proof:'DATED_DOCUMENT'|'ATTESTED_ORIGINAL'|'NONE';
+  decision:'ADMITTED'|'EXCLUDED'; proof:'DATED_DOCUMENT'|'DATED_METADATA'|'ATTESTED_ORIGINAL'|'NONE';
 }
 export interface HistoricalContext {
   cutoff:string; version:'historical-1'; originalPackageConfirmed:boolean;

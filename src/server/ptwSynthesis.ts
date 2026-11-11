@@ -9,7 +9,7 @@ import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition'
 import { claimSupportIssue, readableDecisionText } from '../domain/governmentRules';
 
 export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.4.0';
-type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition'>;
+type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition' | 'historical'>;
 
 function sourceInput(analysis: StrategyInput, compact=false) {
   const position=calculateCompetitivePosition(analysis);
@@ -20,7 +20,8 @@ function sourceInput(analysis: StrategyInput, compact=false) {
       return {...e,numeric};
     }) : analysis.evidence, competitors: analysis.competitors,
     incumbent: analysis.incumbent, gaps: analysis.gaps, marketPosition: analysis.marketPosition,
-    analyzedAt: analysis.meta.analyzedAt,
+    analyzedAt: analysis.historical?.cutoff || analysis.meta.analyzedAt,
+    historicalCutoff: analysis.historical?.cutoff,
     competitivePosition: compact ? {...position,rows:[...new Map(position.rows.map(r=>[r.title,{title:r.title,recommendedRate:r.recommendedRate,protectionReason:r.protectionReason,evidenceIds:r.evidenceIds}])).values()]} : position,
   };
 }

@@ -1,3 +1,4 @@
+import {advanceResearch} from './src/server/researchWorkflow.js';
 import { archivedRunIds, installArchiveRoutes } from './src/server/runArchive.js';
 import {predictionExport} from './src/server/predictionExports.js';
 import {blindHistoricalInput} from './src/server/historical.js';
@@ -692,7 +693,17 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
   const analysis=await enrichSolicitation(await extractSolicitation(files),files.map(f=>f.originalname));
   try{return await priceSolicitation(analysis);}catch(error){analysis.meta.warnings.push(`Bounded price completion needs a retry: ${error instanceof Error?error.message:String(error)}`);return analysis;}
 }
-installPackageRoutes(app,runStore,{normalize:normalizeAnalysisFiles,extract:extractSolicitation,research:enrichSolicitation,price:analysis=>priceSolicitation(analysis,6)});
+installPackageRoutes(app,runStore,{
+ normalize:normalizeAnalysisFiles,extract:extractSolicitation,
+ intelligenceStep:(draft,state,options)=>advanceResearch(draft,state,options,{normalize:normalizeAnalysisFiles,extract:extractSolicitation}),
+ research:async(draft,_sourceDocuments,options)=>{
+  const warnings=assessEligibility(draft.deal,new Date(),{historical:options?.historical});
+  const analyzedAt=new Date().toISOString(),{marketAssessment:_marketAssessment,...fields}=draft;
+  return enforceAuthoritativeAnalysis({...fields,id:`run-${crypto.randomUUID()}`,marketPosition:calculateDeterministicScenarios(draft,{asOfDate:analyzedAt}),meta:{mode:'MARKET_ONLY',model,analyzedAt,researchStatus:'PARTIAL',warnings,connectors:[]}});
+ },
+ price:analysis=>priceSolicitation(analysis,6),
+ strategy:analysis=>synthesizePtwStrategy(analysis,new OpenAIIntelligence(undefined,undefined,fetch,105_000,'low')),
+});
 app.get('/api/source-availability',async(_req,res)=>res.json({sam:await samAvailability()}));
 
 app.get('/api/health', (_req, res) => res.json({

@@ -5,6 +5,12 @@ import { sourceConflictStatus } from '../domain/sourceConsistency';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
+  if(analysis.meta.intelligence){
+    const research=workbook.addWorksheet('Research Coverage');
+    research.columns=[{header:'Task / source',key:'name',width:45},{header:'Status',key:'status',width:20},{header:'Source date',key:'date',width:18},{header:'URL',key:'url',width:85},{header:'Evidence limitation',key:'reason',width:110}];
+    research.addRows(analysis.meta.intelligence.tasks.map(t=>({name:t.task,status:t.status,reason:t.message})));
+    research.addRows(analysis.meta.intelligence.sources.map(s=>({name:s.name,status:s.status,date:s.publishedAt||'Unverified',url:s.url,reason:s.reason})));
+  }
   const coverage=analysis.meta.packageCoverage;
   if(coverage){
     const sheet=workbook.addWorksheet('Package Coverage');

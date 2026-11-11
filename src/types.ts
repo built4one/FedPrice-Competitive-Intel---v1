@@ -343,6 +343,7 @@ export interface ConnectorStatus {
 }
 
 export interface AnalysisMeta {
+  intelligence?: {version:string;complete:boolean;tasks:Array<{task:string;status:string;message:string}>;sources:Array<{id:string;url:string;name:string;publishedAt?:string;status:string;reason?:string}>};
   packageCoverage?: import('./packageTypes').PackageCoverage;
   mode: 'MARKET_ONLY' | 'MARKET_AND_COMPANY_DEPRECATED';
   model: string;

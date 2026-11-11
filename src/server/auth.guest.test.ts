@@ -9,7 +9,7 @@ test('preview guest access is login-free, isolated by browser, and disabled else
   const keys = [
     'STUDIO_GUEST_PREVIEW_ACCESS', 'VERCEL', 'VERCEL_ENV',
     'VERCEL_GIT_COMMIT_REF', 'VERCEL_URL', 'SESSION_SECRET',
-    'STUDIO_USERS_JSON', 'STUDIO_HISTORICAL_PREVIEW_ACCESS',
+    'STUDIO_USERS_JSON', 'STUDIO_HISTORICAL_PREVIEW_ACCESS', 'STUDIO_TESTING_HOST',
   ];
   const prior = Object.fromEntries(keys.map(key => [key, process.env[key]]));
   Object.assign(process.env, {
@@ -65,6 +65,9 @@ test('preview guest access is login-free, isolated by browser, and disabled else
 
     process.env.VERCEL_GIT_COMMIT_REF = 'codex/historical-recovery';
     assert.equal((await get('/api/session',a.cookie)).body.user.workspace,a.body.user.workspace);
+    process.env.VERCEL_GIT_COMMIT_REF = 'codex/intelligence-completion';
+    process.env.STUDIO_TESTING_HOST = 'fmp-team-testing-nizaralamin1.vercel.app';
+    assert.equal((await get('/api/session',a.cookie,'fmp-team-testing-nizaralamin1.vercel.app')).body.user.workspace,a.body.user.workspace);
     process.env.VERCEL_GIT_COMMIT_REF = 'unrelated-branch';
     assert.equal((await get('/api/session',a.cookie)).body.user,null);
     process.env.VERCEL_GIT_COMMIT_REF = 'codex/historical-recovery';

@@ -197,7 +197,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   assumptions.push('Public loaded rates are price proxies, not company cost. No second labor burden, profit or universal ceiling-to-offer discount is applied.',
     'Corridor endpoints are conditional economic cases, not observed competitor bids, a statistical interval or a win probability.');
   return {version:COMPETITIVE_POSITION_VERSION,status,priceOrderFirst,evaluationComplete,target:hasTarget?central:null,rangeLow:hasTarget?low:null,rangeHigh:hasTarget?high:null,
-    rangeMeaning:'Competitive corridor from the evaluated basket, observed rate variation and explicit lower/upper pricing assumptions. It is a decision range, not a confidence interval.',
+    rangeMeaning:assumptionShare>0?'Conditional price scenarios from documented quantities and explicit rate assumptions or analogies. Not an observed competitor-price range or confidence interval.':'Reference price range from the reconstructed basket and sourced rate variation. Schedule ceilings are price references, not observed competitor bids or a confidence interval.',
     rationale,decisionRequest:hasTarget?'Use the Recommended PTW as the working competitive position; validate the highest-impact assumption before committing an offer.':'Reconstruct the missing evaluated quantity or component basis shown below; the known-scope subtotal is retained.',
     rows,components,scenarios,missing:unique(missing),assumptions:unique(assumptions),
     confidence:{quantities:quantityConfidence,rateRelevance:rateConfidence,competition:competitionConfidence,execution:'NOT_ASSESSED',overall},
