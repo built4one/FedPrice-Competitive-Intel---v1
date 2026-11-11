@@ -1,4 +1,4 @@
-import {newResearchState,type ResearchState} from './researchWorkflow';
+import {newResearchState,rateRechecks,type ResearchState} from './researchWorkflow';
 import type {PtwStrategyResult} from '../domain/ptw/strategy';
 import {reconcileWorkbookLabor} from './workbookLabor';
 import { archivedRunIds } from './runArchive';
@@ -198,13 +198,15 @@ export class PackageJobs {
             const context=(await this.store.get<any>(workspace,'historical-context',id))!.value;
             context.limitations=context.limitations.filter((v:string)=>!/general web enrichment are disabled|Only admitted historical source documents/.test(v));
             context.limitations.push('External research uses only admitted source versions dated on or before the cutoff; search discovery and retrieval dates are not historical publication proof.');
-            for(const source of research?.sources||[])if(source.audit){context.documents.push({id:source.id,name:source.name,sha256:source.sha256,audit:source.audit});}
+            for(const source of research?.sources||[])if(source.audit){context.documents=context.documents.filter((d:any)=>d.id!==source.id);context.documents.push({id:source.id,name:source.name,sha256:source.sha256,audit:source.audit});}
             analysis.historical=context;
           }
           await this.put(workspace,'package-result',id,analysis);job.stage='PRICING';job.message='Source research saved. Reconciling evaluated scope and supported price inputs.';
         }
       }else if(job.stage==='PRICING'){
         let prior=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+        const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
+        if(research&&rateRechecks(research,prior).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';job.status='READY';job.attempts=0;job.retryable=false;job.leaseUntil=undefined;return(await this.store.put(workspace,'package-job',id,job,locked.version)).value;}
         const sourceFiles:PackageFile[]=[];
         for(const d of job.documents.filter(d=>['READ','EXCERPTS','VISUAL'].includes(d.status))){const text=(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'';const buffer=Buffer.from(text);sourceFiles.push({originalname:d.name,mimetype:'text/plain',buffer,size:buffer.length});}
         prior=reconcileWorkbookLabor(prior,sourceFiles);

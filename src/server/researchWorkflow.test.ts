@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,referenceRateCatalogs,supplementalAttachment,type ResearchSource} from './researchWorkflow';
+import {admitExtractedEvidence,advanceResearch,newResearchState,privateAddress,supportedDate,referenceRateCatalogs,supplementalAttachment,sourceVersionAfterCutoff,rateRechecks,RATE_EXTRACTION_VERSION,type ResearchSource} from './researchWorkflow';
+import {reconcileSourceFacts} from '../domain/sourceConsistency';
 import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {historicalContext,filterHistoricalDraft} from './historical';
 import {PackageJobs} from './packageJobs';
@@ -105,4 +106,26 @@ test('research cannot replace a supplied RFP with an older base or earlier amend
  assert.equal(supplementalAttachment('SF30 Amend 0001 Alliant 3.pdf',supplied),false);
  assert.equal(supplementalAttachment('SF30 Amend 0013 Alliant 3.pdf',supplied),true);
  assert.equal(supplementalAttachment('Questions and Answers June 2025.pdf',supplied),true);
+});
+test('dated filenames cannot launder a later catalog through an older contract date',()=>{
+ const s=source();s.url='https://example.gov/Terms_Conditions_File_111425.pdf';
+ assert.equal(sourceVersionAfterCutoff(s.url,'2025-06-30'),true);
+ assert.equal(admitExtractedEvidence(raw(),s,'2025-06-30').items.length,0);assert.equal(s.status,'EXCLUDED');
+ assert.equal(sourceVersionAfterCutoff('https://example.gov/uploads/2026/03/catalog.pdf','2025-06-30'),true);
+ assert.equal(sourceVersionAfterCutoff('https://example.gov/uploads/2025/05/catalog.pdf','2025-06-30'),false);
+});
+test('saved benchmark sources are reinterpreted with exact rate requirements without repeating downloads',async()=>{
+ const a=pricedServicesFixture() as any,state=newResearchState();state.index=2;state.phase='READ';state.done=true;
+ state.sources=[{...source(),status:'ADMITTED'}];a.evidence=[];let calls=0;
+ const deps={client:{research:async()=>{throw Error('No discovery needed');},interpret:async(p:string)=>{calls++;assert.match(p,/scopeText is REQUIRED/);return raw();}},normalize:async(f:any)=>f,extract:async()=>a};
+ const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
+ assert.equal(rateRechecks(state,a).length,1);await advanceResearch(a,state,opts,deps as any);assert.equal(state.phase,'INTERPRET');
+ const next=await advanceResearch(a,state,opts,deps as any);assert.equal(calls,1);assert.equal(next.draft.evidence[0].numeric?.originalValue,126);assert.equal(state.sources[0].rateExtractionVersion,RATE_EXTRACTION_VERSION);assert.equal(rateRechecks(state,next.draft).length,0);
+});
+test('a named incumbent fact and exact Q&A excerpt repair missing model reference IDs, while unsupported names stay unknown',()=>{
+ const a=pricedServicesFixture() as any;a.incumbent={name:'',status:'UNKNOWN',strengths:[],vulnerabilities:[],transitionRisk:'UNKNOWN',confidence:0,sourceRefs:[]};
+ a.deal.facts.push({label:'Incumbent contractor',value:'Example Software LLC',section:'Official Q&A #47',confidence:90});
+ a.evidence.push({id:'QA-47',type:'SOLICITATION_FACT',sourceLabel:'Official Q&A',section:'Q47',claim:`Example Software LLC is the incumbent for ${a.deal.solicitationNumber}.`,excerpt:'Example Software LLC - predecessor contract ABC123',confidence:80});
+ const r=reconcileSourceFacts(a);assert.equal(r.incumbent.name,'Example Software LLC');assert.ok(r.incumbent.sourceRefs.includes('QA-47'));
+ a.evidence=a.evidence.filter((e:any)=>e.id!=='QA-47');assert.equal(reconcileSourceFacts(a).incumbent.name,'');
 });

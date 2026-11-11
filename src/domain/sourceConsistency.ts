@@ -44,7 +44,14 @@ export function reconcileSourceFacts<T extends Pick<AiAnalysisDraft,'deal'|'evid
   const gaps: DataGap[] = (input.gaps || []).filter(g=>!resolvedGap(g.question,deal) && !deal.sourceConflicts.some(c=>c.status==='RESOLVED' && g.question===`Resolve source conflict: ${c.topic}.`));
   for(const conflict of deal.sourceConflicts.filter(c=>c.status!=='RESOLVED')) if(!gaps.some(g=>g.question===`Resolve source conflict: ${conflict.topic}.`)) gaps.push({question:`Resolve source conflict: ${conflict.topic}.`,impact:`${conflict.descriptions.join(' versus ')} ${conflict.resolution}`,priority:'HIGH'});
   const competitors=supportedCompetitors(input.competitors,input.evidence,deal);
-  const incumbentSupported = input.incumbent.name && supportedCompetitors([{name:input.incumbent.name,sourceRefs:input.incumbent.sourceRefs} as OpportunityAnalysis['competitors'][number]],input.evidence,deal).length;
-  return {...input,deal,evidence:ruleEvidence(deal,input.evidence),gaps,competitors,incumbent:incumbentSupported ? input.incumbent : {...input.incumbent,name:'',status:'UNKNOWN',confidence:0,sourceRefs:[]},
+  const namedFact=deal.facts.find(f=>/^(?:incumbent(?: contractor| provider)?|current contractor)$/i.test(f.label.trim())&&f.section&&f.value&&!/unknown|not (?:stated|identified)/i.test(f.value));
+  const incumbentName=input.incumbent.name||namedFact?.value||'';
+  const incumbentRefs=[...new Set([...(input.incumbent.sourceRefs||[]),...input.evidence.filter(e=>
+    ['SOLICITATION_FACT','EXTERNAL_SOURCE'].includes(e.type)&&Boolean(e.section||e.url)&&Boolean(e.excerpt)
+    && e.excerpt!.toLowerCase().includes(incumbentName.toLowerCase())
+    && /incumbent|current (?:contractor|provider)|predecessor/i.test(e.claim)).map(e=>e.id)])];
+  const incumbentSupported = incumbentName && supportedCompetitors([{name:incumbentName,sourceRefs:incumbentRefs} as OpportunityAnalysis['competitors'][number]],input.evidence,deal).length;
+  const incumbent=incumbentSupported?{...input.incumbent,name:incumbentName,status:'IDENTIFIED' as const,sourceRefs:incumbentRefs,confidence:Math.max(input.incumbent.confidence,60)}:{...input.incumbent,name:'',status:'UNKNOWN' as const,confidence:0,sourceRefs:[]};
+  return {...input,deal,evidence:ruleEvidence(deal,input.evidence),gaps,competitors,incumbent,
     narrative:{...input.narrative,nextActions:(input.narrative.nextActions || []).filter(a=>!resolvedGap(a,deal)),guardrails:(input.narrative.guardrails || []).filter(a=>!resolvedGap(a,deal))}};
 }
