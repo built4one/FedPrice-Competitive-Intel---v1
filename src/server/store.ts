@@ -54,5 +54,11 @@ export class RecordStore {
     const rows = await this.raw(sql, params); if (!rows.length) throw new ConflictError(); return this.decode(rows[0]);
   }
   async remove(workspace: string, kind: string, id: string) { workspace=this.namespace+workspace; await this.init(); await this.raw('DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id', [workspace,kind,id]); }
+  // Only the owner-approved USAC example may cross guest workspace boundaries.
+  async approvedUsacExample() {
+    await this.init();
+    const rows = await this.raw("SELECT * FROM fmp_records WHERE kind=$1 AND id=$2 AND workspace LIKE $3 ORDER BY updated_at ASC LIMIT 1", ['prediction','run-5f87d59b-c095-4374-83b0-eedf045e83bb','preview-guest-%']);
+    return rows[0] ? this.decode(rows[0]).value : null;
+  }
   async close() { await this.pool?.end(); this.sqlite?.close(); this.ready = undefined; this.sqlite = undefined; this.pool = undefined; }
 }

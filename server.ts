@@ -1,3 +1,4 @@
+import {ensureUsacExample} from './src/server/usacExample';
 import {contingencyEstimate} from './src/server/contingencyEstimate';
 import {repairExtraction} from './src/server/aiExtractionRepair';
 import {advanceResearch,advanceResearchParallel,RESEARCH_VERSION} from './src/server/researchWorkflow.js';
@@ -823,6 +824,7 @@ app.get('/api/historical-scorecard.csv',async(req,res)=>{
 
 app.get('/api/runs', async (req, res) => {
   try {
+    await ensureUsacExample(runStore,req.principal.workspace);
     const archived = await archivedRunIds(runStore, req.principal.workspace);
     const saved = (await runStore.list<OpportunityAnalysis>(req.principal.workspace, 'analysis')).filter(item => !archived.has(item.id));
     res.json({ data: await Promise.all(saved.map(async item=>{const frozen=await loadPrediction(runStore,req.principal.workspace,item.id);return{...(frozen?await withOutcome(runStore,req.principal.workspace,frozen):normalizeIncomingRun(item.value,true)),storageVersion:item.version};})) });
