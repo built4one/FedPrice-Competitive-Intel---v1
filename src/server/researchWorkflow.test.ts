@@ -157,3 +157,37 @@ test('historical strategy is framed at the proposal deadline rather than rejecte
  const result=await synthesizePtwStrategy(analysis,{interpret:async<T>(prompt:string)=>{assert.match(prompt,/HISTORICAL DECISION SIMULATION AS OF 2025-06-30/);assert.match(prompt,/Do not treat the present-day expired status/);return strategy as T;}});
  assert.equal(result.status,'DRAFT');
 });
+test('malformed discovery URLs preserve cited sources and record coverage',async()=>{
+ for(const urls of [null,{},'https://example.gov/document',42]){
+  const draft=pricedServicesFixture() as any,state=newResearchState();
+  const deps:any={client:{research:async()=>({analysis:{urls},sources:[{url:'https://example.gov/document',title:'Original'},null]}),interpret:async()=>raw()},normalize:async(f:any)=>f,extract:async()=>draft,samAttachments:async()=>[]};
+  await advanceResearch(draft,state,{providedNames:[],originalFiles:[]},deps);
+  assert.equal(state.sources.length,1);assert.match(state.warnings.join(' '),/malformed discovery URLs/);assert.equal(state.attempts[0].status,'RUNNING');
+ }
+});
+test('parallel sources preserve sequential admitted evidence, exclusions and competitor depth',async()=>{
+ const {advanceResearchParallel}=await import('./researchWorkflow');
+ const initial=pricedServicesFixture() as any;initial.evidence=[];initial.competitors=[];
+ const state=newResearchState();state.index=1;state.phase='READ';
+ state.sources=Array.from({length:6},(_,i)=>({...source(),id:`S${i}`,url:`https://example.gov/source-${i}`,name:`source-${i}`,task:'COMPETITION' as const,status:'DISCOVERED' as const}));
+ const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
+ let active=0,peak=0;
+ const deps:any={client:{research:async()=>({analysis:{urls:[]},sources:[]}),interpret:async(prompt:string)=>{
+  active++;peak=Math.max(peak,active);await new Promise(r=>setTimeout(r,2));active--;
+  const id=Number(prompt.match(/SOURCE https:\/\/example.gov\/source-(\d)/)![1]);
+  return {...raw(),kind:id===4?'TARGET_OUTCOME':'MARKET',...(id===5?{publishedAt:'2025-07-01',dateQuote:'Revised July 1, 2025.'}:{}),competitors:Array.from({length:12},(_,i)=>({name:`Bidder ${i}`,rationale:'Mentioned in original source',bidIntent:'UNKNOWN'}))};
+ }},read:async()=>({buffer:Buffer.from(source().text!+' Revised July 1, 2025. '+Array.from({length:12},(_,i)=>`Bidder ${i}`).join(' ')+' Original dated market record with full source text.'),type:'text/plain'}),normalize:async(f:any)=>f,extract:async()=>initial};
+ async function run(parallel:boolean){let draft=structuredClone(initial),s=structuredClone(state);for(let i=0;i<30&&!s.done&&s.index===1;i++){const r=await (parallel?advanceResearchParallel:advanceResearch)(draft,s,opts,deps);draft=r.draft;s=r.state;}return{draft,s};}
+ const serial=await run(false),parallel=await run(true);
+ assert.equal(peak,3);assert.deepEqual(parallel.draft.evidence.map(({retrievedAt,...e}:any)=>e),serial.draft.evidence.map(({retrievedAt,...e}:any)=>e));assert.deepEqual(parallel.draft.competitors,serial.draft.competitors);
+ assert.deepEqual(parallel.s.sources.map(s=>[s.id,s.status,s.audit]),serial.s.sources.map(s=>[s.id,s.status,s.audit]));
+ assert.equal(parallel.s.sources.filter(s=>s.status==='EXCLUDED').length,2);assert.equal(parallel.s.sources.filter(s=>s.status==='ADMITTED').length,4);
+});
+test('parallel interpretation retries only the failed source and preserves successful sources',async()=>{
+ const {advanceResearchParallel}=await import('./researchWorkflow');let calls=0;
+ let draft=pricedServicesFixture() as any,state=newResearchState();state.index=2;state.phase='INTERPRET';state.sources=[source()];
+ const deps:any={client:{interpret:async()=>{calls++;throw Error('provider unavailable');}},normalize:async(f:any)=>f,extract:async()=>draft};
+ const opts={historical:true,cutoff:'2025-06-30',providedNames:[],originalFiles:[]};
+ ({draft,state}=await advanceResearchParallel(draft,state,opts,deps));assert.equal(state.sources[0].status,'READ');
+ ({draft,state}=await advanceResearchParallel(draft,state,opts,deps));assert.equal(state.sources[0].status,'FAILED');assert.equal(calls,2);assert.match(state.warnings.join(' '),/after one retry/);
+});

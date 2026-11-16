@@ -47,3 +47,11 @@ test('research fails when no web search occurred', async () => {
   ]));
   await assert.rejects(client.research('Public facts'), /did not perform public web research/);
 });
+test('malformed response arrays do not mask valid search citations',async()=>{
+ const client=new OpenAIIntelligence('test','test',async()=>response([
+  null,{type:'web_search_call',action:{sources:{bad:true}}},
+  {type:'message',content:[null,{type:'output_text',text:'{"urls":{}}',annotations:{bad:true}}]},
+  {type:'web_search_call',action:{sources:[null,{url:'https://example.gov/source'}]}}
+ ]));
+ const r=await client.research('test');assert.equal(r.sources.length,1);assert.equal(r.sources[0].url,'https://example.gov/source');
+});

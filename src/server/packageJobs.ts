@@ -86,15 +86,25 @@ export class PackageJobs {
     await this.store.put(workspace,'package-job',id,{...job,status:'CANCELED'},row.version);
     for(const f of job.files)for(let i=0;i<f.chunks;i++)await this.store.remove(workspace,'package-chunk',`${id}:${f.id}:${i}`);
     for(const d of job.documents)for(const kind of ['package-source','package-text','package-reading'])await this.store.remove(workspace,kind,`${id}:${d.id}`);
-    for(const kind of ['package-draft','historical-context','package-result','package-research'])await this.store.remove(workspace,kind,id);
+    for(const kind of ['package-draft','historical-context','package-result','package-research','package-profile'])await this.store.remove(workspace,kind,id);
     await this.store.remove(workspace,'package-job',id);
+  }
+  async advanceUntilYield(workspace:string,id:string){
+    const start=Date.now();let job:PackageJob;
+    // Keep all durable checkpoints, but avoid a browser round trip for every
+    // short transition. Leave 240 seconds for the longest next AI request.
+    for(let n=0;n<20;n++){
+      job=await this.advance(workspace,id);
+      if(job.status!=='READY'||Date.now()-start>=20_000)return job;
+    }
+    return job!;
   }
   async advance(workspace:string,id:string){
     const job=(await this.get(workspace,id)).value;
     if(['COMPLETE','CANCELED'].includes(job.status)||(job.status==='WORKING'&&(job.leaseUntil||0)>Date.now()))return job;
     const spans:Span[]=(await this.store.get<Span[]>(workspace,'package-profile',id))?.value||[];
     let pending=Promise.resolve();
-    const update=()=>{const snapshot=structuredClone(spans);pending=pending.then(async()=>{await this.put(workspace,'package-profile',id,snapshot);});return pending;};
+    const update=()=>{const snapshot=structuredClone(spans);pending=pending.catch(()=>{}).then(async()=>{await this.put(workspace,'package-profile',id,snapshot);});return pending;};
     return profiling(spans,update,()=>timed('STAGE '+job.stage,()=>this.advanceCore(workspace,id)));
   }
   private async advanceCore(workspace:string,id:string){
@@ -216,11 +226,6 @@ export class PackageJobs {
         let draft=(await this.store.get<AiAnalysisDraft>(workspace,'package-draft',id))!.value;
         let research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
         job.researchStartedAt??=Date.now();
-        if(Date.now()-job.researchStartedAt>480000&&!research?.done){
-          research??=newResearchState();research.done=true;
-          const warning='AI output coverage: Research time budget reached (8 minutes); retained admitted sources and continued to pricing with LIMITED confidence.';
-          research.warnings.push(warning);job.warnings.push(warning);await this.put(workspace,'package-research',id,research);
-        }
         if(this.deps.intelligenceStep&&!research?.done){
           const originalFiles=await this.analysisFiles(workspace,job);
           const step=await this.deps.intelligenceStep(draft,research||newResearchState(),{cutoff:job.cutoff,historical:job.mode==='HISTORICAL',opportunityRef:job.opportunityRef,providedNames:job.documents.map(d=>d.name),originalFiles});
@@ -349,7 +354,7 @@ export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependen
   app.get('/api/package-jobs/:id/profile',route(async(req,res)=>{await jobs.get(req.principal.workspace,String(req.params.id));res.json({data:(await store.get(req.principal.workspace,'package-profile',String(req.params.id)))?.value||[]});}));
   app.get('/api/package-jobs/:id',route(async(req,res)=>{res.json({data:(await jobs.get(req.principal.workspace,String(req.params.id))).value});}));
   app.put('/api/package-jobs/:id/chunks/:file/:index',express.raw({type:'application/octet-stream',limit:'2100kb'}),route(async(req,res)=>{res.json({data:await jobs.chunk(req.principal.workspace,String(req.params.id),String(req.params.file),Number(req.params.index),req.body)});}));
-  app.post('/api/package-jobs/:id/advance',route(async(req,res)=>{res.json({data:await jobs.advance(req.principal.workspace,String(req.params.id))});}));
+  app.post('/api/package-jobs/:id/advance',route(async(req,res)=>{res.json({data:await jobs.advanceUntilYield(req.principal.workspace,String(req.params.id))});}));
   app.post('/api/package-jobs/:id/replay',route(async(req,res)=>{res.json({data:await jobs.replay(req.principal.workspace,String(req.params.id))});}));
   app.delete('/api/package-jobs/:id',route(async(req,res)=>{await jobs.deletePaused(req.principal.workspace,String(req.params.id));res.json({deleted:true});}));
   app.post('/api/package-jobs/:id/cancel',route(async(req,res)=>{res.json({data:await jobs.cancel(req.principal.workspace,String(req.params.id))});}));

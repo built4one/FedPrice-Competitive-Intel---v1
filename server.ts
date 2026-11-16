@@ -1,6 +1,6 @@
 import {contingencyEstimate} from './src/server/contingencyEstimate';
 import {repairExtraction} from './src/server/aiExtractionRepair';
-import {advanceResearch,RESEARCH_VERSION} from './src/server/researchWorkflow.js';
+import {advanceResearch,advanceResearchParallel,RESEARCH_VERSION} from './src/server/researchWorkflow.js';
 import { archivedRunIds, installArchiveRoutes } from './src/server/runArchive.js';
 import {predictionExport} from './src/server/predictionExports.js';
 import {blindHistoricalInput} from './src/server/historical.js';
@@ -690,7 +690,7 @@ Do not infer company-specific costs, staffing, or bids.`)
 export async function priceSolicitation(analysis: OpportunityAnalysis,batchSize=Infinity) {
   const basket=reconcileBasket(analysis.deal);analysis.deal=basket.deal;analysis.meta.warnings.push(...basket.notes,...basket.blockers);
   if(basket.blockers.length)return enforceAuthoritativeAnalysis(analysis);
-  const warnings=await completePlanningInputs(analysis.deal,analysis.evidence,undefined,batchSize,analysis.historical?.cutoff);
+  const warnings=await completePlanningInputs(analysis.deal,analysis.evidence,undefined,batchSize,analysis.historical?.cutoff,3);
   analysis.meta.warnings.push(...warnings);
   return enforceAuthoritativeAnalysis(analysis);
 }
@@ -700,7 +700,7 @@ export async function analyzeFiles(files: AnalysisFile[]): Promise<OpportunityAn
 }
 installPackageRoutes(app,runStore,{
  normalize:normalizeAnalysisFiles,extract:extractSolicitation,
- intelligenceStep:(draft,state,options)=>advanceResearch(draft,state,options,{normalize:normalizeAnalysisFiles,extract:extractSolicitation}),
+ intelligenceStep:(draft,state,options)=>advanceResearchParallel(draft,state,options,{normalize:normalizeAnalysisFiles,extract:extractSolicitation}),
  research:async(draft,_sourceDocuments,options)=>{
   const warnings=[...((draft as any).aiCoverageNotes||[]),...assessEligibility(draft.deal,new Date(),{historical:options?.historical})];
   const analyzedAt=new Date().toISOString(),{marketAssessment:_marketAssessment,...fields}=draft;

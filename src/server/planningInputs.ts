@@ -1,3 +1,4 @@
+import {mapConcurrent} from './concurrency';
 import {blindHistoricalInput} from './historical';
 import type { DealProfile, EvidenceItem, PlanningInput } from '../types';
 import { OpenAIIntelligence, type LegacySchema } from './openaiIntelligence';
@@ -8,7 +9,7 @@ const fields={id:{type:'STRING'},label:{type:'STRING'},kind:{type:'STRING',enum:
 const schema:LegacySchema={type:'OBJECT',properties:{inputs:{type:'ARRAY',items:{type:'OBJECT',properties:fields,required:Object.keys(fields)}}},required:['inputs']};
 
 /** Bounded planning hypotheses are stored separately from source facts and rates. */
-export async function completePlanningInputs(deal:DealProfile,evidence:EvidenceItem[],client=new OpenAIIntelligence(undefined,undefined,fetch,180_000,'low'),batchSize=Infinity,cutoff?:string):Promise<string[]> {
+export async function completePlanningInputs(deal:DealProfile,evidence:EvidenceItem[],client=new OpenAIIntelligence(undefined,undefined,fetch,180_000,'low'),batchSize=Infinity,cutoff?:string,concurrency=1):Promise<string[]> {
   const model=buildLaborModel(deal,evidence);
   const missingRoles=[...new Set(model.quantityRows.filter(q=>!model.rows.some(r=>r.id===q.id)).map(q=>q.title))];
   const needs=[...missingRoles.map(title=>({id:`PLAN-${title}`,label:title,kind:'LABOR_RATE',quantity:1,unit:'loaded USD/hour',quantitySource:deal.laborSignals.find(s=>s.title===title)?.section||model.quantityRows.find(q=>q.title===title)?.source})),
@@ -17,11 +18,12 @@ export async function completePlanningInputs(deal:DealProfile,evidence:EvidenceI
   const existing=(deal.planningInputs||[]).filter(p=>validPlanningInput(p)&&needs.some(n=>n.id===p.id&&n.kind===p.kind&&n.label===p.label&&n.quantity===p.quantity));
   const pending=needs.filter(n=>!existing.some(p=>p.id===n.id));
   if(!pending.length)return [];
-  const batch=pending.slice(0,batchSize);
+  const size=Number.isFinite(batchSize)?Math.max(1,batchSize):pending.length;
+  const batches=Array.from({length:Math.min(Math.max(1,concurrency),Math.ceil(pending.length/size))},(_,i)=>pending.slice(i*size,(i+1)*size));
   const sourceEvidence=evidence.filter(e=>e.numeric || e.type==='SOLICITATION_FACT').map(e=>{const n=e.numeric;return {...e,numeric:n?{...n,rateDistribution:undefined,rateRecords:n.rateRecords?.slice(0,3)}:undefined};});
   const promptDeal=cutoff?blindHistoricalInput(deal,deal):deal;
   const promptEvidence=cutoff?blindHistoricalInput(sourceEvidence,deal):sourceEvidence;
-  const answer=await client.interpret<{inputs:PlanningInput[]}>(`Develop bounded pricing assumptions for the exact missing price inputs below. You are a Federal pricing analyst. The recommendation must cover every reconstructable evaluated quantity.
+  const answers=await mapConcurrent(batches,3,async batch=>{try{return {batch,answer:await client.interpret<{inputs:PlanningInput[]}>(`Develop bounded pricing assumptions for the exact missing price inputs below. You are a Federal pricing analyst. The recommendation must cover every reconstructable evaluated quantity.
 ${cutoff?`HISTORICAL CUTOFF: ${cutoff}. Opportunity identifiers are withheld. Use only the admitted evidence. Any estimate based on general model knowledge is an unvalidated retrospective approximation; do not claim contemporaneous market verification.`:""}
 These are explicitly PROVISIONAL PLANNING HYPOTHESES, never extracted facts, verified prices, vendor quotes, or competitor bids. They will be visibly labeled, with limited recommendation confidence.
 Use a relevant cited numeric input first. Explain any occupational analogy and qualifications/worksite differences. If no relevant price exists, make a transparent engineering estimate from the actual work, units, technical requirements and ordinary procurement economics. Explain the concrete cost drivers, arithmetic and scope behind low/central/high. Do not apply universal discounts or blanket contingency percentages. Do not invent sources or citations. An unsupported hypothesis must have basis PLANNING_ASSUMPTION and no evidence IDs. An ANALOGY must cite a genuinely relevant numeric evidence ID and state why comparable.
@@ -29,10 +31,13 @@ Each bound must describe a plausible delivery condition. central must be between
 Return exactly one input per requested item. Existing items are not to be repriced.
 REQUESTED INPUTS: ${JSON.stringify(batch)}
 DEAL: ${JSON.stringify(promptDeal)}
-SOURCE EVIDENCE: ${JSON.stringify(promptEvidence)}`,schema);
+SOURCE EVIDENCE: ${JSON.stringify(promptEvidence)}`,schema)};}catch(error){return{batch,answer:{inputs:[] as PlanningInput[]},error:error instanceof Error?error.message:String(error)};}});
+  if(answers.every(a=>a.error))throw new Error(answers.map(a=>a.error).join('; '));
   const warnings:string[]=[];
   const inputs:PlanningInput[]=[...existing];
-  for(const need of batch){
+  for(const {batch,answer,error} of answers){
+   if(error)warnings.push(`AI output coverage: Pricing batch unavailable: ${error}. Other completed inputs retained.`);
+   for(const need of batch){
     const p=(Array.isArray(answer?.inputs)?answer.inputs:[]).find(p=>p && p.id===need.id && p.label===need.label && p.kind===need.kind);
     if(!p || !validPlanningInput(p) || p.quantity!==need.quantity){warnings.push(`${need.label}: bounded pricing assumption failed validation; retry price completion.`);continue;}
     // The caller cannot promote an invented citation or a general URL into an anchor.
@@ -40,6 +45,7 @@ SOURCE EVIDENCE: ${JSON.stringify(promptEvidence)}`,schema);
     if(!p.evidenceIds.length)p.basis='PLANNING_ASSUMPTION';
     p.quantitySource=need.quantitySource||p.quantitySource;
     inputs.push(p);
+  }
   }
   deal.planningInputs=inputs;
   return warnings;

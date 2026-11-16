@@ -28,6 +28,8 @@ type ResponseOutput = {
 
 type OpenAIResponse = { status?: string; error?: { message?: string }; output?: ResponseOutput[] };
 
+const array=<T>(v:T[]|undefined):T[]=>Array.isArray(v)?v:[];
+
 function strictSchema(schema: LegacySchema): Record<string, unknown> {
   const type = schema.type.toLowerCase();
   if (type === 'array') return { type, items: strictSchema(schema.items!) };
@@ -98,8 +100,8 @@ export class OpenAIIntelligence {
   }
 
   private parse<T>(response: OpenAIResponse): T {
-    const text = response.output?.flatMap((item) => item.type === 'message'
-      ? (item.content || []).filter((part) => part.type === 'output_text').map((part) => part.text || '')
+    const text = array(response.output).filter(Boolean).flatMap((item) => item.type === 'message'
+      ? array(item.content).filter(Boolean).filter((part) => part.type === 'output_text').map((part) => part.text || '')
       : []).join('') || '';
     if (!text) throw new Error('OpenAI returned no analysis text.');
     try { return omitNulls(JSON.parse(text.trim().replace(/^```(?:json)?\s*/i,'').replace(/\s*```$/,''))) as T; }
@@ -145,13 +147,13 @@ export class OpenAIIntelligence {
       include: ['web_search_call.action.sources'],
       text: { verbosity: 'low' },
     });
-    const searched = result.output?.some((item) => item.type === 'web_search_call');
+    const searched = array(result.output).filter(Boolean).some((item) => item.type === 'web_search_call');
     if (!searched) throw new Error('OpenAI did not perform public web research.');
-    const sources = result.output?.flatMap((item) => [
-      ...(item.action?.sources || []),
-      ...(item.content || []).flatMap((part) => part.annotations || []),
+    const sources = array(result.output).filter(Boolean).flatMap((item) => [
+      ...array(item.action?.sources),
+      ...array(item.content).filter(Boolean).flatMap((part) => array(part.annotations)),
     ]).filter((source): source is { url: string; title?: string } => {
-      try { return new URL(source.url || '').protocol === 'https:'; }
+      try { return new URL(source?.url || '').protocol === 'https:'; }
       catch { return false; }
     }) || [];
     return {

@@ -114,3 +114,13 @@ test('package deletion rejects resumable workers and completed predictions',asyn
   assert.ok(await jobs.get('alice',job.id));
  }
 });
+test('short checkpoints drain without client waiting and still save price and isolated progress',async(t)=>{
+ const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
+ let extracts=0;
+ const jobs=new PackageJobs(store,{normalize:async f=>f,extract:async()=>{extracts++;return pricedServicesFixture() as any;},research:async()=>pricedServicesFixture(),price:async a=>({...a,competitivePosition:calculateCompetitivePosition(a)})});
+ const bytes=Buffer.from('CLIN 0001 services base 12 months; lowest price acceptable');
+ let job=await jobs.create('drain',{files:[{name:'scope.txt',size:bytes.length}]});await jobs.chunk('drain',job.id,'input-0',0,bytes);
+ job=await jobs.advanceUntilYield('drain',job.id);assert.equal(job.status,'COMPLETE');assert.equal(extracts,1);
+ const result=await store.get<any>('drain','analysis',job.runId!);assert.ok(result?.value.competitivePosition.target>0);
+ const spans=await store.get<any[]>('drain','package-profile',job.id);assert.ok(spans?.value.some(s=>s.name==='STAGE EXTRACTION'));assert.equal(await store.get('other','package-profile',job.id),null);
+});
