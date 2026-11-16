@@ -1030,7 +1030,7 @@ function calculateCompetitivePosition(analysis) {
     quantityComplete: model2.quantityComplete
   };
   const estimate = analysis.meta?.contingencyEstimate;
-  if (!result.target && estimate && [estimate.low, estimate.central, estimate.high].every((v) => Number.isFinite(v) && v > 0) && estimate.low <= estimate.central && estimate.central <= estimate.high) {
+  if (estimate && [estimate.low, estimate.central, estimate.high].every((v) => Number.isFinite(v) && v > 0) && estimate.low <= estimate.central && estimate.central <= estimate.high) {
     result.status = "CONDITIONAL";
     result.target = estimate.central;
     result.rangeLow = estimate.low;
@@ -1061,7 +1061,7 @@ var string = { type: "STRING" };
 var number = { type: "NUMBER" };
 var schema = { type: "OBJECT", properties: { low: number, central: number, high: number, basis: string, assumptions: { type: "ARRAY", items: string }, missing: { type: "ARRAY", items: string } }, required: ["low", "central", "high", "basis", "assumptions", "missing"] };
 async function contingencyEstimate(a, client = new OpenAIIntelligence(void 0, void 0, fetch, 75e3, "low")) {
-  if (a.competitivePosition?.target) return a;
+  if (a.competitivePosition?.target && a.deal.evaluationPricing?.completeness === "COMPLETE") return a;
   const input = { deal: a.deal, evidence: a.evidence, missing: a.competitivePosition?.missing };
   const blinded = a.historical ? blindHistoricalInput(input, a.deal) : input;
   for (let attempt = 0; attempt < 2; attempt++) {
@@ -3608,6 +3608,7 @@ var PackageJobs = class {
       if (["PRICING", "STRATEGY"].includes(job.stage)) {
         const saved = (await this.store.get(workspace, "package-result", id))?.value;
         const research = (await this.store.get(workspace, "package-research", id))?.value;
+        if (job.stage === "STRATEGY" && this.deps.estimate && !job.estimateCompleted && !saved?.meta.contingencyEstimate && saved?.deal.evaluationPricing?.completeness !== "COMPLETE") job.stage = "ESTIMATE";
         if (saved && research && !job.warnings.some((w) => /Research unavailable after one retry|Research time budget/.test(w)) && rateRechecks(research, saved).length) {
           research.done = false;
           research.index = 2;
@@ -3829,7 +3830,7 @@ ${text2}`);
         const completedBefore = prior.deal.planningInputs?.length || 0;
         let analysis = await this.deps.price(prior);
         analysis.meta.warnings = [.../* @__PURE__ */ new Set([...analysis.meta.warnings, ...job.warnings, ...job.documents.filter((d) => ["UNREADABLE", "UNSUPPORTED", "EXCERPTS"].includes(d.status)).map((d) => `${d.name}: ${d.note}`), coverage.freshness.message])];
-        if (!analysis.competitivePosition?.target) {
+        if (!analysis.competitivePosition?.target || this.deps.estimate && analysis.deal.evaluationPricing?.completeness !== "COMPLETE") {
           await this.put(workspace, "package-result", id, analysis);
           const completed = analysis.deal.planningInputs?.length || 0;
           if (completed > completedBefore) {
@@ -3855,6 +3856,7 @@ ${text2}`);
       } else if (job.stage === "ESTIMATE") {
         let analysis = (await this.store.get(workspace, "package-result", id)).value;
         analysis = await this.deps.estimate(analysis);
+        job.estimateCompleted = true;
         await this.put(workspace, "package-result", id, analysis);
         if (this.deps.strategy) {
           job.stage = "STRATEGY";

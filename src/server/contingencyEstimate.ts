@@ -7,7 +7,7 @@ const string={type:'STRING'},number={type:'NUMBER'};
 const schema:LegacySchema={type:'OBJECT',properties:{low:number,central:number,high:number,basis:string,assumptions:{type:'ARRAY',items:string},missing:{type:'ARRAY',items:string}},required:['low','central','high','basis','assumptions','missing']};
 /** Last-resort engineering estimate. Kept outside evidence and the extracted quantity ledger. */
 export async function contingencyEstimate(a:OpportunityAnalysis,client:Pick<OpenAIIntelligence,'interpret'>=new OpenAIIntelligence(undefined,undefined,fetch,75000,'low')){
- if(a.competitivePosition?.target)return a;
+ if(a.competitivePosition?.target&&a.deal.evaluationPricing?.completeness==='COMPLETE')return a;
  const input={deal:a.deal,evidence:a.evidence,missing:a.competitivePosition?.missing};
  const blinded=a.historical?blindHistoricalInput(input,a.deal):input;
  for(let attempt=0;attempt<2;attempt++){

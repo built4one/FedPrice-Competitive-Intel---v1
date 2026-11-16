@@ -37,3 +37,9 @@ for(const stage of ['RESEARCH','PRICING','STRATEGY'] as const)test(`${stage} fai
  let result=job;for(let n=0;n<6&&result.status!=='COMPLETE';n++)result=await jobs.advance('recovery',job.id);
  assert.equal(result.status,'COMPLETE');assert.equal(calls,2);const saved=(await store.get<any>('recovery','analysis',result.runId!))!.value;assert.ok(saved.competitivePosition.target>0);assert.equal(saved.competitivePosition.confidenceLabel,'LIMITED');
 });
+
+test('an incomplete labor subtotal is replaced by a whole-package estimate without changing source quantities',async()=>{
+ const a=pricedServicesFixture();a.deal.laborModelComplete=false;a.deal.evaluationPricing!.completeness='PARTIAL';const quantities=structuredClone(a.deal.laborSignals);let calls=0;
+ await contingencyEstimate(a,{interpret:async<T>()=>{calls++;return {low:1000000,central:2000000,high:4000000,basis:'Synthetic complete scope estimate including unquantified managed service and enhancement obligations.',assumptions:['Synthetic estimating quantities'],missing:['Validate CLIN allocations']} as T;}});
+ assert.equal(calls,1);assert.equal(a.competitivePosition?.target,2000000);assert.equal(a.competitivePosition?.confidenceLabel,'LIMITED');assert.deepEqual(a.deal.laborSignals,quantities);
+});

@@ -98,6 +98,7 @@ export class PackageJobs {
       if(['PRICING','STRATEGY'].includes(job.stage)){
         const saved=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))?.value;
         const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
+        if(job.stage==='STRATEGY'&&this.deps.estimate&&!job.estimateCompleted&&!saved?.meta.contingencyEstimate&&saved?.deal.evaluationPricing?.completeness!=='COMPLETE')job.stage='ESTIMATE';
         if(saved&&research&&!job.warnings.some(w=>/Research unavailable after one retry|Research time budget/.test(w))&&rateRechecks(research,saved).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';}
       }
       if(job.stage==='UPLOADING'){
@@ -247,7 +248,7 @@ export class PackageJobs {
         const completedBefore=prior.deal.planningInputs?.length||0;
         let analysis=await this.deps.price(prior);
         analysis.meta.warnings=[...new Set([...analysis.meta.warnings,...job.warnings,...job.documents.filter(d=>['UNREADABLE','UNSUPPORTED','EXCERPTS'].includes(d.status)).map(d=>`${d.name}: ${d.note}`),coverage.freshness.message])];
-        if(!analysis.competitivePosition?.target){
+        if(!analysis.competitivePosition?.target||(this.deps.estimate&&analysis.deal.evaluationPricing?.completeness!=='COMPLETE')){
           await this.put(workspace,'package-result',id,analysis);
           const completed=analysis.deal.planningInputs?.length||0;
           if(completed>completedBefore){job.message=`${completed} bounded price inputs saved. Completing the remaining basket.`;}
@@ -265,7 +266,7 @@ export class PackageJobs {
         }
       }else if(job.stage==='ESTIMATE'){
         let analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
-        analysis=await this.deps.estimate!(analysis);
+        analysis=await this.deps.estimate!(analysis);job.estimateCompleted=true;
         await this.put(workspace,'package-result',id,analysis);
         if(this.deps.strategy){job.stage='STRATEGY';job.message='Estimate and assumptions saved. Completing the strategic assessment.';}
         else await this.finish(workspace,job,analysis);

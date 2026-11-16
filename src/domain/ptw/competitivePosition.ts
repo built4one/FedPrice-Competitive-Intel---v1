@@ -205,7 +205,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     ceilingExplanation:'A program ceiling does not set PTW and is never divided among awardees. The Government’s evaluated basket controls; reconcile any inconsistency against the solicitation.',
     unpricedRows,totalHours:model.totalHours,pricedHours:rows.reduce((s,r)=>s+r.hours,0),quantityComplete:model.quantityComplete};
   const estimate=analysis.meta?.contingencyEstimate;
-  if(!result.target&&estimate&&[estimate.low,estimate.central,estimate.high].every(v=>Number.isFinite(v)&&v>0)&&estimate.low<=estimate.central&&estimate.central<=estimate.high){
+  if(estimate&&[estimate.low,estimate.central,estimate.high].every(v=>Number.isFinite(v)&&v>0)&&estimate.low<=estimate.central&&estimate.central<=estimate.high){
     result.status='CONDITIONAL';result.target=estimate.central;result.rangeLow=estimate.low;result.rangeHigh=estimate.high;
     result.rangeMeaning='AI ESTIMATE: provisional whole-package engineering scenarios. No sourced price validation; not a statistical interval or observed bids.';
     result.rationale=estimate.basis;result.decisionRequest='Validate the estimating quantities, term, rates and exclusions before treating this as a bid basis.';
