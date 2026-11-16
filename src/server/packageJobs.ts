@@ -1,3 +1,4 @@
+import {profiling,timed,type Span} from './profiling';
 import {enforceAuthoritativeAnalysis} from '../domain/marketPosition/authoritative';
 import {newResearchState,rateRechecks,type ResearchState} from './researchWorkflow';
 import type {PtwStrategyResult} from '../domain/ptw/strategy';
@@ -89,6 +90,14 @@ export class PackageJobs {
     await this.store.remove(workspace,'package-job',id);
   }
   async advance(workspace:string,id:string){
+    const job=(await this.get(workspace,id)).value;
+    if(['COMPLETE','CANCELED'].includes(job.status)||(job.status==='WORKING'&&(job.leaseUntil||0)>Date.now()))return job;
+    const spans:Span[]=(await this.store.get<Span[]>(workspace,'package-profile',id))?.value||[];
+    let pending=Promise.resolve();
+    const update=()=>{const snapshot=structuredClone(spans);pending=pending.then(async()=>{await this.put(workspace,'package-profile',id,snapshot);});return pending;};
+    return profiling(spans,update,()=>timed('STAGE '+job.stage,()=>this.advanceCore(workspace,id)));
+  }
+  private async advanceCore(workspace:string,id:string){
     const row=await this.get(workspace,id);let job=row.value;
     if(['COMPLETE','CANCELED'].includes(job.status))return job;
     if(job.status==='WORKING'&&(job.leaseUntil||0)>Date.now())return job;
@@ -337,6 +346,7 @@ export function installPackageRoutes(app:Express,store:RecordStore,deps:Dependen
   const route=(fn:(req:Request,res:Response)=>Promise<void>)=>async(req:Request,res:Response)=>{try{await fn(req,res);}catch(e){res.status(e instanceof ConflictError?409:400).json({error:e instanceof Error?e.message:'Package request failed.'});}};
   app.get('/api/package-jobs',route(async(req,res)=>{const archived=await archivedRunIds(store,req.principal.workspace);res.json({data:(await store.list<PackageJob>(req.principal.workspace,'package-job')).filter(r=>!r.value.runId||!archived.has(r.value.runId)).map(r=>r.value)});}));
   app.post('/api/package-jobs',route(async(req,res)=>{res.json({data:await jobs.create(req.principal.workspace,req.body)});}));
+  app.get('/api/package-jobs/:id/profile',route(async(req,res)=>{await jobs.get(req.principal.workspace,String(req.params.id));res.json({data:(await store.get(req.principal.workspace,'package-profile',String(req.params.id)))?.value||[]});}));
   app.get('/api/package-jobs/:id',route(async(req,res)=>{res.json({data:(await jobs.get(req.principal.workspace,String(req.params.id))).value});}));
   app.put('/api/package-jobs/:id/chunks/:file/:index',express.raw({type:'application/octet-stream',limit:'2100kb'}),route(async(req,res)=>{res.json({data:await jobs.chunk(req.principal.workspace,String(req.params.id),String(req.params.file),Number(req.params.index),req.body)});}));
   app.post('/api/package-jobs/:id/advance',route(async(req,res)=>{res.json({data:await jobs.advance(req.principal.workspace,String(req.params.id))});}));

@@ -1,3 +1,4 @@
+import {timed} from './profiling';
 // OpenAI is a source of extracted facts and qualitative hypotheses. The
 // deterministic market-position engine remains the only dollar authority.
 export interface IntelligenceFile {
@@ -71,12 +72,12 @@ export class OpenAIIntelligence {
     // Both attempts share one deadline, leaving time for the job checkpoint.
     for(let attempt=0;attempt<2;attempt++){
       try{
-        const response = await this.request('https://api.openai.com/v1/responses', {
+        const response = await timed('AI '+(body.tools?'research':(body.text as any)?.format?.name||'interpret'),()=>this.request('https://api.openai.com/v1/responses', {
           method: 'POST',
           headers: { Authorization: `Bearer ${this.key}`, 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, store: false, ...(this.reasoningEffort?{reasoning:{effort:this.reasoningEffort}}:{}), ...body }),
           signal,
-        });
+        }));
         const data = await response.json() as OpenAIResponse;
         if (!response.ok){
           const quota=/insufficient_quota|quota|billing|credit/i.test(data.error?.message||'');

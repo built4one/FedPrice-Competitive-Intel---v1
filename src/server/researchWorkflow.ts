@@ -1,3 +1,4 @@
+import {timed} from './profiling';
 import crypto from 'node:crypto';
 import {lookup} from 'node:dns/promises';
 import {isIP} from 'node:net';
@@ -243,7 +244,7 @@ export async function advanceResearch(draft:AiAnalysisDraft,state:ResearchState,
    if(!usable&&passes<2){state.phase='DISCOVER';state.warnings.push(`${task}: no usable evidence from the first search; trying different original sources.`);return{draft,state};}
    state.index++;state.phase='DISCOVER';state.done=state.index>=tasks.length;for(const a of state.attempts.filter(a=>a.task===task&&a.status==='RUNNING')){a.status='COMPLETE';a.message=`${state.sources.filter(s=>s.task===task&&s.status==='ADMITTED').length} source versions admitted; limitations retained.`;}return{draft,state};}
   try{
-   const got=await(deps.read||readPublicDocument)(source.url);source.sha256=sha(got.buffer);
+   const got=await timed('DOWNLOAD '+source.id,()=>(deps.read||readPublicDocument)(source.url));source.sha256=sha(got.buffer);
    let text:string;
    if(got.buffer.subarray(0,5).toString()==='%PDF-'||/officedocument|excel/.test(got.type)){
     const type=got.buffer.subarray(0,5).toString()==='%PDF-'?'application/pdf':got.type;
