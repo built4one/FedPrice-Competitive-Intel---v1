@@ -30,3 +30,30 @@ export function strongest(rows:unknown[],limit:number,score:(value:any)=>number)
   return rows.map((value,index)=>({value,index,score:score(value)}))
     .sort((a,b)=>b.score-a.score || a.index-b.index).slice(0,limit).map(r=>r.value);
 }
+
+/** Repair structural output only. Never manufacture numeric evidence or source classifications. */
+export function repairAiOutput(value:unknown,schema:z.ZodTypeAny,notes:string[],path=''):unknown {
+  const note=(action:string)=>notes.push(`AI output coverage: ${path||'root'}: ${action}.`);
+  if(schema instanceof z.ZodDefault){if(value==null){note('used schema default');return schema._def.defaultValue();}return repairAiOutput(value,schema._def.innerType,notes,path);}
+  if(schema instanceof z.ZodOptional || schema instanceof z.ZodNullable){if(value==null)return undefined;return repairAiOutput(value,schema._def.innerType,notes,path);}
+  if(schema instanceof z.ZodEffects)return repairAiOutput(value,schema.innerType(),notes,path);
+  if(schema instanceof z.ZodObject){
+    const input=value&&typeof value==='object'&&!Array.isArray(value)?value as Record<string,unknown>:{};
+    if(input!==value)note('replaced invalid object with empty fields');
+    return Object.fromEntries(Object.entries(schema.shape).map(([k,s])=>[k,repairAiOutput(input[k],s as z.ZodTypeAny,notes,path?`${path}.${k}`:k)]));
+  }
+  if(schema instanceof z.ZodArray){
+    if(!Array.isArray(value)){note('replaced invalid or missing array with empty array');return [];}
+    return value.flatMap((v,i)=>{const fixed=repairAiOutput(v,schema.element,notes,`${path}[${i}]`);if(!schema.element.safeParse(fixed).success){note(`dropped invalid item ${i}`);return [];}return [fixed];});
+  }
+  if(schema instanceof z.ZodEnum && !schema.options.includes(value)){
+    const fallback=['UNKNOWN','ASSUMPTION'].find(v=>schema.options.includes(v));
+    note(`invalid enum defaulted to ${fallback||'unavailable'}`);return fallback;
+  }
+  if(schema instanceof z.ZodString){
+    if(typeof value!=='string'){note('replaced invalid or missing text with empty text');return '';}
+    const max=schema._def.checks.find(c=>c.kind==='max');
+    if(max&&max.kind==='max'&&value.length>max.value){note(`trimmed text from ${value.length} to ${max.value} characters`);return value.slice(0,max.value);}
+  }
+  return value;
+}

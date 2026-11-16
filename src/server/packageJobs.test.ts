@@ -62,8 +62,8 @@ test('saved stages survive service failure, skip a corrupt attachment, and remai
  let jobs=new PackageJobs(store,deps);let j=await jobs.create('alice',{files:[{name:input.originalname,size:input.size}]});
  await assert.rejects(jobs.get('bob',j.id),/workspace/);
  j=await jobs.chunk('alice',j.id,'input-0',0,input.buffer);
- for(let n=0;n<12&&j.status!=='PAUSED';n++)j=await jobs.advance('alice',j.id);
- assert.equal(j.stage,'RESEARCH');assert.equal(j.status,'PAUSED');assert.equal(extracts,1);
+ for(let n=0;n<12&&researches===0;n++)j=await jobs.advance('alice',j.id);
+ assert.equal(j.stage,'RESEARCH');assert.equal(j.status,'READY');assert.equal(extracts,1);
  await store.close();store=new RecordStore(options);jobs=new PackageJobs(store,deps);
  for(let n=0;n<5&&j.status!=='COMPLETE';n++)j=await jobs.advance('alice',j.id);
  assert.equal(j.status,'COMPLETE');assert.equal(extracts,1);assert.equal(researches,2);

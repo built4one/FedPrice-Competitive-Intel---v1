@@ -7,7 +7,7 @@ import { strategyResponseSchema } from './strategyResponseSchema';
 import { resolvedGap, supportedCompetitors } from '../domain/sourceConsistency';
 import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
 import { claimSupportIssue, readableDecisionText } from '../domain/governmentRules';
-import {trimAiArrays,strongest} from './aiArrayLimits';
+import {trimAiArrays,strongest,repairAiOutput} from './aiArrayLimits';
 
 export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.5.0';
 type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition' | 'historical'>;
@@ -60,7 +60,7 @@ export function validateStrategy(raw: unknown, analysis: StrategyInput, coverage
   const bounded=trimAiArrays(input,strategySchema,coverageNotes,(rows,limit,path)=>strongest(rows,limit,v=>
     path==='options'&&v?.id===input.recommendation?.selectedOptionId?Number.MAX_SAFE_INTEGER:
     path==='recommendation.alternatives'&&input.options?.some((o:any)=>o.id===v?.optionId&&o.id!==input.recommendation?.selectedOptionId)?Number.MAX_SAFE_INTEGER:support(v)));
-  const result = strategySchema.parse(bounded);
+  const result = strategySchema.parse(repairAiOutput(bounded,strategySchema,coverageNotes));
   const evidence = new Map(analysis.evidence.map(e => [e.id, e]));
   const ids = result.options.map(o => o.id);
   if (new Set(ids).size !== ids.length || !ids.includes(result.recommendation.selectedOptionId)) throw new Error('Strategy option selection is inconsistent.');

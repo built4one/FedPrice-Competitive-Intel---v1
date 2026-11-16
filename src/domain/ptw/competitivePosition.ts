@@ -196,7 +196,7 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
   const status:CompetitivePosition['status']=hasTarget?(evaluationComplete?'FULL':'CONDITIONAL'):central>0?'PARTIAL':'NOT_SUPPORTABLE';
   assumptions.push('Public loaded rates are price proxies, not company cost. No second labor burden, profit or universal ceiling-to-offer discount is applied.',
     'Corridor endpoints are conditional economic cases, not observed competitor bids, a statistical interval or a win probability.');
-  return {version:COMPETITIVE_POSITION_VERSION,status,priceOrderFirst,evaluationComplete,target:hasTarget?central:null,rangeLow:hasTarget?low:null,rangeHigh:hasTarget?high:null,
+  const result:CompetitivePosition={version:COMPETITIVE_POSITION_VERSION,status,priceOrderFirst,evaluationComplete,target:hasTarget?central:null,rangeLow:hasTarget?low:null,rangeHigh:hasTarget?high:null,
     rangeMeaning:assumptionShare>0?'Conditional price scenarios from documented quantities and explicit rate assumptions or analogies. Not an observed competitor-price range or confidence interval.':'Reference price range from the reconstructed basket and sourced rate variation. Schedule ceilings are price references, not observed competitor bids or a confidence interval.',
     rationale,decisionRequest:hasTarget?'Use the Recommended PTW as the working competitive position; validate the highest-impact assumption before committing an offer.':'Reconstruct the missing evaluated quantity or component basis shown below; the known-scope subtotal is retained.',
     rows,components,scenarios,missing:unique(missing),assumptions:unique(assumptions),
@@ -204,4 +204,16 @@ export function calculateCompetitivePosition(analysis: Pick<OpportunityAnalysis,
     confidenceLabel,confidenceReason,judgment,planningRows,assumptionShare,basisReconstructed,sensitivities,actions,
     ceilingExplanation:'A program ceiling does not set PTW and is never divided among awardees. The Government’s evaluated basket controls; reconcile any inconsistency against the solicitation.',
     unpricedRows,totalHours:model.totalHours,pricedHours:rows.reduce((s,r)=>s+r.hours,0),quantityComplete:model.quantityComplete};
+  const estimate=analysis.meta?.contingencyEstimate;
+  if(!result.target&&estimate&&[estimate.low,estimate.central,estimate.high].every(v=>Number.isFinite(v)&&v>0)&&estimate.low<=estimate.central&&estimate.central<=estimate.high){
+    result.status='CONDITIONAL';result.target=estimate.central;result.rangeLow=estimate.low;result.rangeHigh=estimate.high;
+    result.rangeMeaning='AI ESTIMATE: provisional whole-package engineering scenarios. No sourced price validation; not a statistical interval or observed bids.';
+    result.rationale=estimate.basis;result.decisionRequest='Validate the estimating quantities, term, rates and exclusions before treating this as a bid basis.';
+    result.confidence.overall='LOW';result.confidenceLabel='LIMITED';result.confidenceReason='Whole-package AI estimate substituted for incomplete evidence-based pricing.';
+    result.assumptions=[...result.assumptions,...estimate.assumptions,'Every dollar in this corridor is an AI estimate, not sourced evidence.'];result.missing=unique([...result.missing,...estimate.missing]);
+    result.assumptionShare=1;result.basisReconstructed=false;result.evaluationComplete=false;
+    result.scenarios=([['AGGRESSIVE','Lower estimate',estimate.low],['RECOMMENDED','Central AI estimate',estimate.central],['DEFENSIVE','Upper estimate',estimate.high]] as const).map(([id,label,total])=>({id,label,total,labor:0,nonLabor:total,selected:id==='RECOMMENDED',rationale:estimate.basis,condition:'Unvalidated engineering estimate; review all assumptions.',basis:'PARTIAL_SUBTOTAL'}));
+  }
+  if(analysis.meta?.warnings.some(w=>w.includes('AI output coverage:'))){result.confidence.overall='LOW';result.confidenceLabel='LIMITED';result.confidenceReason+=' AI output required repairs or recovery; see coverage notes.';}
+  return result;
 }

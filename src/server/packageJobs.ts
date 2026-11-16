@@ -1,3 +1,4 @@
+import {enforceAuthoritativeAnalysis} from '../domain/marketPosition/authoritative';
 import {newResearchState,rateRechecks,type ResearchState} from './researchWorkflow';
 import type {PtwStrategyResult} from '../domain/ptw/strategy';
 import {reconcileWorkbookLabor} from './workbookLabor';
@@ -16,6 +17,8 @@ import type {HistoricalDocumentAudit} from '../historicalTypes';
 import type {AiAnalysisDraft,OpportunityAnalysis} from '../types';
 
 interface Dependencies {
+  fallbackExtract?:(files:PackageFile[])=>Promise<AiAnalysisDraft>;
+  estimate?:(analysis:OpportunityAnalysis)=>Promise<OpportunityAnalysis>;
   intelligenceStep?:(draft:AiAnalysisDraft,state:ResearchState,options:{cutoff?:string;historical?:boolean;opportunityRef?:string;providedNames:string[];originalFiles:PackageFile[]})=>Promise<{draft:AiAnalysisDraft;state:ResearchState}>;
   strategy?:(analysis:OpportunityAnalysis)=>Promise<PtwStrategyResult>;
   normalize:(files:PackageFile[])=>Promise<PackageFile[]>;
@@ -95,7 +98,7 @@ export class PackageJobs {
       if(['PRICING','STRATEGY'].includes(job.stage)){
         const saved=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))?.value;
         const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
-        if(saved&&research&&rateRechecks(research,saved).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';}
+        if(saved&&research&&!job.warnings.some(w=>/Research unavailable after one retry|Research time budget/.test(w))&&rateRechecks(research,saved).length){research.done=false;research.index=2;research.phase='READ';await this.put(workspace,'package-research',id,research);job.stage='RESEARCH';job.message='Rechecking saved rate excerpts before completing the price recommendation.';}
       }
       if(job.stage==='UPLOADING'){
         if(job.receivedChunks.length!==job.files.reduce((n,f)=>n+f.chunks,0))throw new Error('Reselect the original files to finish uploading the remaining chunks.');
@@ -165,7 +168,7 @@ export class PackageJobs {
             }
           }catch(error){
             const message=error instanceof Error?error.message:String(error);
-            if(error instanceof OpenAIRequestError||/OpenAI|timeout|abort|429|quota|402|503|502/i.test(message))throw new OpenAIRequestError(`Reading ${doc.name} paused: ${message}. Completed sections are saved; resume to retry the unfinished section.`,error instanceof OpenAIRequestError?error.retryable:/timeout|abort|429|503|502/i.test(message));
+            if(job.attempts<2&&(error instanceof OpenAIRequestError||/OpenAI|timeout|abort|429|quota|402|503|502/i.test(message)))throw new OpenAIRequestError(`Reading ${doc.name} paused: ${message}. Completed sections are saved; resume to retry the unfinished section.`,error instanceof OpenAIRequestError?error.retryable:/timeout|abort|429|503|502/i.test(message));
             doc.status='UNREADABLE';doc.note=message;job.warnings.push(`${doc.name}: ${message}`);
           }
           if(doc.status!=='QUEUED'){job.cursor++;job.message=`Reviewed ${job.cursor} documents. ${job.documents.filter(d=>d.status==='QUEUED').length} remaining.`;}
@@ -187,7 +190,10 @@ export class PackageJobs {
         if(!files.length)throw new Error('No readable content remains. Add a readable solicitation or pricing schedule.');
         const manifest=Buffer.from('PACKAGE INVENTORY — missing or unreadable files are gaps, never evidence that requirements are absent.\n'+JSON.stringify(job.documents.filter(d=>d.status!=='EXCLUDED')));
         files.push({originalname:'Package inventory.txt',mimetype:'text/plain',size:manifest.length,buffer:manifest});
-        let draft=reconcileWorkbookLabor(await this.deps.extract(files,{historical:job.mode==='HISTORICAL'}),files);
+        let extracted:AiAnalysisDraft;
+        try{extracted=await this.deps.extract(files,{historical:job.mode==='HISTORICAL'});}
+        catch(error){if(job.attempts<2||!this.deps.fallbackExtract)throw error;extracted=await this.deps.fallbackExtract(files);job.warnings.push('AI output coverage: Extraction failed after one retry; retained admitted source text for provisional estimation. Structured facts remain unknown.');}
+        let draft=reconcileWorkbookLabor(extracted,files);
         if(job.mode==='HISTORICAL'){
           const context=historicalContext(job.cutoff!,!!job.originalPackageConfirmed,job.documents);
           const texts=new Map<string,string>();for(const d of ordered)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');
@@ -199,7 +205,13 @@ export class PackageJobs {
       }else if(job.stage==='RESEARCH'){
         let draft=(await this.store.get<AiAnalysisDraft>(workspace,'package-draft',id))!.value;
         let research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;
-        if(this.deps.intelligenceStep){
+        job.researchStartedAt??=Date.now();
+        if(Date.now()-job.researchStartedAt>480000&&!research?.done){
+          research??=newResearchState();research.done=true;
+          const warning='AI output coverage: Research time budget reached (8 minutes); retained admitted sources and continued to pricing with LIMITED confidence.';
+          research.warnings.push(warning);job.warnings.push(warning);await this.put(workspace,'package-research',id,research);
+        }
+        if(this.deps.intelligenceStep&&!research?.done){
           const originalFiles=await this.analysisFiles(workspace,job);
           const step=await this.deps.intelligenceStep(draft,research||newResearchState(),{cutoff:job.cutoff,historical:job.mode==='HISTORICAL',opportunityRef:job.opportunityRef,providedNames:job.documents.map(d=>d.name),originalFiles});
           draft=reconcileWorkbookLabor(step.draft,originalFiles);research=step.state;
@@ -233,14 +245,15 @@ export class PackageJobs {
         const coverage:PackageCoverage={documents:job.documents,warnings:[...job.warnings,...prior.meta.warnings.filter(w=>w.includes('AI output coverage:'))],receivedAt:job.receivedAt,mode:job.mode,freshness:{status:'UNVERIFIED',message:job.mode==='HISTORICAL'?`Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.`:'Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency.'}};
         prior.meta.packageCoverage=coverage;
         const completedBefore=prior.deal.planningInputs?.length||0;
-        const analysis=await this.deps.price(prior);
+        let analysis=await this.deps.price(prior);
         analysis.meta.warnings=[...new Set([...analysis.meta.warnings,...job.warnings,...job.documents.filter(d=>['UNREADABLE','UNSUPPORTED','EXCERPTS'].includes(d.status)).map(d=>`${d.name}: ${d.note}`),coverage.freshness.message])];
         if(!analysis.competitivePosition?.target){
           await this.put(workspace,'package-result',id,analysis);
           const completed=analysis.deal.planningInputs?.length||0;
           if(completed>completedBefore){job.message=`${completed} bounded price inputs saved. Completing the remaining basket.`;}
           else {
-            analysis.meta.warnings.push('Numerical recommendation unavailable: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
+            if(this.deps.estimate)analysis=await this.deps.estimate(analysis);
+            if(!analysis.competitivePosition?.target)analysis.meta.warnings.push('Numerical recommendation unavailable: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
             await this.put(workspace,'package-result',id,analysis);
             if(this.deps.strategy){job.stage='STRATEGY';job.message='Pricing limitations saved. Developing a source-backed strategic assessment.';}
             else await this.finish(workspace,job,analysis);
@@ -253,13 +266,30 @@ export class PackageJobs {
       }else if(job.stage==='STRATEGY'){
         const analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
         const result=await this.deps.strategy!(analysis);
-        if(result.status!=='DRAFT')throw new OpenAIRequestError(result.reason,true);
+        if(result.status!=='DRAFT')this.limit(analysis,job,`Strategy unavailable after one retry: ${result.reason}`);
         analysis.ptwStrategy=result;
         await this.put(workspace,'package-result',id,analysis);
         await this.finish(workspace,job,analysis);
       }
       if(job.status!=='COMPLETE')job.status='READY';job.attempts=0;job.retryable=false;job.leaseUntil=undefined;
-    }catch(error){job.status='PAUSED';job.leaseUntil=undefined;job.retryable=error instanceof OpenAIRequestError&&error.retryable;job.message=error instanceof Error?error.message:'Processing paused. Your completed stages are saved.';}
+    }catch(error){
+      const message=error instanceof Error?error.message:'Processing failed.';
+      job.leaseUntil=undefined;
+      if(['RESEARCH','PRICING','STRATEGY'].includes(job.stage)){
+        if(job.attempts<2){job.status='READY';job.retryable=true;job.message=`Retrying ${job.stage.toLowerCase()} once: ${message}`;}
+        else if(job.stage==='RESEARCH'){
+          const state=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value||newResearchState();
+          const warning=`AI output coverage: Research unavailable after one retry: ${message}. Continuing with admitted evidence; LIMITED confidence.`;
+          state.done=true;state.warnings.push(warning);job.warnings.push(warning);
+          await this.put(workspace,'package-research',id,state);job.status='READY';job.attempts=0;job.message=warning;
+        }else{
+          let analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+          if(job.stage==='PRICING'){analysis=enforceAuthoritativeAnalysis(analysis);if(this.deps.estimate)analysis=await this.deps.estimate(analysis);}
+          this.limit(analysis,job,`${job.stage} unavailable after one retry: ${message}`);
+          await this.finish(workspace,job,analysis);
+        }
+      }else if(job.stage==='EXTRACTION'&&job.attempts<2&&!/historical cutoff|No readable content/.test(message)){job.status='READY';job.retryable=true;job.message=`Retrying extraction once: ${message}`;}else{job.status='PAUSED';job.retryable=error instanceof OpenAIRequestError&&error.retryable;job.message=message;}
+    }
     const current=await this.get(workspace,id);
     if(current.value.status==='CANCELED')return current.value;
     // A lease protects one stage; optimistic version check prevents overwriting a newer worker.
@@ -272,10 +302,17 @@ export class PackageJobs {
     for(const doc of docs){const full=(await this.store.get<string>(workspace,'package-text',`${job.id}:${doc.id}`))?.value||'';const text=full.length>budget?screenDocument(doc.name,full,budget).text:full;const buffer=Buffer.from(`SOURCE DOCUMENT: ${doc.name}\n${text}`);files.push({originalname:doc.name+'.txt',mimetype:'text/plain',buffer,size:buffer.length});}
     return files;
   }
+  private limit(analysis:OpportunityAnalysis,job:PackageJob,reason:string){
+    const note=`AI output coverage: ${reason}. LIMITED confidence; retained deterministic price and admitted evidence.`;
+    job.warnings.push(note);analysis.meta.warnings.push(note);
+    if(analysis.meta.packageCoverage)analysis.meta.packageCoverage.warnings.push(note);
+    if(analysis.competitivePosition){analysis.competitivePosition.confidence.overall='LOW';analysis.competitivePosition.confidenceLabel='LIMITED';analysis.competitivePosition.confidenceReason=reason;}
+  }
   private async finish(workspace:string,job:PackageJob,analysis:OpportunityAnalysis){
     // Older resumed checkpoints may retain RUNNING on a completed search
     // attempt; a finished evidence workflow must not export a stale live status.
     if(analysis.meta.intelligence?.complete)for(const task of analysis.meta.intelligence.tasks)if(task.status==='RUNNING'){task.status='COMPLETE';task.message='Search completed; source admission decisions and limitations are recorded below.';}
+    if(analysis.meta.warnings.some(w=>w.includes('AI output coverage:')))this.limit(analysis,job,'AI output required repairs or a stage was unavailable; review coverage notes');
     const frozen=job.mode==='HISTORICAL'?await freezeAndStore(this.store,workspace,analysis):analysis;
     const stored=await this.store.get(workspace,'analysis',analysis.id);
     const saved=stored||await this.store.put(workspace,'analysis',analysis.id,frozen);

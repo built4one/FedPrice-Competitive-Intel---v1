@@ -33,10 +33,10 @@ SOURCE EVIDENCE: ${JSON.stringify(promptEvidence)}`,schema);
   const warnings:string[]=[];
   const inputs:PlanningInput[]=[...existing];
   for(const need of batch){
-    const p=answer.inputs?.find(p=>p.id===need.id && p.label===need.label && p.kind===need.kind);
+    const p=(Array.isArray(answer?.inputs)?answer.inputs:[]).find(p=>p && p.id===need.id && p.label===need.label && p.kind===need.kind);
     if(!p || !validPlanningInput(p) || p.quantity!==need.quantity){warnings.push(`${need.label}: bounded pricing assumption failed validation; retry price completion.`);continue;}
     // The caller cannot promote an invented citation or a general URL into an anchor.
-    p.evidenceIds=(p.evidenceIds||[]).filter(id=>evidence.some(e=>e.id===id && e.numeric));
+    p.evidenceIds=(Array.isArray(p.evidenceIds)?p.evidenceIds:[]).filter(id=>evidence.some(e=>e.id===id && e.numeric));
     if(!p.evidenceIds.length)p.basis='PLANNING_ASSUMPTION';
     p.quantitySource=need.quantitySource||p.quantitySource;
     inputs.push(p);

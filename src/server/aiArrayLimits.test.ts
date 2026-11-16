@@ -103,6 +103,7 @@ test('package Research advances to Pricing and persists overflow coverage notes'
  const {historicalContext}=await import('./historical');
  const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
  const {draft,s,raw}=researchFixture();draft.deal.dueDate='2025-06-30';
+ (raw as any).gaps=null;(raw.competitors[4] as any).bidIntent='INVALID';delete (raw.competitors[5] as any).rationale;
  const state=newResearchState();state.index=1;state.phase='INTERPRET';state.sources=[s];
  const deps={client:{interpret:async<T>()=>raw as T},normalize:async(f:any)=>f,extract:async()=>draft};
  const jobs=new PackageJobs(store,{normalize:async f=>f,extract:async()=>draft,
@@ -121,4 +122,8 @@ test('package Research advances to Pricing and persists overflow coverage notes'
  job=await jobs.advance('overflow-test',job.id);assert.equal(job.stage,'STRATEGY');
  result=(await store.get<any>('overflow-test','package-result',job.id))!.value;
  assert.match(result.meta.packageCoverage.warnings.join('\n'),/competitors: kept 8 of 12; dropped 4/);
+ job=await jobs.advance('overflow-test',job.id);assert.equal(job.status,'COMPLETE');
+ const completed=(await store.get<any>('overflow-test','analysis',job.runId!))!.value;
+ assert.ok(completed.competitivePosition.target>0);assert.equal(completed.competitivePosition.confidenceLabel,'LIMITED');
+ assert.ok(completed.frozenPrediction);
 });

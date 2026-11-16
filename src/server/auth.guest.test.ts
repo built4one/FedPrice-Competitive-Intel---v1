@@ -68,6 +68,11 @@ test('preview guest access is login-free, isolated by browser, and disabled else
     process.env.VERCEL_GIT_COMMIT_REF = 'codex/intelligence-completion';
     process.env.STUDIO_TESTING_HOST = 'fmp-team-testing-nizaralamin1.vercel.app';
     assert.equal((await get('/api/session',a.cookie,'fmp-team-testing-nizaralamin1.vercel.app')).body.user.workspace,a.body.user.workspace);
+    process.env.VERCEL_GIT_COMMIT_REF = 'codex/fix-ai-array-overflow';
+    const fixGuest = await get('/api/session');
+    assert.equal(fixGuest.body.user?.username, 'tester');
+    assert.notEqual(fixGuest.body.user.workspace, a.body.user.workspace);
+    assert.equal((await get('/api/session',a.cookie)).body.user.workspace,a.body.user.workspace);
     process.env.VERCEL_GIT_COMMIT_REF = 'unrelated-branch';
     assert.equal((await get('/api/session',a.cookie)).body.user,null);
     process.env.VERCEL_GIT_COMMIT_REF = 'codex/historical-recovery';

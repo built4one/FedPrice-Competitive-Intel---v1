@@ -51,7 +51,7 @@ test('research checkpoints do not repeat discovery or reads after provider inter
  await advanceResearch(a,state,opts,deps as any);assert.equal(searches,1);assert.equal(reads,1);assert.equal(interpretations,2);
  assert.equal(state.sources[0].status,'ADMITTED');
 });
-test('automatic strategy must succeed before a new prediction is frozen',async(t)=>{
+test('unavailable strategy preserves the prediction and exports with limited confidence',async(t)=>{
  const store=new RecordStore({url:undefined,file:':memory:',hosted:false});t.after(()=>store.close());
  let strategyCalls=0;
  const {analysis,strategy}=ptwStrategyFixture();analysis.deal.dueDate='2025-06-30';analysis.evidence.find(e=>e.id==='SOL-EVAL')!.sourceLabel='scope.txt';
@@ -61,9 +61,9 @@ test('automatic strategy must succeed before a new prediction is frozen',async(t
  let job=await jobs.create('strategy-test',{mode:'HISTORICAL',cutoff:'2025-06-30',files:[{name:'scope.txt',size:bytes.length}],originalPackageConfirmed:true});await jobs.chunk('strategy-test',job.id,'input-0',0,bytes);
  for(let n=0;n<10&&job.stage!=='STRATEGY';n++)job=await jobs.advance('strategy-test',job.id);
  assert.equal(job.stage,'STRATEGY');assert.equal(await store.get('strategy-test','prediction',analysis.id),null);
- job=await jobs.advance('strategy-test',job.id);assert.equal(job.status,'PAUSED');assert.equal(await store.get('strategy-test','prediction',analysis.id),null);
+ job=await jobs.advance('strategy-test',job.id);assert.equal(job.status,'COMPLETE');
  job=await jobs.advance('strategy-test',job.id);assert.equal(job.status,'COMPLETE',job.message);
- const frozen=await store.get<any>('strategy-test','prediction',analysis.id);assert.equal(frozen?.value.ptwStrategy?.status,'DRAFT');
+ const frozen=await store.get<any>('strategy-test','prediction',analysis.id);assert.equal(frozen?.value.ptwStrategy?.status,'UNAVAILABLE');assert.equal(frozen?.value.competitivePosition.confidenceLabel,'LIMITED');assert.equal(strategyCalls,1);
  assert.equal(frozen?.value.meta.intelligence.tasks[0].status,'COMPLETE');
 });
 test('research fetch boundary rejects private addresses including IPv4-mapped IPv6',()=>{

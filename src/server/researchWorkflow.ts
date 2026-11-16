@@ -11,7 +11,7 @@ import {reconcileSourceFacts} from '../domain/sourceConsistency';
 import {documentDate} from './historical';
 import {normalizeGaps} from '../domain/analysisQuality';
 import {laborFamily} from '../domain/laborMatching';
-import {trimAiArrays,strongest} from './aiArrayLimits';
+import {trimAiArrays,strongest,repairAiOutput} from './aiArrayLimits';
 
 export const RESEARCH_VERSION='evidence-research-1.4';
 export const RATE_EXTRACTION_VERSION='exact-rate-2';
@@ -141,7 +141,8 @@ export function admitExtractedEvidence(raw:unknown,source:ResearchSource,cutoff?
   if(path==='evidence')return strongest(rows,limit,row=>support(row)?1:0);
   return rows.slice(0,limit);
  });
- const p=extractedSchema.parse(bounded);
+ const p=extractedSchema.parse(repairAiOutput(bounded,extractedSchema,coverageNotes));
+ for(const [i,row] of (Array.isArray((bounded as any)?.evidence)?(bounded as any).evidence:[]).entries())if(!researchEvidenceSchema.safeParse(row).success)coverageNotes.push(`AI output coverage: evidence[${i}]: dropped malformed claim.`);
  const date=source.publishedAt||p.publishedAt;
  const metadata=Boolean(source.publishedAt&&documentDate(source.publishedAt)===source.publishedAt&&source.publicationBasis);
  const dated=metadata||supportedDate(date,p.dateQuote,text);
