@@ -230,7 +230,7 @@ export class PackageJobs {
         prior=reconcileWorkbookLabor(prior,sourceFiles);
         if(prior.historical){const texts=new Map<string,string>();for(const d of job.documents)texts.set(d.id,(await this.store.get<string>(workspace,'package-text',`${id}:${d.id}`))?.value||'');const research=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value;for(const source of research?.sources||[])if(source.text)texts.set(source.id,source.text);prior=filterHistoricalDraft(prior,prior.historical,texts);}
         
-        const coverage:PackageCoverage={documents:job.documents,warnings:job.warnings,receivedAt:job.receivedAt,mode:job.mode,freshness:{status:'UNVERIFIED',message:job.mode==='HISTORICAL'?`Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.`:'Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency.'}};
+        const coverage:PackageCoverage={documents:job.documents,warnings:[...job.warnings,...prior.meta.warnings.filter(w=>w.includes('AI output coverage:'))],receivedAt:job.receivedAt,mode:job.mode,freshness:{status:'UNVERIFIED',message:job.mode==='HISTORICAL'?`Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.`:'Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency.'}};
         prior.meta.packageCoverage=coverage;
         const completedBefore=prior.deal.planningInputs?.length||0;
         const analysis=await this.deps.price(prior);

@@ -2,7 +2,7 @@
 import crypto from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
-import { z } from "zod";
+import { z as z2 } from "zod";
 
 // src/adapters/boundedBody.ts
 var BodySizeError = class extends Error {
@@ -484,6 +484,33 @@ function qualificationMatch(signal, record) {
   return true;
 }
 
+// src/server/aiArrayLimits.ts
+import { z } from "zod";
+function trimAiArrays(value, schema2, notes, select, path3 = "") {
+  if (schema2 instanceof z.ZodDefault || schema2 instanceof z.ZodOptional || schema2 instanceof z.ZodNullable)
+    return trimAiArrays(value, schema2._def.innerType, notes, select, path3);
+  if (schema2 instanceof z.ZodEffects) return trimAiArrays(value, schema2.innerType(), notes, select, path3);
+  if (schema2 instanceof z.ZodArray && Array.isArray(value)) {
+    const limit = schema2._def.maxLength?.value;
+    let rows = value;
+    if (limit !== void 0 && rows.length > limit) {
+      rows = select ? select(rows, limit, path3) : rows.slice(0, limit);
+      notes.push(`AI output coverage: ${path3}: kept ${rows.length} of ${value.length}; dropped ${value.length - rows.length} (limit ${limit}).`);
+    }
+    return rows.map((item, i) => trimAiArrays(item, schema2.element, notes, select, `${path3}[${i}]`));
+  }
+  if (schema2 instanceof z.ZodObject && value && typeof value === "object" && !Array.isArray(value)) {
+    const result = { ...value };
+    for (const [key, child] of Object.entries(schema2.shape)) if (key in result)
+      result[key] = trimAiArrays(result[key], child, notes, select, path3 ? `${path3}.${key}` : key);
+    return result;
+  }
+  return value;
+}
+function strongest(rows, limit, score) {
+  return rows.map((value, index) => ({ value, index, score: score(value) })).sort((a, b) => b.score - a.score || a.index - b.index).slice(0, limit).map((r) => r.value);
+}
+
 // src/server/researchWorkflow.ts
 var RESEARCH_VERSION = "evidence-research-1.4";
 var RATE_EXTRACTION_VERSION = "exact-rate-2";
@@ -572,41 +599,58 @@ async function publicSamAttachments(value, cutoff) {
   const entries = body._embedded?.opportunityAttachmentList?.flatMap((v) => v.attachments || []) || [];
   return entries.filter((a) => a.accessLevel === "public" && a.deletedFlag !== "1" && /^[a-f0-9]{32}$/i.test(a.resourceId) && /^\d{4}-\d{2}-\d{2}/.test(a.postedDate || "") && (!cutoff || a.postedDate.slice(0, 10) <= cutoff)).map((a) => ({ name: String(a.name), publishedAt: a.postedDate.slice(0, 10), url: `https://sam.gov/api/prod/opps/v3/opportunities/resources/files/${a.resourceId}/download` })).sort((a, b) => Number(/question|answer|clarification/i.test(b.name)) - Number(/question|answer|clarification/i.test(a.name)) || b.publishedAt.localeCompare(a.publishedAt));
 }
-var researchEvidenceSchema = z.object({ claim: z.string().min(5).max(1800), excerpt: z.string().min(8).max(4e3), section: z.string().max(350).default(""), numeric: z.record(z.unknown()).optional() });
-var extractedSchema = z.object({
-  kind: z.enum(["SOLICITATION", "MARKET", "TARGET_OUTCOME", "UNKNOWN"]),
-  publishedAt: z.string().default(""),
-  dateQuote: z.string().default(""),
+var researchEvidenceSchema = z2.object({ claim: z2.string().min(5).max(1800), excerpt: z2.string().min(8).max(4e3), section: z2.string().max(350).default(""), numeric: z2.record(z2.unknown()).optional() });
+var extractedSchema = z2.object({
+  kind: z2.enum(["SOLICITATION", "MARKET", "TARGET_OUTCOME", "UNKNOWN"]),
+  publishedAt: z2.string().default(""),
+  dateQuote: z2.string().default(""),
   // A malformed individual claim is rejected without discarding independently
   // supported claims from the same source or stopping the entire package.
-  evidence: z.array(z.unknown()).max(45).default([]).transform((rows) => rows.flatMap((row) => {
+  evidence: z2.array(z2.unknown()).max(45).default([]).transform((rows) => rows.flatMap((row) => {
     const parsed = researchEvidenceSchema.safeParse(row);
     return parsed.success ? [parsed.data] : [];
   })),
-  incumbent: z.object({ name: z.string(), strengths: z.array(z.string()).default([]), vulnerabilities: z.array(z.string()).default([]) }).optional(),
-  competitors: z.array(z.object({ name: z.string(), rationale: z.string(), bidIntent: z.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]).default("UNKNOWN") })).max(8).default([]),
-  gaps: z.array(z.string().max(1e3)).max(10).default([])
+  incumbent: z2.object({ name: z2.string(), strengths: z2.array(z2.string()).default([]), vulnerabilities: z2.array(z2.string()).default([]) }).optional(),
+  competitors: z2.array(z2.object({ name: z2.string(), rationale: z2.string(), bidIntent: z2.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]).default("UNKNOWN") })).max(8).default([]),
+  gaps: z2.array(z2.string().max(1e3)).max(10).default([])
 });
-var numericSchema = z.object({
-  originalValue: z.number().finite().nonnegative(),
-  valueType: z.enum(["EVALUATED_PRICE", "ESTIMATED_VALUE", "TOTAL_AWARD_VALUE", "CURRENT_AWARD_AMOUNT", "CONTRACT_CEILING", "INITIAL_OBLIGATION", "CURRENT_OBLIGATIONS", "EVENTUAL_SPEND", "HOURLY_CEILING_RATE", "ESCALATION_RATE", "BUDGET_CONTEXT", "UNKNOWN"]),
-  units: z.enum(["TOTAL_USD", "USD_PER_HOUR", "PERCENT", "OTHER"]),
-  currency: z.enum(["USD", "UNKNOWN"]),
-  periodMonths: z.number().positive().optional(),
-  baseYear: z.number().int().optional(),
-  sourceDate: z.string().optional(),
-  endDate: z.string().optional(),
-  scopeText: z.string().optional(),
-  matchedLaborCategory: z.string().optional(),
-  benchmarkFamily: z.string().optional(),
-  agency: z.string().optional(),
-  naics: z.string().optional(),
-  psc: z.string().optional(),
-  contractType: z.string().optional(),
-  valueBasis: z.enum(["OPPORTUNITY_TOTAL", "EVALUATED_COMPONENT", "INDIVIDUAL_AWARD", "PROGRAM_TOTAL", "MULTIPLE_AWARD_POOL", "ORDER_LIMIT", "PAST_PERFORMANCE_THRESHOLD", "BUDGET", "UNKNOWN"]).optional()
+var numericSchema = z2.object({
+  originalValue: z2.number().finite().nonnegative(),
+  valueType: z2.enum(["EVALUATED_PRICE", "ESTIMATED_VALUE", "TOTAL_AWARD_VALUE", "CURRENT_AWARD_AMOUNT", "CONTRACT_CEILING", "INITIAL_OBLIGATION", "CURRENT_OBLIGATIONS", "EVENTUAL_SPEND", "HOURLY_CEILING_RATE", "ESCALATION_RATE", "BUDGET_CONTEXT", "UNKNOWN"]),
+  units: z2.enum(["TOTAL_USD", "USD_PER_HOUR", "PERCENT", "OTHER"]),
+  currency: z2.enum(["USD", "UNKNOWN"]),
+  periodMonths: z2.number().positive().optional(),
+  baseYear: z2.number().int().optional(),
+  sourceDate: z2.string().optional(),
+  endDate: z2.string().optional(),
+  scopeText: z2.string().optional(),
+  matchedLaborCategory: z2.string().optional(),
+  benchmarkFamily: z2.string().optional(),
+  agency: z2.string().optional(),
+  naics: z2.string().optional(),
+  psc: z2.string().optional(),
+  contractType: z2.string().optional(),
+  valueBasis: z2.enum(["OPPORTUNITY_TOTAL", "EVALUATED_COMPONENT", "INDIVIDUAL_AWARD", "PROGRAM_TOTAL", "MULTIPLE_AWARD_POOL", "ORDER_LIMIT", "PAST_PERFORMANCE_THRESHOLD", "BUDGET", "UNKNOWN"]).optional()
 });
-function admitExtractedEvidence(raw, source, cutoff) {
-  const p = extractedSchema.parse(raw), text2 = source.text || "";
+function admitExtractedEvidence(raw, source, cutoff, coverageNotes = []) {
+  const text2 = source.text || "";
+  const support = (row) => {
+    const r = researchEvidenceSchema.safeParse(row);
+    return r.success && flat(text2).includes(flat(r.data.excerpt)) ? r.data : void 0;
+  };
+  const rawRows = raw && typeof raw === "object" && Array.isArray(raw.evidence) ? raw.evidence : [];
+  const supported = rawRows.map(support).filter(Boolean);
+  const bounded = trimAiArrays(raw, extractedSchema, coverageNotes, (rows, limit, path3) => {
+    if (path3 === "competitors") return strongest(rows, limit, (c) => {
+      if (typeof c?.name !== "string" || !c.name.trim()) return 0;
+      const name = c.name.toLowerCase();
+      const excerpts = [...new Set(supported.filter((e) => flat(e.excerpt).toLowerCase().includes(name)).map((e) => e.excerpt))];
+      return excerpts.length + (excerpts.some((e) => /\b(?:intends? to bid|will bid|will submit (?:a |an )?(?:bid|proposal))\b/i.test(e)) ? 1e3 : 0);
+    });
+    if (path3 === "evidence") return strongest(rows, limit, (row) => support(row) ? 1 : 0);
+    return rows.slice(0, limit);
+  });
+  const p = extractedSchema.parse(bounded);
   const date = source.publishedAt || p.publishedAt;
   const metadata = Boolean(source.publishedAt && documentDate(source.publishedAt) === source.publishedAt && source.publicationBasis);
   const dated = metadata || supportedDate(date, p.dateQuote, text2);
@@ -647,7 +691,7 @@ function admitExtractedEvidence(raw, source, cutoff) {
       historicalProof: cutoff ? { documentId: source.id, publishedAt: date, sha256: source.sha256 || "", quote: source.audit.dateQuote } : void 0
     });
   }
-  const supplied = raw?.evidence?.length || 0;
+  const supplied = bounded?.evidence?.length || 0;
   if (supplied > items.length) source.reason += ` ${supplied - items.length} unsupported or malformed claims rejected.`;
   return { items, parsed: p };
 }
@@ -809,7 +853,10 @@ SOURCE ${read.url}
 METADATA ${read.publicationBasis || "Unavailable"}
 DOCUMENT
 ${contextText(read.text, draft.deal)}`);
-  const { items, parsed } = admitExtractedEvidence(raw, read, options.historical ? options.cutoff : void 0);
+  const coverageNotes = [];
+  const { items, parsed } = admitExtractedEvidence(raw, read, options.historical ? options.cutoff : void 0, coverageNotes);
+  state.warnings.push(...coverageNotes.map((note) => `${read.name}: ${note}`));
+  if (coverageNotes.length) read.reason = [read.reason, ...coverageNotes].filter(Boolean).join(" ");
   if (read.task === "BENCHMARKS") read.rateExtractionVersion = RATE_EXTRACTION_VERSION;
   draft.evidence = draft.evidence.filter((e) => e.url !== read.url);
   if (read.status === "ADMITTED") {
@@ -2117,7 +2164,7 @@ function calculateCompetitivePosition(analysis) {
   const basis = hasTarget ? "MODELED_BASKET" : "PARTIAL_SUBTOTAL";
   const scenarios = central > 0 ? [
     { id: "AGGRESSIVE", label: "Competitive lower", labor: wholeAnchor ? 0 : lowLabor, nonLabor: wholeAnchor ? low : dollars(low - lowLabor), total: low, selected: false, basis, rationale: "Lower supported rates and lower bounded component assumptions.", condition: "Validate that required scope and qualifications can be delivered at these economics." },
-    { id: "RECOMMENDED", label: hasTarget ? "Recommended market position" : "Known-scope subtotal", labor: wholeAnchor ? 0 : centralLabor, nonLabor: wholeAnchor ? central : dollars(central - centralLabor), total: central, selected: hasTarget, basis, rationale: [...new Set(selectedReasons.values())].join(" ") || "Center the qualified whole-basket evidence or explicit unit-price model.", condition: "Adopt with the stated assumptions and source-selection rules; company bid approval is separate." },
+    { id: "RECOMMENDED", label: hasTarget ? "Recommended PTW" : "Known-scope subtotal", labor: wholeAnchor ? 0 : centralLabor, nonLabor: wholeAnchor ? central : dollars(central - centralLabor), total: central, selected: hasTarget, basis, rationale: [...new Set(selectedReasons.values())].join(" ") || "Center the qualified whole-basket evidence or explicit unit-price model.", condition: "Adopt with the stated assumptions and source-selection rules; company bid approval is separate." },
     { id: "DEFENSIVE", label: "Competitive upper", labor: wholeAnchor ? 0 : highLabor, nonLabor: wholeAnchor ? high : dollars(high - highLabor), total: high, selected: false, basis, rationale: "Upper observed rate and bounded component exposure.", condition: "Higher execution spend does not imply the Government will pay a premium." }
   ] : [];
   const sensitivities = [];
@@ -2152,7 +2199,7 @@ function calculateCompetitivePosition(analysis) {
     rangeHigh: hasTarget ? high : null,
     rangeMeaning: assumptionShare > 0 ? "Conditional price scenarios from documented quantities and explicit rate assumptions or analogies. Not an observed competitor-price range or confidence interval." : "Reference price range from the reconstructed basket and sourced rate variation. Schedule ceilings are price references, not observed competitor bids or a confidence interval.",
     rationale,
-    decisionRequest: hasTarget ? "Use the Recommended market position as the working competitive position; validate the highest-impact assumption before committing an offer." : "Reconstruct the missing evaluated quantity or component basis shown below; the known-scope subtotal is retained.",
+    decisionRequest: hasTarget ? "Use the Recommended PTW as the working competitive position; validate the highest-impact assumption before committing an offer." : "Reconstruct the missing evaluated quantity or component basis shown below; the known-scope subtotal is retained.",
     rows,
     components,
     scenarios,
@@ -2305,48 +2352,48 @@ function isCurrentEngine(position) {
 
 // src/server/ptwSynthesis.ts
 import { createHash } from "node:crypto";
-import { z as z3 } from "zod";
+import { z as z4 } from "zod";
 
 // src/domain/ptw/strategy.ts
-import { z as z2 } from "zod";
-var text = z2.string().trim().min(1).max(1600);
-var statementSchema = z2.object({
+import { z as z3 } from "zod";
+var text = z3.string().trim().min(1).max(1600);
+var statementSchema = z3.object({
   text,
-  kind: z2.enum(["FACT", "INFERENCE", "ASSUMPTION"]),
-  evidenceIds: z2.array(z2.string().min(1)).max(12),
-  validationAction: z2.string().max(600)
+  kind: z3.enum(["FACT", "INFERENCE", "ASSUMPTION"]),
+  evidenceIds: z3.array(z3.string().min(1)).max(12),
+  validationAction: z3.string().max(600)
 }).strict();
-var strategySchema = z2.object({
-  buyingDecision: z2.object({
+var strategySchema = z3.object({
+  buyingDecision: z3.object({
     evaluationMethod: statementSchema,
     priceTradeoff: statementSchema,
-    complianceGates: z2.array(statementSchema).max(12)
+    complianceGates: z3.array(statementSchema).max(12)
   }).strict(),
-  competitors: z2.array(z2.object({
+  competitors: z3.array(z3.object({
     name: text,
-    bidIntent: z2.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]),
+    bidIntent: z3.enum(["CONFIRMED", "POSSIBLE", "UNKNOWN"]),
     intentBasis: statementSchema,
     likelyApproach: statementSchema,
     threat: statementSchema
   }).strict()).max(12),
-  options: z2.array(z2.object({
-    id: z2.string().regex(/^[a-z0-9_-]{1,60}$/),
+  options: z3.array(z3.object({
+    id: z3.string().regex(/^[a-z0-9_-]{1,60}$/),
     name: text,
     winLogic: statementSchema,
     evaluationAdvantage: statementSchema,
-    deliveryChanges: z2.array(statementSchema).min(1).max(6),
-    pricingLevers: z2.array(statementSchema).min(1).max(6),
+    deliveryChanges: z3.array(statementSchema).min(1).max(6),
+    pricingLevers: z3.array(statementSchema).min(1).max(6),
     likelyRivalResponse: statementSchema,
     principalRisk: statementSchema
   }).strict()).min(2).max(4),
-  recommendation: z2.object({
-    selectedOptionId: z2.string(),
+  recommendation: z3.object({
+    selectedOptionId: z3.string(),
     rationale: statementSchema,
-    alternatives: z2.array(z2.object({ optionId: z2.string(), reason: statementSchema }).strict()).min(1).max(3),
-    changeTriggers: z2.array(statementSchema).min(1).max(6),
-    nextActions: z2.array(statementSchema).min(1).max(8)
+    alternatives: z3.array(z3.object({ optionId: z3.string(), reason: statementSchema }).strict()).min(1).max(3),
+    changeTriggers: z3.array(statementSchema).min(1).max(6),
+    nextActions: z3.array(statementSchema).min(1).max(8)
   }).strict(),
-  missingInputs: z2.array(text).max(12)
+  missingInputs: z3.array(text).max(12)
 }).strict();
 function strategyStatements(strategy) {
   const rows = [];
@@ -2415,8 +2462,26 @@ function canonical(value) {
 function strategyInputHash(analysis) {
   return createHash("sha256").update(JSON.stringify(canonical(sourceInput(analysis)))).digest("hex");
 }
-function validateStrategy(raw, analysis) {
-  const result = strategySchema.parse(raw);
+function validateStrategy(raw, analysis, coverageNotes = []) {
+  const input = structuredClone(raw);
+  const sourceIds = new Set(analysis.evidence.map((e) => e.id));
+  const support = (v) => {
+    if (typeof v === "string") return sourceIds.has(v) ? 1 : 0;
+    if (!v || typeof v !== "object") return 0;
+    if (Array.isArray(v)) return v.reduce((sum, item) => sum + support(item), 0);
+    return Object.entries(v).reduce((sum, [key, item]) => sum + (key === "evidenceIds" && Array.isArray(item) ? new Set(item.filter((id) => sourceIds.has(id))).size : typeof item === "object" ? support(item) : 0), 0);
+  };
+  if (Array.isArray(input?.options) && input.options.length > 4) {
+    const kept = strongest(input.options, 4, (o) => o?.id === input.recommendation?.selectedOptionId ? Number.MAX_SAFE_INTEGER : support(o));
+    const keepIds = new Set(kept.map((o) => o?.id));
+    if (Array.isArray(input.recommendation?.alternatives)) {
+      const original = input.recommendation.alternatives;
+      input.recommendation.alternatives = original.filter((a) => keepIds.has(a?.optionId));
+      if (original.length !== input.recommendation.alternatives.length) coverageNotes.push(`AI output coverage: recommendation.alternatives: kept ${input.recommendation.alternatives.length} of ${original.length}; dropped ${original.length - input.recommendation.alternatives.length} comparisons for trimmed options.`);
+    }
+  }
+  const bounded = trimAiArrays(input, strategySchema, coverageNotes, (rows, limit, path3) => strongest(rows, limit, (v) => path3 === "options" && v?.id === input.recommendation?.selectedOptionId ? Number.MAX_SAFE_INTEGER : path3 === "recommendation.alternatives" && input.options?.some((o) => o.id === v?.optionId && o.id !== input.recommendation?.selectedOptionId) ? Number.MAX_SAFE_INTEGER : support(v)));
+  const result = strategySchema.parse(bounded);
   const evidence = new Map(analysis.evidence.map((e) => [e.id, e]));
   const ids = result.options.map((o) => o.id);
   if (new Set(ids).size !== ids.length || !ids.includes(result.recommendation.selectedOptionId)) throw new Error("Strategy option selection is inconsistent.");
@@ -2441,8 +2506,8 @@ function validateStrategy(raw, analysis) {
     if (supportIssue) throw new Error(supportIssue);
   }
   for (const rival of result.competitors) {
-    const support = supportedCompetitors([{ name: rival.name, sourceRefs: rival.intentBasis.evidenceIds }], analysis.evidence, analysis.deal);
-    if (!support.length) throw new Error("A named competitor requires a claim-specific source linking that company to this pursuit or documented predecessor.");
+    const support2 = supportedCompetitors([{ name: rival.name, sourceRefs: rival.intentBasis.evidenceIds }], analysis.evidence, analysis.deal);
+    if (!support2.length) throw new Error("A named competitor requires a claim-specific source linking that company to this pursuit or documented predecessor.");
     if (rival.bidIntent === "CONFIRMED") {
       const explicitIntent = rival.intentBasis.evidenceIds.some((id) => {
         const item = evidence.get(id);
@@ -2457,9 +2522,9 @@ function validateStrategy(raw, analysis) {
     throw new Error("Strategic eligibility contradicts the controlling extracted set-aside.");
   return result;
 }
-var storedResultSchema = z3.discriminatedUnion("status", [
-  z3.object({ status: z3.literal("DRAFT"), version: z3.string(), inputHash: z3.string(), generatedAt: z3.string().datetime(), reviewStatus: z3.literal("UNREVIEWED"), strategy: strategySchema }).strict(),
-  z3.object({ status: z3.literal("UNAVAILABLE"), version: z3.string(), reason: z3.string().min(1).max(1e3) }).strict()
+var storedResultSchema = z4.discriminatedUnion("status", [
+  z4.object({ status: z4.literal("DRAFT"), version: z4.string(), inputHash: z4.string(), generatedAt: z4.string().datetime(), reviewStatus: z4.literal("UNREVIEWED"), strategy: strategySchema }).strict(),
+  z4.object({ status: z4.literal("UNAVAILABLE"), version: z4.string(), reason: z4.string().min(1).max(1e3) }).strict()
 ]);
 function preserveCurrentStrategy(analysis, value) {
   if (value == null) return void 0;
@@ -2504,9 +2569,13 @@ Keep each statement under 1600 characters, validation actions under 600, and the
 INPUT JSON:
 ${JSON.stringify(sourceInput(analysis, true))}
 ${correction}`, strategyResponseSchema);
-      return { status: "DRAFT", version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), reviewStatus: "UNREVIEWED", strategy: validateStrategy(raw, analysis) };
+      const coverageNotes = [];
+      const strategy = validateStrategy(raw, analysis, coverageNotes);
+      analysis.meta.warnings.push(...coverageNotes);
+      if (analysis.meta.packageCoverage) analysis.meta.packageCoverage.warnings.push(...coverageNotes);
+      return { status: "DRAFT", version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: (/* @__PURE__ */ new Date()).toISOString(), reviewStatus: "UNREVIEWED", strategy };
     } catch (error) {
-      const detail = error instanceof z3.ZodError ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ").slice(0, 1800) : error instanceof Error ? error.message : "Unknown provider failure";
+      const detail = error instanceof z4.ZodError ? error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join("; ").slice(0, 1800) : error instanceof Error ? error.message : "Unknown provider failure";
       const providerFailure = /OpenAI|timeout|timed out|fetch|abort|Provider failed/i.test(detail);
       reason = providerFailure ? "The strategy service did not finish after two attempts. Retry the strategy assessment; the evidence run is preserved." : "The strategy response failed evidence or structure validation after two attempts. Retry the strategy assessment; no unvalidated recommendation was published.";
       console.warn("PTW strategy attempt failed", { attempt: attempt + 1, category: providerFailure ? "PROVIDER" : "VALIDATION", detail: providerFailure ? "Provider request did not complete." : detail });
@@ -3563,7 +3632,7 @@ ${text2}`);
           for (const source of research?.sources || []) if (source.text) texts.set(source.id, source.text);
           prior = filterHistoricalDraft(prior, prior.historical, texts);
         }
-        const coverage = { documents: job.documents, warnings: job.warnings, receivedAt: job.receivedAt, mode: job.mode, freshness: { status: "UNVERIFIED", message: job.mode === "HISTORICAL" ? `Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.` : "Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency." } };
+        const coverage = { documents: job.documents, warnings: [...job.warnings, ...prior.meta.warnings.filter((w) => w.includes("AI output coverage:"))], receivedAt: job.receivedAt, mode: job.mode, freshness: { status: "UNVERIFIED", message: job.mode === "HISTORICAL" ? `Historical cutoff ${job.cutoff}. Only admitted source documents used. Original deadline and source availability require independent review.` : "Latest amendments not verified. This recommendation uses the uploaded package; market research alone does not establish package currency." } };
         prior.meta.packageCoverage = coverage;
         const completedBefore = prior.deal.planningInputs?.length || 0;
         const analysis = await this.deps.price(prior);
@@ -3785,20 +3854,20 @@ import mammoth from "mammoth";
 
 // src/domain/ptw/pricingScenario.ts
 import Decimal from "decimal.js";
-import { z as z4 } from "zod";
-var amount = z4.number().finite().nonnegative().max(1e12);
-var pricingInputsSchema = z4.object({
-  evaluationBasis: z4.string().trim().min(10).max(2e3),
-  basisSource: z4.string().trim().min(3).max(1e3),
-  completenessConfirmed: z4.literal(true),
-  lines: z4.array(z4.object({
-    label: z4.string().trim().min(1).max(200),
-    sourceRowId: z4.string().min(1).max(100).optional(),
-    quantity: z4.number().finite().nonnegative().max(1e9),
+import { z as z5 } from "zod";
+var amount = z5.number().finite().nonnegative().max(1e12);
+var pricingInputsSchema = z5.object({
+  evaluationBasis: z5.string().trim().min(10).max(2e3),
+  basisSource: z5.string().trim().min(3).max(1e3),
+  completenessConfirmed: z5.literal(true),
+  lines: z5.array(z5.object({
+    label: z5.string().trim().min(1).max(200),
+    sourceRowId: z5.string().min(1).max(100).optional(),
+    quantity: z5.number().finite().nonnegative().max(1e9),
     lowUnitPrice: amount,
     targetUnitPrice: amount,
     highUnitPrice: amount,
-    source: z4.string().trim().min(3).max(1e3)
+    source: z5.string().trim().min(3).max(1e3)
   }).strict().refine((v) => v.lowUnitPrice <= v.targetUnitPrice && v.targetUnitPrice <= v.highUnitPrice, "Unit prices must be ordered low \u2264 target \u2264 high.")).min(1).max(400)
 }).strict();
 function calculatePricingScenario(raw) {
@@ -4021,7 +4090,7 @@ function installAuth(app2) {
 }
 
 // src/adapters/sam.ts
-import { z as z5 } from "zod";
+import { z as z6 } from "zod";
 
 // src/adapters/http.ts
 var ConnectorError = class extends Error {
@@ -4101,32 +4170,32 @@ async function fetchJsonWithRetry(url, init = {}, options = {}) {
 }
 
 // src/adapters/sam.ts
-var resourceLinkSchema = z5.object({
-  type: z5.string().nullish(),
-  name: z5.string().nullish(),
-  link: z5.string().nullish()
+var resourceLinkSchema = z6.object({
+  type: z6.string().nullish(),
+  name: z6.string().nullish(),
+  link: z6.string().nullish()
 }).passthrough();
-var opportunitySchema = z5.object({
-  noticeId: z5.string().nullish(),
-  title: z5.string().nullish(),
-  solicitationNumber: z5.string().nullish(),
-  fullParentPathName: z5.string().nullish(),
-  department: z5.string().nullish(),
-  subTier: z5.string().nullish(),
-  office: z5.string().nullish(),
-  postedDate: z5.string().nullish(),
-  responseDeadLine: z5.string().nullish(),
-  type: z5.string().nullish(),
-  typeOfSetAsideDescription: z5.string().nullish(),
-  naicsCode: z5.string().nullish(),
-  classificationCode: z5.string().nullish(),
-  description: z5.string().nullish(),
-  uiLink: z5.string().nullish(),
-  resourceLinks: z5.array(z5.union([resourceLinkSchema, z5.string()])).nullish()
+var opportunitySchema = z6.object({
+  noticeId: z6.string().nullish(),
+  title: z6.string().nullish(),
+  solicitationNumber: z6.string().nullish(),
+  fullParentPathName: z6.string().nullish(),
+  department: z6.string().nullish(),
+  subTier: z6.string().nullish(),
+  office: z6.string().nullish(),
+  postedDate: z6.string().nullish(),
+  responseDeadLine: z6.string().nullish(),
+  type: z6.string().nullish(),
+  typeOfSetAsideDescription: z6.string().nullish(),
+  naicsCode: z6.string().nullish(),
+  classificationCode: z6.string().nullish(),
+  description: z6.string().nullish(),
+  uiLink: z6.string().nullish(),
+  resourceLinks: z6.array(z6.union([resourceLinkSchema, z6.string()])).nullish()
 }).passthrough();
-var responseSchema = z5.object({
-  totalRecords: z5.number().default(0),
-  opportunitiesData: z5.array(opportunitySchema).default([])
+var responseSchema = z6.object({
+  totalRecords: z6.number().default(0),
+  opportunitiesData: z6.array(opportunitySchema).default([])
 }).passthrough();
 var DAY_MS = 24 * 60 * 60 * 1e3;
 var mmddyyyy = (date) => `${String(date.getUTCMonth() + 1).padStart(2, "0")}/${String(date.getUTCDate()).padStart(2, "0")}/${date.getUTCFullYear()}`;
@@ -4560,7 +4629,7 @@ async function querySamGov(deal, uploadedFiles = []) {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z5.ZodError ? "SAM.gov returned an unexpected response shape." : error instanceof Error ? error.message : "SAM.gov request failed.",
+      message: error instanceof z6.ZodError ? "SAM.gov returned an unexpected response shape." : error instanceof Error ? error.message : "SAM.gov request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -4671,25 +4740,25 @@ function usablePdfText(text2) {
 }
 
 // src/adapters/usaspending.ts
-import { z as z6 } from "zod";
-var awardSchema = z6.object({
-  "Award ID": z6.string().nullish(),
-  "Recipient Name": z6.string().nullish(),
-  "Award Amount": z6.union([z6.number(), z6.string()]).nullish(),
-  "Start Date": z6.string().nullish(),
-  "End Date": z6.string().nullish(),
-  "Awarding Agency": z6.string().nullish(),
-  "Awarding Sub Agency": z6.string().nullish(),
-  "Award Type": z6.string().nullish(),
-  "Description": z6.string().nullish(),
-  "NAICS Code": z6.union([z6.string(), z6.number()]).nullish(),
-  "Product or Service Code": z6.string().nullish(),
-  generated_internal_id: z6.string().nullish()
+import { z as z7 } from "zod";
+var awardSchema = z7.object({
+  "Award ID": z7.string().nullish(),
+  "Recipient Name": z7.string().nullish(),
+  "Award Amount": z7.union([z7.number(), z7.string()]).nullish(),
+  "Start Date": z7.string().nullish(),
+  "End Date": z7.string().nullish(),
+  "Awarding Agency": z7.string().nullish(),
+  "Awarding Sub Agency": z7.string().nullish(),
+  "Award Type": z7.string().nullish(),
+  "Description": z7.string().nullish(),
+  "NAICS Code": z7.union([z7.string(), z7.number()]).nullish(),
+  "Product or Service Code": z7.string().nullish(),
+  generated_internal_id: z7.string().nullish()
 }).passthrough();
-var responseSchema2 = z6.object({
-  results: z6.array(awardSchema).default([]),
-  page_metadata: z6.object({ page: z6.number().optional(), hasNext: z6.boolean().optional() }).passthrough().optional(),
-  messages: z6.array(z6.string()).optional()
+var responseSchema2 = z7.object({
+  results: z7.array(awardSchema).default([]),
+  page_metadata: z7.object({ page: z7.number().optional(), hasNext: z7.boolean().optional() }).passthrough().optional(),
+  messages: z7.array(z7.string()).optional()
 }).passthrough();
 var isoDate = (date) => date.toISOString().slice(0, 10);
 var validNaics = (value) => value?.match(/\b\d{6}\b/)?.[0];
@@ -4882,7 +4951,7 @@ async function queryUSASpending(deal) {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z6.ZodError ? "USAspending returned an unexpected response shape." : error instanceof Error ? error.message : "USAspending request failed.",
+      message: error instanceof z7.ZodError ? "USAspending returned an unexpected response shape." : error instanceof Error ? error.message : "USAspending request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,
@@ -4893,22 +4962,22 @@ async function queryUSASpending(deal) {
 
 // src/adapters/gsa.ts
 import { createHash as createHash2 } from "node:crypto";
-import { z as z7 } from "zod";
-var sourceSchema = z7.object({
-  id: z7.union([z7.string(), z7.number()]),
-  labor_category: z7.string(),
-  current_price: z7.union([z7.number(), z7.string()]),
-  vendor_name: z7.string().nullish(),
-  idv_piid: z7.string().nullish(),
-  worksite: z7.string().nullish(),
-  security_clearance: z7.union([z7.boolean(), z7.string()]).nullish(),
-  min_years_experience: z7.union([z7.number(), z7.string()]).nullish(),
-  education_level: z7.string().nullish(),
-  contract_end: z7.string().nullish()
+import { z as z8 } from "zod";
+var sourceSchema = z8.object({
+  id: z8.union([z8.string(), z8.number()]),
+  labor_category: z8.string(),
+  current_price: z8.union([z8.number(), z8.string()]),
+  vendor_name: z8.string().nullish(),
+  idv_piid: z8.string().nullish(),
+  worksite: z8.string().nullish(),
+  security_clearance: z8.union([z8.boolean(), z8.string()]).nullish(),
+  min_years_experience: z8.union([z8.number(), z8.string()]).nullish(),
+  education_level: z8.string().nullish(),
+  contract_end: z8.string().nullish()
 }).passthrough();
-var responseSchema3 = z7.object({ hits: z7.object({
-  total: z7.union([z7.number(), z7.object({ value: z7.number(), relation: z7.string().optional() })]).optional(),
-  hits: z7.array(z7.object({ _source: sourceSchema }).passthrough()).default([])
+var responseSchema3 = z8.object({ hits: z8.object({
+  total: z8.union([z8.number(), z8.object({ value: z8.number(), relation: z8.string().optional() })]).optional(),
+  hits: z8.array(z8.object({ _source: sourceSchema }).passthrough()).default([])
 }).passthrough() }).passthrough();
 var endpoint = "https://api.gsa.gov/acquisition/calc/v3/api/ceilingrates/";
 var pageSize = 1e3;
@@ -5026,18 +5095,18 @@ async function queryGsaCalc(laborSignals) {
 }
 
 // src/adapters/bls.ts
-import { z as z8 } from "zod";
-var responseSchema4 = z8.object({
-  status: z8.string(),
-  message: z8.array(z8.string()).default([]),
-  Results: z8.object({
-    series: z8.array(z8.object({
-      seriesID: z8.string(),
-      data: z8.array(z8.object({
-        year: z8.string(),
-        period: z8.string(),
-        periodName: z8.string(),
-        value: z8.string()
+import { z as z9 } from "zod";
+var responseSchema4 = z9.object({
+  status: z9.string(),
+  message: z9.array(z9.string()).default([]),
+  Results: z9.object({
+    series: z9.array(z9.object({
+      seriesID: z9.string(),
+      data: z9.array(z9.object({
+        year: z9.string(),
+        period: z9.string(),
+        periodName: z9.string(),
+        value: z9.string()
       }).passthrough()).default([])
     }).passthrough()).default([])
   })
@@ -5102,7 +5171,7 @@ async function queryBls() {
       status: failure?.status || "ERROR",
       recordsFound: 0,
       evidence: [],
-      message: error instanceof z8.ZodError ? "BLS returned an unexpected response shape." : error instanceof Error ? error.message : "BLS request failed.",
+      message: error instanceof z9.ZodError ? "BLS returned an unexpected response shape." : error instanceof Error ? error.message : "BLS request failed.",
       durationMs: failure?.durationMs || 0,
       attempts: failure?.attempts || 1,
       retrievedAt,

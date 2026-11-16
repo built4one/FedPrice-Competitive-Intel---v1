@@ -7,6 +7,7 @@ import { strategyResponseSchema } from './strategyResponseSchema';
 import { resolvedGap, supportedCompetitors } from '../domain/sourceConsistency';
 import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
 import { claimSupportIssue, readableDecisionText } from '../domain/governmentRules';
+import {trimAiArrays,strongest} from './aiArrayLimits';
 
 export const PTW_SYNTHESIS_VERSION = 'ptw-strategy-0.5.0';
 type StrategyInput = Pick<OpportunityAnalysis, 'deal' | 'evidence' | 'competitors' | 'incumbent' | 'gaps' | 'marketPosition' | 'meta' | 'competitivePosition' | 'historical'>;
@@ -37,8 +38,29 @@ export function strategyInputHash(analysis: StrategyInput) {
   return createHash('sha256').update(JSON.stringify(canonical(sourceInput(analysis)))).digest('hex');
 }
 
-export function validateStrategy(raw: unknown, analysis: StrategyInput): PtwStrategy {
-  const result = strategySchema.parse(raw);
+export function validateStrategy(raw: unknown, analysis: StrategyInput, coverageNotes:string[]=[]): PtwStrategy {
+  const input=structuredClone(raw) as any;
+  const sourceIds=new Set(analysis.evidence.map(e=>e.id));
+  const support=(v:any):number=>{
+    if(typeof v==='string')return sourceIds.has(v)?1:0;
+    if(!v || typeof v!=='object')return 0;
+    if(Array.isArray(v))return v.reduce((sum,item)=>sum+support(item),0);
+    return Object.entries(v).reduce((sum,[key,item])=>sum+(key==='evidenceIds'&&Array.isArray(item)?new Set(item.filter(id=>sourceIds.has(id))).size:typeof item==='object'?support(item):0),0);
+  };
+  // Keep the selected strategy and its comparisons together when options overflow.
+  if(Array.isArray(input?.options)&&input.options.length>4){
+    const kept=strongest(input.options,4,o=>o?.id===input.recommendation?.selectedOptionId?Number.MAX_SAFE_INTEGER:support(o)) as any[];
+    const keepIds=new Set(kept.map(o=>o?.id));
+    if(Array.isArray(input.recommendation?.alternatives)){
+      const original=input.recommendation.alternatives;
+      input.recommendation.alternatives=original.filter((a:any)=>keepIds.has(a?.optionId));
+      if(original.length!==input.recommendation.alternatives.length)coverageNotes.push(`AI output coverage: recommendation.alternatives: kept ${input.recommendation.alternatives.length} of ${original.length}; dropped ${original.length-input.recommendation.alternatives.length} comparisons for trimmed options.`);
+    }
+  }
+  const bounded=trimAiArrays(input,strategySchema,coverageNotes,(rows,limit,path)=>strongest(rows,limit,v=>
+    path==='options'&&v?.id===input.recommendation?.selectedOptionId?Number.MAX_SAFE_INTEGER:
+    path==='recommendation.alternatives'&&input.options?.some((o:any)=>o.id===v?.optionId&&o.id!==input.recommendation?.selectedOptionId)?Number.MAX_SAFE_INTEGER:support(v)));
+  const result = strategySchema.parse(bounded);
   const evidence = new Map(analysis.evidence.map(e => [e.id, e]));
   const ids = result.options.map(o => o.id);
   if (new Set(ids).size !== ids.length || !ids.includes(result.recommendation.selectedOptionId)) throw new Error('Strategy option selection is inconsistent.');
@@ -135,7 +157,11 @@ Keep each statement under 1600 characters, validation actions under 600, and the
 INPUT JSON:
 ${JSON.stringify(sourceInput(analysis,true))}
 ${correction}`, strategyResponseSchema);
-    return {status: 'DRAFT', version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: new Date().toISOString(), reviewStatus: 'UNREVIEWED', strategy: validateStrategy(raw, analysis)};
+    const coverageNotes:string[]=[];
+    const strategy=validateStrategy(raw,analysis,coverageNotes);
+    analysis.meta.warnings.push(...coverageNotes);
+    if(analysis.meta.packageCoverage)analysis.meta.packageCoverage.warnings.push(...coverageNotes);
+    return {status: 'DRAFT', version: PTW_SYNTHESIS_VERSION, inputHash, generatedAt: new Date().toISOString(), reviewStatus: 'UNREVIEWED', strategy};
   } catch (error) {
     const detail = error instanceof z.ZodError
       ? error.issues.map(issue => `${issue.path.join('.')}: ${issue.message}`).join('; ').slice(0, 1800)
