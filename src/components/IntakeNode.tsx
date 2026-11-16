@@ -4,7 +4,7 @@ import type {OpportunityAnalysis} from '../types';
 import {PACKAGE_LIMITS,type PackageJob} from '../packageTypes';
 interface Props {onBack:()=>void;onSuccess:(analysis:OpportunityAnalysis)=>Promise<void>}
 const stages=['Upload','Inventory','Read documents','Reconcile scope','Research','Price scenarios','Compare strategies'];
-const stageIndex:Record<string,number>={UPLOADING:0,INVENTORY:1,READING:2,EXTRACTION:3,RESEARCH:4,PRICING:5,STRATEGY:6,COMPLETE:7};
+const stageIndex:Record<string,number>={UPLOADING:0,INVENTORY:1,READING:2,EXTRACTION:3,RESEARCH:4,PRICING:5,ESTIMATE:5,STRATEGY:6,COMPLETE:7};
 async function request(url:string,init?:RequestInit){const r=await fetch(url,init),p=await r.json().catch(()=>({}));if(!r.ok)throw new Error(p.error||'The request was interrupted. Your saved progress is retained.');return p;}
 const post=(url:string,body?:unknown)=>request(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body||{})});
 export default function IntakeNode({onBack,onSuccess}:Props){
@@ -26,8 +26,16 @@ export default function IntakeNode({onBack,onSuccess}:Props){
           current=(await request(`/api/package-jobs/${current.id}/chunks/${f.id}/${i}`,{method:'PUT',headers:{'Content-Type':'application/octet-stream'},body})).data;setJob(current);
         }}
       }
+      let interruptions=0;
       while(!stop.current&&!['COMPLETE','CANCELED'].includes(current.status)){
-        current=(await post(`/api/package-jobs/${current.id}/advance`)).data;setJob(current);
+        try{current=(await post(`/api/package-jobs/${current.id}/advance`)).data;interruptions=0;}
+        catch(e){
+          if(++interruptions>3)throw new Error('Connection is unavailable. Your package is saved; use Resume when the connection returns.');
+          await new Promise(resolve=>setTimeout(resolve,1500*interruptions));
+          try{current=(await request(`/api/package-jobs/${current.id}`)).data;}catch{continue;}
+          setJob(current);continue;
+        }
+        setJob(current);
         if(current.status==='PAUSED'){
           if(current.retryable&&current.attempts<2){await new Promise(resolve=>setTimeout(resolve,1500));continue;}
           throw new Error(current.message);

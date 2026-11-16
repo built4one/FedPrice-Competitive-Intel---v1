@@ -2926,6 +2926,17 @@ function createExecutivePdf(raw) {
           layout.text(`${s.url}. ${s.reason || ""}`, false, 8);
         });
       }
+      const coverageNotes = [.../* @__PURE__ */ new Set([...analysis.meta.warnings, ...analysis.meta.packageCoverage?.warnings || []])];
+      if (analysis.meta.contingencyEstimate) {
+        layout.page("AI engineering estimate", "LIMITED confidence \u2014 unsourced dollar estimate");
+        layout.text(analysis.meta.contingencyEstimate.basis);
+        analysis.meta.contingencyEstimate.assumptions.forEach((v) => layout.text(v, false, 8));
+        analysis.meta.contingencyEstimate.missing.forEach((v) => layout.text("Missing: " + v, false, 8));
+      }
+      if (coverageNotes.length) {
+        layout.page("Processing coverage notes", analysis.deal.solicitationNumber);
+        coverageNotes.forEach((v) => layout.text(v, false, 8));
+      }
       if (analysis.historical) {
         layout.page("Historical test record", `Cutoff: ${analysis.historical.cutoff}`);
         layout.text(`Classification: ${analysis.validation?.comparisonClass || (analysis.historicalReview ? "VALIDATED_BACKTEST" : "RETROSPECTIVE_APPROXIMATION")}`, true);
@@ -2951,6 +2962,14 @@ function createExecutivePdf(raw) {
 // src/exports/competitiveWorkbook.ts
 function addCompetitiveWorkbook(workbook, analysis) {
   const p = analysis.competitivePosition;
+  const estimate = analysis.meta.contingencyEstimate;
+  if (estimate) {
+    const sheet = workbook.addWorksheet("AI Engineering Estimate");
+    sheet.columns = [{ header: "Lower USD", key: "low", width: 24 }, { header: "Central USD", key: "central", width: 24 }, { header: "Upper USD", key: "high", width: 24 }, { header: "Basis / assumptions (UNSOURCED)", key: "basis", width: 110 }];
+    sheet.addRow(estimate);
+    estimate.assumptions.forEach((basis) => sheet.addRow({ basis }));
+    estimate.missing.forEach((basis) => sheet.addRow({ basis: "Missing: " + basis }));
+  }
   const strategic = workbook.addWorksheet("Strategic Assessment");
   strategic.columns = [{ header: "Section", key: "section", width: 38 }, { header: "Assessment", key: "text", width: 100 }, { header: "Claim type", key: "kind", width: 24 }, { header: "Evidence IDs", key: "evidence", width: 45 }, { header: "Validation action", key: "validation", width: 90 }];
   if (analysis.ptwStrategy?.status === "DRAFT") {
@@ -2972,6 +2991,7 @@ function addCompetitiveWorkbook(workbook, analysis) {
     sheet.addRow({ name: "Analysis purpose", status: coverage.mode || "LIVE", note: coverage.mode === "HISTORICAL" ? "Screened historical documents; see Historical Test for qualification and cutoff." : "Live opportunity review" });
     sheet.addRow({ name: "Package currency", status: coverage.freshness.status, note: coverage.freshness.message });
     coverage.documents.forEach((d) => sheet.addRow({ ...d, role: d.categories.join(", ") }));
+    [.../* @__PURE__ */ new Set([...coverage.warnings, ...analysis.meta.warnings])].forEach((note) => sheet.addRow({ name: "Coverage note", note }));
   }
   const government = workbook.addWorksheet("Government Decision");
   government.columns = [{ header: "Category", key: "category", width: 25 }, { header: "Fact / rule", key: "label", width: 35 }, { header: "Extracted value / implication", key: "value", width: 100 }, { header: "Source locator", key: "source", width: 80 }];
@@ -3060,11 +3080,15 @@ function addCompetitiveWorkbook(workbook, analysis) {
   });
   const strategies = workbook.addWorksheet("Competitive Strategies");
   strategies.columns = [{ header: "Strategy", key: "label", width: 30 }, { header: "Labor USD", key: "labor", width: 26 }, { header: "Other evaluated USD", key: "other", width: 26 }, { header: "Total USD", key: "total", width: 28 }, { header: "Selected", key: "selected", width: 16 }, { header: "Decision rationale", key: "rationale", width: 100 }, { header: "Conditions / interpretation", key: "condition", width: 100 }];
-  if (!p.rows.length && !p.components.length && p.target != null) components.addRow({ label: "Qualified whole-basket reference", amount: p.target, indirect: 0, total: p.target, low: p.rangeLow, high: p.rangeHigh, treatment: p.assumptions.join(" "), source: analysis.deal.evaluationPricing?.source });
+  if (!estimate && !p.rows.length && !p.components.length && p.target != null) components.addRow({ label: "Qualified whole-basket reference", amount: p.target, indirect: 0, total: p.target, low: p.rangeLow, high: p.rangeHigh, treatment: p.assumptions.join(" "), source: analysis.deal.evaluationPricing?.source });
   const end = labor.rowCount, lastComponent = components.rowCount;
   p.scenarios.forEach((s, i) => {
     const index = strategies.rowCount + 1;
     const column = ["J", "K", "L"][i], componentColumn = ["H", "D", "I"][i];
+    if (estimate) {
+      strategies.addRow({ label: s.label, labor: 0, other: { formula: `'AI Engineering Estimate'!${["A", "B", "C"][i]}2`, result: s.total }, total: { formula: `C${index}`, result: s.total }, selected: s.selected ? "YES" : "NO", rationale: estimate.basis, condition: "AI ESTIMATE ONLY: existing partial source-price calculations below are diagnostic and are NOT added to this whole-package estimate." });
+      return;
+    }
     strategies.addRow({ label: `${s.label}${s.basis === "PARTIAL_SUBTOTAL" ? " / PARTIAL SUBTOTAL" : ""}`, labor: { formula: `ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2, end)}),2)`, result: s.labor }, other: { formula: lastComponent > 1 ? `ROUND(SUM('Evaluated Components'!${componentColumn}2:${componentColumn}${lastComponent}),2)` : "0", result: s.nonLabor }, total: { formula: `ROUND(B${index}+C${index},2)`, result: s.total }, selected: s.selected ? "YES" : "NO", rationale: s.rationale, condition: `${p.status}; ${s.basis}; ${p.evaluationComplete ? "Basket represented" : "Validation open"}. ${s.condition}` });
   });
   const decision = workbook.getWorksheet("Executive Decision");
@@ -3811,10 +3835,12 @@ ${text2}`);
           if (completed > completedBefore) {
             job.message = `${completed} bounded price inputs saved. Completing the remaining basket.`;
           } else {
-            if (this.deps.estimate) analysis = await this.deps.estimate(analysis);
             if (!analysis.competitivePosition?.target) analysis.meta.warnings.push("Numerical recommendation unavailable: " + (analysis.competitivePosition?.missing.slice(0, 3).join(" ") || "The evaluated price basis could not be reconstructed."));
             await this.put(workspace, "package-result", id, analysis);
-            if (this.deps.strategy) {
+            if (this.deps.estimate) {
+              job.stage = "ESTIMATE";
+              job.message = "Pricing progress saved. Preparing a clearly labeled engineering estimate for missing scope.";
+            } else if (this.deps.strategy) {
               job.stage = "STRATEGY";
               job.message = "Pricing limitations saved. Developing a source-backed strategic assessment.";
             } else await this.finish(workspace, job, analysis);
@@ -3826,6 +3852,14 @@ ${text2}`);
             job.message = "Price scenarios saved. Comparing competitive strategies before freezing the recommendation.";
           } else await this.finish(workspace, job, analysis);
         }
+      } else if (job.stage === "ESTIMATE") {
+        let analysis = (await this.store.get(workspace, "package-result", id)).value;
+        analysis = await this.deps.estimate(analysis);
+        await this.put(workspace, "package-result", id, analysis);
+        if (this.deps.strategy) {
+          job.stage = "STRATEGY";
+          job.message = "Estimate and assumptions saved. Completing the strategic assessment.";
+        } else await this.finish(workspace, job, analysis);
       } else if (job.stage === "STRATEGY") {
         const analysis = (await this.store.get(workspace, "package-result", id)).value;
         const result = await this.deps.strategy(analysis);
@@ -3841,7 +3875,7 @@ ${text2}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Processing failed.";
       job.leaseUntil = void 0;
-      if (["RESEARCH", "PRICING", "STRATEGY"].includes(job.stage)) {
+      if (["RESEARCH", "PRICING", "ESTIMATE", "STRATEGY"].includes(job.stage)) {
         if (job.attempts < 2) {
           job.status = "READY";
           job.retryable = true;
@@ -3858,12 +3892,14 @@ ${text2}`);
           job.message = warning;
         } else {
           let analysis = (await this.store.get(workspace, "package-result", id)).value;
-          if (job.stage === "PRICING") {
-            analysis = enforceAuthoritativeAnalysis(analysis);
-            if (this.deps.estimate) analysis = await this.deps.estimate(analysis);
-          }
+          if (job.stage === "PRICING") analysis = enforceAuthoritativeAnalysis(analysis);
           this.limit(analysis, job, `${job.stage} unavailable after one retry: ${message}`);
-          await this.finish(workspace, job, analysis);
+          if (job.stage === "PRICING" && !analysis.competitivePosition?.target && this.deps.estimate) {
+            await this.put(workspace, "package-result", id, analysis);
+            job.stage = "ESTIMATE";
+            job.status = "READY";
+            job.attempts = 0;
+          } else await this.finish(workspace, job, analysis);
         }
       } else if (job.stage === "EXTRACTION" && job.attempts < 2 && !/historical cutoff|No readable content/.test(message)) {
         job.status = "READY";

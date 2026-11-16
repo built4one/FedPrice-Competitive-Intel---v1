@@ -135,6 +135,9 @@ export function createExecutivePdf(raw:OpportunityAnalysis):Promise<Buffer>{
        analysis.meta.intelligence.tasks.forEach(t=>layout.text(`${t.task}: ${t.status}. ${t.message}`));
        analysis.meta.intelligence.sources.forEach(s=>{layout.text(`${s.name}: ${s.status}; source date ${s.publishedAt||'unverified'}`,true,8);layout.text(`${s.url}. ${s.reason||''}`,false,8);});
       }
+      const coverageNotes=[...new Set([...analysis.meta.warnings,...(analysis.meta.packageCoverage?.warnings||[])])];
+      if(analysis.meta.contingencyEstimate){layout.page('AI engineering estimate','LIMITED confidence — unsourced dollar estimate');layout.text(analysis.meta.contingencyEstimate.basis);analysis.meta.contingencyEstimate.assumptions.forEach(v=>layout.text(v,false,8));analysis.meta.contingencyEstimate.missing.forEach(v=>layout.text('Missing: '+v,false,8));}
+      if(coverageNotes.length){layout.page('Processing coverage notes',analysis.deal.solicitationNumber);coverageNotes.forEach(v=>layout.text(v,false,8));}
       if(analysis.historical){layout.page('Historical test record',`Cutoff: ${analysis.historical.cutoff}`);
        layout.text(`Classification: ${analysis.validation?.comparisonClass||(analysis.historicalReview?'VALIDATED_BACKTEST':'RETROSPECTIVE_APPROXIMATION')}`,true);
        layout.text(`Prediction frozen: ${analysis.frozenPrediction?.frozenAt}. SHA-256: ${analysis.frozenPrediction?.hash}`,false,8);

@@ -6,6 +6,9 @@ import {opportunityAnalysisFixture} from '../testFixtures/opportunityAnalysis';
 import {pricedServicesFixture} from '../testFixtures/pricedServices';
 import {PackageJobs} from './packageJobs';
 import {RecordStore} from './store';
+import ExcelJS from 'exceljs';
+import {addCompetitiveWorkbook} from '../exports/competitiveWorkbook';
+import {createExecutivePdf} from '../exports/executivePdf';
 
 test('extraction repairs enums and arrays without manufacturing required numeric measurements',()=>{
  const notes:string[]=[];
@@ -16,6 +19,14 @@ test('whole-package estimate retries bad AI output and returns a labeled price w
  const a=opportunityAnalysisFixture();delete a.competitivePosition;const evidence=structuredClone(a.evidence);let calls=0;
  await contingencyEstimate(a,{interpret:async<T>()=>(++calls===1?{low:'bad'}:{low:100000,central:200000,high:400000,basis:'Synthetic test estimate: explicitly assumed work quantities and rates.',assumptions:['SYNTHETIC estimate, not a real procurement'],missing:['Validate hours']}) as T});
  assert.equal(calls,2);assert.equal(a.competitivePosition?.target,200000);assert.equal(a.competitivePosition?.confidenceLabel,'LIMITED');assert.deepEqual(a.evidence,evidence);assert.match(a.competitivePosition!.rangeMeaning,/AI ESTIMATE/);
+});
+test('AI estimate exports use estimate formulas and retain assumptions and repair notes',async()=>{
+ const a=opportunityAnalysisFixture();delete a.competitivePosition;
+ await contingencyEstimate(a,{interpret:async<T>()=>({low:100000,central:200000,high:400000,basis:'Synthetic estimate with explicit assumed work and no sourced prices.',assumptions:['Assumed test quantity'],missing:['Verify scope']}) as T});
+ const w=new ExcelJS.Workbook();w.addWorksheet('Executive Decision').columns=[{key:'field'},{key:'value'}];addCompetitiveWorkbook(w,a);
+ assert.equal((w.getWorksheet('Competitive Strategies')!.getCell('C3').value as any).formula,"'AI Engineering Estimate'!B2");
+ assert.equal(w.getWorksheet('AI Engineering Estimate')!.getCell('B2').value,200000);
+ assert.ok((await w.xlsx.writeBuffer()).byteLength>1000);const pdf=await createExecutivePdf(a);assert.equal(pdf.subarray(0,4).toString(),'%PDF');
 });
 for(const stage of ['RESEARCH','PRICING','STRATEGY'] as const)test(`${stage} failure retries once and retains a price`,async t=>{
  const store=new RecordStore({file:':memory:',url:undefined,hosted:false});t.after(()=>store.close());const a=pricedServicesFixture();let calls=0;

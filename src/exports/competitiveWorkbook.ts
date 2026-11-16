@@ -6,6 +6,9 @@ import {strategyStatements} from '../domain/ptw/strategy';
 
 export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: OpportunityAnalysis) {
   const p=analysis.competitivePosition!;
+  const estimate=analysis.meta.contingencyEstimate;
+  if(estimate){const sheet=workbook.addWorksheet('AI Engineering Estimate');sheet.columns=[{header:'Lower USD',key:'low',width:24},{header:'Central USD',key:'central',width:24},{header:'Upper USD',key:'high',width:24},{header:'Basis / assumptions (UNSOURCED)',key:'basis',width:110}];sheet.addRow(estimate);estimate.assumptions.forEach(basis=>sheet.addRow({basis}));estimate.missing.forEach(basis=>sheet.addRow({basis:'Missing: '+basis}));}
+
   const strategic=workbook.addWorksheet('Strategic Assessment');
   strategic.columns=[{header:'Section',key:'section',width:38},{header:'Assessment',key:'text',width:100},{header:'Claim type',key:'kind',width:24},{header:'Evidence IDs',key:'evidence',width:45},{header:'Validation action',key:'validation',width:90}];
   if(analysis.ptwStrategy?.status==='DRAFT'){
@@ -27,6 +30,7 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
     sheet.addRow({name:'Analysis purpose',status:coverage.mode||'LIVE',note:coverage.mode==='HISTORICAL'?'Screened historical documents; see Historical Test for qualification and cutoff.':'Live opportunity review'});
     sheet.addRow({name:'Package currency',status:coverage.freshness.status,note:coverage.freshness.message});
     coverage.documents.forEach(d=>sheet.addRow({...d,role:d.categories.join(', ')}));
+    [...new Set([...coverage.warnings,...analysis.meta.warnings])].forEach(note=>sheet.addRow({name:'Coverage note',note}));
   }
   const government=workbook.addWorksheet('Government Decision');
   government.columns=[{header:'Category',key:'category',width:25},{header:'Fact / rule',key:'label',width:35},{header:'Extracted value / implication',key:'value',width:100},{header:'Source locator',key:'source',width:80}];
@@ -94,9 +98,11 @@ export function addCompetitiveWorkbook(workbook: ExcelJS.Workbook, analysis: Opp
   const strategies=workbook.addWorksheet('Competitive Strategies');
   strategies.columns=[{header:'Strategy',key:'label',width:30},{header:'Labor USD',key:'labor',width:26},{header:'Other evaluated USD',key:'other',width:26},{header:'Total USD',key:'total',width:28},{header:'Selected',key:'selected',width:16},{header:'Decision rationale',key:'rationale',width:100},{header:'Conditions / interpretation',key:'condition',width:100}];
   // Whole-value evidence is an alternate basis, never added to a bottom-up basket.
-  if(!p.rows.length && !p.components.length && p.target!=null)components.addRow({label:'Qualified whole-basket reference',amount:p.target,indirect:0,total:p.target,low:p.rangeLow,high:p.rangeHigh,treatment:p.assumptions.join(' '),source:analysis.deal.evaluationPricing?.source});
+  if(!estimate && !p.rows.length && !p.components.length && p.target!=null)components.addRow({label:'Qualified whole-basket reference',amount:p.target,indirect:0,total:p.target,low:p.rangeLow,high:p.rangeHigh,treatment:p.assumptions.join(' '),source:analysis.deal.evaluationPricing?.source});
   const end=labor.rowCount,lastComponent=components.rowCount;
-  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i],componentColumn=['H','D','I'][i];strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!${componentColumn}2:${componentColumn}${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
+  p.scenarios.forEach((s,i)=>{const index=strategies.rowCount+1;const column=['J','K','L'][i],componentColumn=['H','D','I'][i];
+    if(estimate){strategies.addRow({label:s.label,labor:0,other:{formula:`'AI Engineering Estimate'!${['A','B','C'][i]}2`,result:s.total},total:{formula:`C${index}`,result:s.total},selected:s.selected?'YES':'NO',rationale:estimate.basis,condition:'AI ESTIMATE ONLY: existing partial source-price calculations below are diagnostic and are NOT added to this whole-package estimate.'});return;}
+    strategies.addRow({label:`${s.label}${s.basis==='PARTIAL_SUBTOTAL'?' / PARTIAL SUBTOTAL':''}`,labor:{formula:`ROUND(SUM('Competitive Labor'!${column}2:${column}${Math.max(2,end)}),2)`,result:s.labor},other:{formula:lastComponent>1 ? `ROUND(SUM('Evaluated Components'!${componentColumn}2:${componentColumn}${lastComponent}),2)` : '0',result:s.nonLabor},total:{formula:`ROUND(B${index}+C${index},2)`,result:s.total},selected:s.selected?'YES':'NO',rationale:s.rationale,condition:`${p.status}; ${s.basis}; ${p.evaluationComplete?'Basket represented':'Validation open'}. ${s.condition}`});});
   const decision=workbook.getWorksheet('Executive Decision')!;
   decision.addRows([
     {field:'Recommended market position',value:p.target == null ? 'No complete quantity/rate basis' : {formula:"'Competitive Strategies'!D3",result:p.target}},

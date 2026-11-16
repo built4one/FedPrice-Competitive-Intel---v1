@@ -252,10 +252,10 @@ export class PackageJobs {
           const completed=analysis.deal.planningInputs?.length||0;
           if(completed>completedBefore){job.message=`${completed} bounded price inputs saved. Completing the remaining basket.`;}
           else {
-            if(this.deps.estimate)analysis=await this.deps.estimate(analysis);
             if(!analysis.competitivePosition?.target)analysis.meta.warnings.push('Numerical recommendation unavailable: '+(analysis.competitivePosition?.missing.slice(0,3).join(' ')||'The evaluated price basis could not be reconstructed.'));
             await this.put(workspace,'package-result',id,analysis);
-            if(this.deps.strategy){job.stage='STRATEGY';job.message='Pricing limitations saved. Developing a source-backed strategic assessment.';}
+            if(this.deps.estimate){job.stage='ESTIMATE';job.message='Pricing progress saved. Preparing a clearly labeled engineering estimate for missing scope.';}
+            else if(this.deps.strategy){job.stage='STRATEGY';job.message='Pricing limitations saved. Developing a source-backed strategic assessment.';}
             else await this.finish(workspace,job,analysis);
           }
         }else{
@@ -263,6 +263,12 @@ export class PackageJobs {
           if(this.deps.strategy){job.stage='STRATEGY';job.message='Price scenarios saved. Comparing competitive strategies before freezing the recommendation.';}
           else await this.finish(workspace,job,analysis);
         }
+      }else if(job.stage==='ESTIMATE'){
+        let analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
+        analysis=await this.deps.estimate!(analysis);
+        await this.put(workspace,'package-result',id,analysis);
+        if(this.deps.strategy){job.stage='STRATEGY';job.message='Estimate and assumptions saved. Completing the strategic assessment.';}
+        else await this.finish(workspace,job,analysis);
       }else if(job.stage==='STRATEGY'){
         const analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
         const result=await this.deps.strategy!(analysis);
@@ -275,7 +281,7 @@ export class PackageJobs {
     }catch(error){
       const message=error instanceof Error?error.message:'Processing failed.';
       job.leaseUntil=undefined;
-      if(['RESEARCH','PRICING','STRATEGY'].includes(job.stage)){
+      if(['RESEARCH','PRICING','ESTIMATE','STRATEGY'].includes(job.stage)){
         if(job.attempts<2){job.status='READY';job.retryable=true;job.message=`Retrying ${job.stage.toLowerCase()} once: ${message}`;}
         else if(job.stage==='RESEARCH'){
           const state=(await this.store.get<ResearchState>(workspace,'package-research',id))?.value||newResearchState();
@@ -284,9 +290,9 @@ export class PackageJobs {
           await this.put(workspace,'package-research',id,state);job.status='READY';job.attempts=0;job.message=warning;
         }else{
           let analysis=(await this.store.get<OpportunityAnalysis>(workspace,'package-result',id))!.value;
-          if(job.stage==='PRICING'){analysis=enforceAuthoritativeAnalysis(analysis);if(this.deps.estimate)analysis=await this.deps.estimate(analysis);}
+          if(job.stage==='PRICING')analysis=enforceAuthoritativeAnalysis(analysis);
           this.limit(analysis,job,`${job.stage} unavailable after one retry: ${message}`);
-          await this.finish(workspace,job,analysis);
+          if(job.stage==='PRICING'&&!analysis.competitivePosition?.target&&this.deps.estimate){await this.put(workspace,'package-result',id,analysis);job.stage='ESTIMATE';job.status='READY';job.attempts=0;}else await this.finish(workspace,job,analysis);
         }
       }else if(job.stage==='EXTRACTION'&&job.attempts<2&&!/historical cutoff|No readable content/.test(message)){job.status='READY';job.retryable=true;job.message=`Retrying extraction once: ${message}`;}else{job.status='PAUSED';job.retryable=error instanceof OpenAIRequestError&&error.retryable;job.message=message;}
     }
