@@ -42,3 +42,11 @@ test('strategic decision brief adds complete strategy pages before the market ap
   }
   assert.ok((buffer.toString('latin1').match(/\/Type\s*\/Page\b/g)?.length || 0) > 2);
 });
+test('the first PDF page contains the complete concise brief before the full appendix',async()=>{
+ const a=pricedServicesFixture();a.competitivePosition!.rationale='Full arithmetic '.repeat(2000);
+ const buffer=await createExecutivePdf(a);const parsed=await normalizePdfText({originalname:'summary.pdf',mimetype:'application/pdf',size:buffer.length,buffer});
+ const text=parsed.buffer.toString();const first=text.split(/SOURCE: summary.pdf \| PAGE 2\n/)[0];
+ for(const label of ['Executive brief','Why this price','What could move it','What to do next',"What's missing"])assert.ok(first.includes(label),label);
+ assert.doesNotMatch(first,/Appendix: complete pricing rationale/);
+ assert.ok(text.includes('Appendix: complete pricing rationale'));assert.ok(text.indexOf("What's missing")<text.indexOf('Appendix: complete pricing rationale'));
+});

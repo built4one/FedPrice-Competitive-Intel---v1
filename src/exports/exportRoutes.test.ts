@@ -36,6 +36,7 @@ test('serves valid PDF and Excel downloads through the production export routes'
     { endpoint: 'export-brief', type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', signature: 'PK', extension: '.xlsx' },
   ];
 
+  const saved=await fetch(`http://127.0.0.1:${port}/api/runs`,{method:'POST',headers:{'content-type':'application/json',cookie},body:JSON.stringify({...analysis,storageVersion:0})});assert.equal(saved.status,200);
   for (const item of cases) {
     const response = await fetch(`http://127.0.0.1:${port}/api/${item.endpoint}`, {
       method: 'POST',
@@ -49,9 +50,12 @@ test('serves valid PDF and Excel downloads through the production export routes'
     assert.match(response.headers.get('content-disposition') || '', new RegExp(`${item.extension.replace('.', '\\.')}(?:"|$)`));
     assert.equal(bytes.subarray(0, item.signature.length).toString('ascii'), item.signature);
     assert.ok(bytes.length > 5_000);
+    const native=await fetch(`http://127.0.0.1:${port}/api/exports/${analysis.id}/${item.extension.slice(1)}`,{headers:{cookie}});assert.equal(native.status,200);assert.match(native.headers.get('content-disposition')||'',/attachment/);assert.equal(Buffer.from(await native.arrayBuffer()).subarray(0,item.signature.length).toString(),item.signature);
+    assert.equal((await fetch(`http://127.0.0.1:${port}/api/exports/missing/${item.extension.slice(1)}`,{headers:{cookie}})).status,404);
     if (item.extension === '.xlsx') {
       const workbook = new ExcelJS.Workbook();
       await workbook.xlsx.load(bytes as any);
+      assert.equal(workbook.worksheets[0].name,'Summary');
       const sheet = workbook.getWorksheet('PTW Strategy');
       assert.ok(sheet);
       const exported = JSON.stringify(sheet.getSheetValues());

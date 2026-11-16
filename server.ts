@@ -45,6 +45,7 @@ import { calculateDeterministicScenarios } from './src/domain/marketPosition/sce
 import { MARKET_POSITION_ENGINE_VERSION } from './src/domain/marketPosition/engineConfig.js';
 import { classifyNumericEvidence } from './src/domain/marketPosition/evidenceClassification.js';
 import { createExecutivePdf } from './src/exports/executivePdf.js';
+import {addSummarySheet,formatWorkbook} from './src/exports/summarySheet';
 import { addCompetitiveWorkbook } from './src/exports/competitiveWorkbook.js';
 import {
   createLegacyPosition,
@@ -995,7 +996,7 @@ app.post('/api/retry-connector', async (req, res) => {
 
 const displayValue = (value: number | null) => value === null ? 'Insufficient evidence' : value;
 
-app.post('/api/export-brief', async (req, res) => {
+const exportExcelHandler:express.RequestHandler = async (req, res) => {
   try {
     const frozen=await loadPrediction(runStore,req.principal.workspace,String(req.body?.id||''));
     if(!frozen&&(req.body.historical||req.body.frozenPrediction))return res.status(400).json({error:'A stored prediction is required for historical exports.'});
@@ -1005,6 +1006,7 @@ app.post('/api/export-brief', async (req, res) => {
     const workbook = new ExcelJS.Workbook();
     workbook.creator = 'Federal Market Position';
 
+    addSummarySheet(workbook,analysis);
     const decision = workbook.addWorksheet('Executive Decision');
     decision.columns = [{header:'Decision',key:'field',width:36},{header:'Recommendation',key:'value',width:95}];
     const summary = workbook.addWorksheet('Market Benchmarks');
@@ -1161,17 +1163,19 @@ app.post('/api/export-brief', async (req, res) => {
       sheet.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF10243E' } };
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
     }
+    formatWorkbook(workbook);
     const buffer = await workbook.xlsx.writeBuffer();
     const safeName = analysis.deal.solicitationNumber?.replace(/[^a-z0-9-]/gi, '_') || 'market-position';
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}_Market_Position.xlsx"`);
     res.send(Buffer.from(buffer));
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : 'Export failed.' });
+    if(req.method==='GET')res.status(503).type('html').send('<h1>Download unavailable</h1><p>Your saved result is safe. Please return to the app and retry.</p>');else res.status(500).json({error:'Download unavailable. Your saved result is safe; please retry.'});
   }
-});
+};
+app.post('/api/export-brief',exportExcelHandler);
 
-app.post('/api/export-pdf', async (req, res) => {
+const exportPdfHandler:express.RequestHandler = async (req, res) => {
   try {
     const frozen=await loadPrediction(runStore,req.principal.workspace,String(req.body?.id||''));
     if(!frozen&&(req.body.historical||req.body.frozenPrediction))return res.status(400).json({error:'A stored prediction is required for historical exports.'});
@@ -1185,8 +1189,24 @@ app.post('/api/export-pdf', async (req, res) => {
     res.setHeader('Content-Disposition', `attachment; filename="${safeName}_Market_Position.pdf"`);
     res.send(buffer);
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : 'PDF export failed.' });
+    if(req.method==='GET')res.status(503).type('html').send('<h1>Download unavailable</h1><p>Your saved result is safe. Please return to the app and retry.</p>');else res.status(500).json({error:'Download unavailable. Your saved result is safe; please retry.'});
   }
+};
+app.post('/api/export-pdf',exportPdfHandler);
+
+// Native same-origin attachments keep the browser's download gesture. Resolve
+// only an owned saved run; never accept a client-supplied prediction replacement.
+app.get('/api/exports/:id/:format',async(req,res,next)=>{
+ const format=String(req.params.format);
+ if(!['pdf','xlsx'].includes(format))return res.status(404).type('text').send('This export format is not available.');
+ const id=String(req.params.id),workspace=req.principal.workspace;
+ try{
+  const frozen=await loadPrediction(runStore,workspace,id);
+  const saved=frozen||(await runStore.get<OpportunityAnalysis>(workspace,'analysis',id))?.value;
+  if(!saved)return res.status(404).type('html').send('<h1>Saved run not found</h1><p>Return to your workspace and reopen the saved decision before downloading.</p>');
+  req.body=saved;
+  return (format==='pdf'?exportPdfHandler:exportExcelHandler)(req,res,next);
+ }catch{return res.status(503).type('html').send('<h1>Download is temporarily unavailable</h1><p>Your saved result is safe. Return to the app and try the download again.</p>');}
 });
 
 app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {

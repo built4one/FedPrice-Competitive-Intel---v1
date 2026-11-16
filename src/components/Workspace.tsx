@@ -1,7 +1,9 @@
+import {present} from '../presentation/brief';
 import HistoricalReview from './decision/HistoricalReview';
 import { useMemo, useState } from 'react';
 import { AlertTriangle, ArrowLeft, CheckCircle2, Download, ExternalLink, FileText, RefreshCw, ShieldAlert, Loader2 } from 'lucide-react';
 import type { ConnectorStatus, EvidenceItem, OpportunityAnalysis, ValidationValueType } from '../types';
+import FullRecommendation from './decision/FullRecommendation';
 import DecisionCenter from './decision/DecisionCenter';
 import AnalystDetails from './decision/AnalystDetails';
 import PlanningAssumptions from './decision/PlanningAssumptions';
@@ -30,43 +32,10 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const [notice, setNotice] = useState('');
   const [retrying, setRetrying] = useState<ConnectorStatus['name'] | null>(null);
   const [generatingStrategy, setGeneratingStrategy] = useState(false);
-  const [exporting, setExporting] = useState<'pdf' | 'excel' | null>(null);
+  const exporting:null=null;
   const pricing = useMemo(()=>calculateCompetitivePosition(analysis),[analysis]);
 
-  const downloadExport = async (endpoint: string, extension: 'pdf' | 'xlsx') => {
-    setExporting(extension === 'pdf' ? 'pdf' : 'excel');
-    setNotice('');
-    try {
-      const response = await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(analysis) });
-      if (!response.ok) {
-        const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || `${extension.toUpperCase()} export failed.`);
-      }
-      const blob = await response.blob();
-      if (extension === 'pdf') {
-        const signature = new TextDecoder().decode((await blob.slice(0, 4).arrayBuffer()));
-        if (signature !== '%PDF') throw new Error('The PDF service returned an invalid file.');
-      }
-      if (!blob.size) throw new Error(`${extension.toUpperCase()} export returned an empty file.`);
-      const url = URL.createObjectURL(blob);
-      const anchor = document.createElement('a');
-      const safeName = (analysis.deal.solicitationNumber || 'PTW_Assessment').replace(/[^a-z0-9-]/gi, '_');
-      anchor.href = url;
-      anchor.download = `${safeName}_PTW_Assessment.${extension}`;
-      document.body.appendChild(anchor);
-      anchor.click();
-      anchor.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      setNotice(extension === 'pdf' ? 'Leadership PDF downloaded successfully.' : 'Excel evidence package downloaded.');
-    } catch (error) {
-      setNotice(error instanceof Error ? error.message : 'Export failed. Try again.');
-    } finally {
-      setExporting(null);
-    }
-  };
-
-  const exportExcel = () => downloadExport('/api/export-brief', 'xlsx');
-  const exportPdf = () => downloadExport('/api/export-pdf', 'pdf');
+  const exportLink=(format:'pdf'|'xlsx')=>`/api/exports/${encodeURIComponent(analysis.id)}/${format}`;
 
   const generateStrategy = async () => {
     setGeneratingStrategy(true); setNotice('');
@@ -96,22 +65,22 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   };
 
   return <div className="mx-auto max-w-7xl px-4 py-7 sm:px-6 lg:px-8 print:max-w-none print:p-0">
-    {notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl print:hidden"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{notice}</div>}
+    {present(notice && <div className="fixed bottom-5 right-5 z-50 flex items-center gap-2 rounded-xl bg-slate-950 px-4 py-3 text-xs font-bold text-white shadow-xl print:hidden"><CheckCircle2 className="h-4 w-4 text-emerald-400" />{present(notice)}</div>)}
     
     <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-end lg:justify-between print:hidden">
       <div>
         <button onClick={onBack} className="inline-flex items-center gap-2 text-[11px] font-black uppercase tracking-[.15em] text-slate-400 print:hidden"><ArrowLeft className="h-3.5 w-3.5" /> Opportunity runs</button>
         <p className="mt-4 text-xs font-bold uppercase tracking-widest text-blue-700">Federal Market Position · Executive brief</p>
-        <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{analysis.deal.title}</h1>
-        <p className="mt-1.5 text-sm text-slate-500">{analysis.deal.agency} · {analysis.deal.solicitationNumber}</p>
+        <h1 className="mt-3 max-w-3xl text-2xl font-black tracking-tight sm:text-3xl">{present(analysis.deal.title)}</h1>
+        <p className="mt-1.5 text-sm text-slate-500">{present(analysis.deal.agency)} · {present(analysis.deal.solicitationNumber)}</p>
       </div>
       <div className="flex flex-wrap gap-2 print:hidden">
         <button onClick={() => {setAnalystMode(true);setTab('pricing');}} className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-black text-blue-700">Adjust assumptions</button>
-        <button onClick={exportExcel} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black disabled:opacity-50"><Download className="h-4 w-4" /> {exporting === 'excel' ? 'BUILDING EXCEL' : 'DOWNLOAD EXCEL'}</button>
-        <button onClick={exportPdf} disabled={exporting !== null} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
-          {exporting === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
-          {exporting === 'pdf' ? 'BUILDING PDF' : 'DOWNLOAD PDF'}
-        </button>
+        <a href={exportLink('xlsx')} download onClick={()=>setNotice('Excel download requested. Check your browser downloads.')} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black disabled:opacity-50"><Download className="h-4 w-4" /> {present(exporting === 'excel' ? 'BUILDING EXCEL' : 'DOWNLOAD EXCEL')}</a>
+        <a href={exportLink('pdf')} download onClick={()=>setNotice('PDF download requested. Check your browser downloads.')} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
+          {present(exporting === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />)}
+          {present(exporting === 'pdf' ? 'BUILDING PDF' : 'DOWNLOAD PDF')}
+        </a>
       </div>
     </div>
     
@@ -120,14 +89,14 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
       <button onClick={()=>{setAnalystMode(false);setTab('decision-center');}} className={`py-3 text-sm font-bold border-b-2 ${!analystMode?'border-blue-700 text-blue-800':'border-transparent text-slate-500'}`}>Executive brief</button>
       <button onClick={()=>{setAnalystMode(true);setTab('market-evidence');}} className={`py-3 text-sm font-bold border-b-2 ${analystMode?'border-blue-700 text-blue-800':'border-transparent text-slate-500'}`}>Analyst workspace</button>
     </div>
-    {analystMode && <div className="mt-4 flex gap-1 overflow-x-auto">{tabs.filter(([id])=>id!=='decision-center').map(([id,label])=><button key={id} onClick={()=>setTab(id)} className={`shrink-0 rounded-lg px-3 py-3 text-xs font-bold ${tab===id?'bg-blue-50 text-blue-800':'text-slate-500'}`}>{label}</button>)}</div>}
+    {present(analystMode && <div className="mt-4 flex gap-1 overflow-x-auto">{present(tabs.filter(([id])=>id!=='decision-center').map(([id,label])=><button key={id} onClick={()=>setTab(id)} className={`shrink-0 rounded-lg px-3 py-3 text-xs font-bold ${tab===id?'bg-blue-50 text-blue-800':'text-slate-500'}`}>{present(label)}</button>))}</div>)}
 
     <div className="mt-8">
-      {tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />}
-      {tab === 'pricing' && <div key={`${analysis.id}-${analysis.meta.analyzedAt}`}><PlanningAssumptions analysis={analysis} onUpdate={onUpdate}/><PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} /></div>}
-      {tab === 'deal' && <DealView analysis={analysis} />}
-      {tab === 'market-evidence' && <div className="space-y-10"><AnalystDetails analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy}/><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /><IntelligenceView analysis={analysis} /><CompetitionView analysis={analysis} /><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div>}
-      {tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />}
+      {present(tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />)}
+      {present(tab === 'pricing' && <div key={`${analysis.id}-${analysis.meta.analyzedAt}`}><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Edit recommendation assumptions</summary><PlanningAssumptions analysis={analysis} onUpdate={onUpdate}/></details><details className="mt-4 rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Build an analyst pricing scenario</summary><PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} /></details></div>)}
+      {present(tab === 'deal' && <details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Opportunity scope and requirements</summary><DealView analysis={analysis} /></details>)}
+      {present(tab === 'market-evidence' && <div className="space-y-10"><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Full pricing rationale and source coverage</summary><div className="mt-5"><FullRecommendation analysis={analysis}/></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Strategy and market assessment</summary><div className="mt-5"><AnalystDetails analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy}/></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Intelligence modules</summary><div className="mt-5"><IntelligenceView analysis={analysis} /></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Competitors and incumbent</summary><div className="mt-5"><CompetitionView analysis={analysis} /></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Evidence ledger and gaps</summary><div className="mt-5"><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div></details><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /></div>)}
+      {present(tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />)}
     </div>
     </div>
   </div>;
@@ -150,35 +119,35 @@ function ResearchDetails({
         <div className="flex items-center justify-between gap-4">
           <div>
             <h2 className="text-sm font-black text-slate-900">Research status and diagnostics</h2>
-            <p className="mt-1 text-xs text-slate-500">{usable} of {connectors.length} public sources returned usable records. Open only when you need source-level detail.</p>
+            <p className="mt-1 text-xs text-slate-500">{present(usable)} of {present(connectors.length)} public sources returned usable records. Open only when you need source-level detail.</p>
           </div>
           <span className="text-[10px] font-black text-blue-600">VIEW DETAILS</span>
         </div>
       </summary>
       <div className="border-t border-slate-100 p-5">
-        {analysis.meta.warnings.length > 0 && (
+        {present(analysis.meta.warnings.length > 0 && (
           <div className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs leading-5 text-amber-900">
             <strong className="block">Research notes</strong>
-            <ul className="mt-2 space-y-1">{analysis.meta.warnings.map((warning, index) => <li key={index}>- {warning}</li>)}</ul>
+            <ul className="mt-2 space-y-1">{present(analysis.meta.warnings.map((warning, index) => <li key={index}>- {present(warning)}</li>))}</ul>
           </div>
-        )}
+        ))}
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-          {connectors.map((connector) => (
+          {present(connectors.map((connector) => (
             <div key={connector.name} className="rounded-xl border border-slate-200 p-3">
-              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'CACHED' ? 'bg-blue-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{connector.name}</span><span className="ml-auto text-[9px] font-black text-slate-400">{connector.status.replaceAll('_',' ')}</span></div>
-              <p className="mt-2 text-[10px] font-bold text-slate-500">{connector.recordsFound} records · {connector.durationMs ?? 0}ms · {connector.attempts ?? 0} attempt{connector.attempts === 1 ? '' : 's'}</p>
-              {connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{connector.querySummary}</p>}
-              {connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{connector.message}</p>}
-              <button onClick={() => onRetry(connector.name)} disabled={retrying !== null} className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-black text-blue-600 disabled:opacity-40"><RefreshCw className={`h-3 w-3 ${retrying === connector.name ? 'animate-spin' : ''}`} />{retrying === connector.name ? 'RETRYING' : 'RETRY SOURCE'}</button>
+              <div className="flex items-center gap-2"><span className={`h-2.5 w-2.5 rounded-full ${connector.status === 'SUCCESS' ? 'bg-emerald-500' : connector.status === 'CACHED' ? 'bg-blue-500' : connector.status === 'ZERO_RESULTS' || connector.status === 'UNAVAILABLE' ? 'bg-amber-400' : 'bg-red-500'}`} /><span className="text-xs font-black text-slate-700">{present(connector.name)}</span><span className="ml-auto text-[9px] font-black text-slate-400">{present(connector.status.replaceAll('_',' '))}</span></div>
+              <p className="mt-2 text-[10px] font-bold text-slate-500">{present(connector.recordsFound)} records · {present(connector.durationMs ?? 0)}ms · {present(connector.attempts ?? 0)} attempt{present(connector.attempts === 1 ? '' : 's')}</p>
+              {present(connector.querySummary && <p className="mt-1 line-clamp-2 text-[10px] leading-4 text-slate-400">{present(connector.querySummary)}</p>)}
+              {present(connector.message && <p className="mt-2 rounded-md bg-slate-50 p-2 text-[10px] leading-4 text-slate-600">{present(connector.message)}</p>)}
+              <button onClick={() => onRetry(connector.name)} disabled={retrying !== null} className="mt-3 inline-flex items-center gap-1.5 text-[10px] font-black text-blue-600 disabled:opacity-40"><RefreshCw className={`h-3 w-3 ${retrying === connector.name ? 'animate-spin' : ''}`} />{present(retrying === connector.name ? 'RETRYING' : 'RETRY SOURCE')}</button>
             </div>
-          ))}
+          )))}
         </div>
       </div>
     </details>
   );
 }
 
-function DealView({ analysis }: { analysis: OpportunityAnalysis }) { const d=analysis.deal; return <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Core deal facts</h2><dl className="mt-5 space-y-4">{[['Agency',d.agency],['Solicitation',d.solicitationNumber],['Contract type',d.contractType],['Due date',d.dueDate],['Period',d.periodOfPerformance],['NAICS',d.naics],['Award structure',d.awardStructure],['Evaluation',d.evaluationMethod]].map(([label,value]) => <div key={label} className="border-b border-slate-100 pb-3"><dt className="text-[10px] font-black uppercase tracking-wide text-slate-400">{label}</dt><dd className="mt-1 text-sm font-semibold">{value || 'Not found'}</dd></div>)}</dl></section><div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Scope summary</h2><p className="mt-3 text-sm leading-7 text-slate-600">{d.scopeSummary}</p></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Requirements and evaluation signals</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{d.requirements.map((item,index) => <div key={index} className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black text-blue-600">{item.category}</span><h3 className="mt-1 text-sm font-black">{item.name}</h3><p className="mt-2 text-xs leading-5 text-slate-500">{item.detail}</p><p className="mt-2 text-[10px] font-bold text-slate-400">{item.section || 'Section not resolved'} · {item.confidence}%</p></div>)}</div></section></div></div>; }
+function DealView({ analysis }: { analysis: OpportunityAnalysis }) { const d=analysis.deal; return <div className="grid gap-5 lg:grid-cols-[.8fr_1.2fr]"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Core deal facts</h2><dl className="mt-5 space-y-4">{present([['Agency',d.agency],['Solicitation',d.solicitationNumber],['Contract type',d.contractType],['Due date',d.dueDate],['Period',d.periodOfPerformance],['NAICS',d.naics],['Award structure',d.awardStructure],['Evaluation',d.evaluationMethod]].map(([label,value]) => <div key={label} className="border-b border-slate-100 pb-3"><dt className="text-[10px] font-black uppercase tracking-wide text-slate-400">{present(label)}</dt><dd className="mt-1 text-sm font-semibold">{present(value || 'Not found')}</dd></div>))}</dl></section><div className="space-y-5"><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Scope summary</h2><p className="mt-3 text-sm leading-7 text-slate-600">{present(d.scopeSummary)}</p></section><section className="rounded-2xl border border-slate-200 bg-white p-5"><h2 className="text-sm font-black">Requirements and evaluation signals</h2><div className="mt-4 grid gap-3 sm:grid-cols-2">{present(d.requirements.map((item,index) => <div key={index} className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black text-blue-600">{present(item.category)}</span><h3 className="mt-1 text-sm font-black">{present(item.name)}</h3><p className="mt-2 text-xs leading-5 text-slate-500">{present(item.detail)}</p><p className="mt-2 text-[10px] font-bold text-slate-400">{present(item.section || 'Section not resolved')} · {present(item.confidence)}%</p></div>))}</div></section></div></div>; }
 
 
 function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) {
@@ -187,9 +156,9 @@ function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) {
       <section className="rounded-2xl border border-slate-200 bg-[#10243e] p-6 text-white">
         <div className="flex items-center gap-2">
           <ShieldAlert className="h-5 w-5 text-amber-300" />
-          <h2 className="text-lg font-black">Incumbent Assessment: {analysis.incumbent.name || 'Unknown'}</h2>
+          <h2 className="text-lg font-black">Incumbent Assessment: {present(analysis.incumbent.name || 'Unknown')}</h2>
         </div>
-        <p className="mt-2 text-sm text-slate-300">{analysis.incumbent.status} · {analysis.incumbent.confidence}% confidence · {analysis.incumbent.transitionRisk} transition risk</p>
+        <p className="mt-2 text-sm text-slate-300">{present(analysis.incumbent.status)} · {present(analysis.incumbent.confidence)}% confidence · {present(analysis.incumbent.transitionRisk)} transition risk</p>
         <div className="mt-6 grid gap-6 sm:grid-cols-2">
           <List title="Demonstrated Strengths" values={analysis.incumbent.strengths} />
           <List title="Potential Vulnerabilities" values={analysis.incumbent.vulnerabilities} />
@@ -199,51 +168,51 @@ function CompetitionView({ analysis }: { analysis: OpportunityAnalysis }) {
       <section>
         <h2 className="text-sm font-black text-slate-900">Competitor Reconstruction</h2>
         <div className="mt-4 grid gap-5 lg:grid-cols-2">
-          {analysis.competitors.length ? analysis.competitors.map((c) => (
+          {present(analysis.competitors.length ? analysis.competitors.map((c) => (
             <article key={c.name} className="flex flex-col justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
               <div>
                 <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-4">
                   <div>
-                    <span className="text-[10px] font-black uppercase tracking-wide text-blue-600">{c.role?.replaceAll('_',' ')}</span>
-                    <h3 className="mt-1 text-lg font-black text-slate-900">{c.name}</h3>
+                    <span className="text-[10px] font-black uppercase tracking-wide text-blue-600">{present(c.role?.replaceAll('_',' '))}</span>
+                    <h3 className="mt-1 text-lg font-black text-slate-900">{present(c.name)}</h3>
                   </div>
-                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">{c.confidence}% Conf</span>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-600">{present(c.confidence)}% Conf</span>
                 </div>
-                <p className="mt-4 text-sm leading-6 text-slate-600">{c.rationale}</p>
+                <p className="mt-4 text-sm leading-6 text-slate-600">{present(c.rationale)}</p>
                 
                 <div className="mt-5 grid grid-cols-2 gap-4">
-                  {c.techPlatform && (
+                  {present(c.techPlatform && (
                     <div>
                       <span className="block text-[10px] font-black uppercase text-slate-400">Tech Platform</span>
-                      <span className="mt-1 block text-xs font-semibold text-slate-700">{c.techPlatform}</span>
+                      <span className="mt-1 block text-xs font-semibold text-slate-700">{present(c.techPlatform)}</span>
                     </div>
-                  )}
-                  {c.deliveryModel && (
+                  ))}
+                  {present(c.deliveryModel && (
                     <div>
                       <span className="block text-[10px] font-black uppercase text-slate-400">Delivery Model</span>
-                      <span className="mt-1 block text-xs font-semibold text-slate-700">{c.deliveryModel}</span>
+                      <span className="mt-1 block text-xs font-semibold text-slate-700">{present(c.deliveryModel)}</span>
                     </div>
-                  )}
-                  {c.laborShape && (
+                  ))}
+                  {present(c.laborShape && (
                     <div className="col-span-2">
                       <span className="block text-[10px] font-black uppercase text-slate-400">Labor Shape</span>
-                      <span className="mt-1 block text-xs font-semibold text-slate-700">{c.laborShape}</span>
+                      <span className="mt-1 block text-xs font-semibold text-slate-700">{present(c.laborShape)}</span>
                     </div>
-                  )}
+                  ))}
                 </div>
 
                 <div className="mt-5 space-y-4">
-                  {c.demonstratedCapabilities?.length > 0 && <List title="Capabilities" values={c.demonstratedCapabilities} />}
-                  {c.costDrivers?.length > 0 && <List title="Cost Drivers" values={c.costDrivers} />}
-                  {c.automationClaims?.length > 0 && <List title="Automation Claims" values={c.automationClaims} />}
+                  {present(c.demonstratedCapabilities?.length > 0 && <List title="Capabilities" values={c.demonstratedCapabilities} />)}
+                  {present(c.costDrivers?.length > 0 && <List title="Cost Drivers" values={c.costDrivers} />)}
+                  {present(c.automationClaims?.length > 0 && <List title="Automation Claims" values={c.automationClaims} />)}
                 </div>
               </div>
               <div className="mt-6 flex flex-wrap gap-2 border-t border-slate-100 pt-4">
-                <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-700">Pricing: {c.pricingPosture?.replaceAll('_',' ')}</span>
-                <span className={`rounded px-2 py-1 text-[10px] font-bold ${c.evidenceType === 'EXTERNAL_SOURCE' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{c.evidenceType?.replaceAll('_',' ')}</span>
+                <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-700">Pricing: {present(c.pricingPosture?.replaceAll('_',' '))}</span>
+                <span className={`rounded px-2 py-1 text-[10px] font-bold ${c.evidenceType === 'EXTERNAL_SOURCE' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-800'}`}>{present(c.evidenceType?.replaceAll('_',' '))}</span>
               </div>
             </article>
-          )) : <p className="text-sm text-slate-500">No competitor reconstructions available.</p>}
+          )) : <p className="text-sm text-slate-500">No competitor reconstructions available.</p>)}
         </div>
       </section>
     </div>
@@ -257,91 +226,91 @@ function EvidenceView({ evidence, gaps }: { evidence: EvidenceItem[]; gaps: Oppo
   const groups:EvidenceItem['type'][]=['SOLICITATION_FACT','EXTERNAL_SOURCE','ANALYST_INFERENCE','DATA_GAP'];
   return <div className="grid gap-5 lg:grid-cols-[1.25fr_.75fr]">
     <section className="rounded-2xl border border-slate-200 bg-white p-5">
-      <h2 className="text-sm font-black">Evidence ledger · {evidence.length} items</h2>
+      <h2 className="text-sm font-black">Evidence ledger · {present(evidence.length)} items</h2>
       <label className="mt-4 block text-xs font-semibold">Find a claim or source<input type="search" value={query} onChange={e=>setQuery(e.target.value)} className="mt-2 w-full rounded-lg border border-slate-200 p-3 text-sm" placeholder="Role, evidence ID, source or rule" /></label>
-      <div className="mt-4 space-y-3">{groups.map(type=>{
+      <div className="mt-4 space-y-3">{present(groups.map(type=>{
         const items=filtered.filter(e=>e.type===type);
         return items.length ? <details key={type} open={Boolean(query)} className="rounded-xl border border-slate-200">
-          <summary className="cursor-pointer p-4 text-sm font-bold">{type.replaceAll('_',' ')} · {items.length}</summary>
-          <div className="max-h-[600px] space-y-3 overflow-y-auto border-t border-slate-100 p-4">{items.map(item=><article key={item.id} className="rounded-lg bg-slate-50 p-4">
-            <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-500">{item.id}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-bold">{item.confidence}% source confidence</span></div>
-            <p className="mt-3 text-sm font-semibold leading-6">{item.claim}</p><p className="mt-2 text-xs text-slate-500">{item.sourceLabel}{item.section ? ` · ${item.section}` : ''}</p>
-            {item.excerpt && <details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold text-blue-700">Source excerpt</summary><p className="mt-2 whitespace-pre-wrap leading-5 text-slate-600">{item.excerpt}</p></details>}
-            {item.url && /^https?:\/\//i.test(item.url) && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>}
-          </article>)}</div>
+          <summary className="cursor-pointer p-4 text-sm font-bold">{present(type.replaceAll('_',' '))} · {present(items.length)}</summary>
+          <div className="max-h-[600px] space-y-3 overflow-y-auto border-t border-slate-100 p-4">{present(items.map(item=><article key={item.id} className="rounded-lg bg-slate-50 p-4">
+            <div className="flex flex-wrap items-center gap-2"><span className="font-mono text-[10px] font-black text-slate-500">{present(item.id)}</span><EvidenceBadge type={item.type} /><span className="ml-auto text-[10px] font-bold">{present(item.confidence)}% source confidence</span></div>
+            <p className="mt-3 text-sm font-semibold leading-6">{present(item.claim)}</p><p className="mt-2 text-xs text-slate-500">{present(item.sourceLabel)}{present(item.section ? ` · ${item.section}` : '')}</p>
+            {present(item.excerpt && <details className="mt-2 text-xs"><summary className="cursor-pointer font-semibold text-blue-700">Source excerpt</summary><p className="mt-2 whitespace-pre-wrap leading-5 text-slate-600">{present(item.excerpt)}</p></details>)}
+            {present(item.url && /^https?:\/\//i.test(item.url) && <a href={item.url} target="_blank" rel="noreferrer" className="mt-2 inline-flex items-center gap-1 text-xs font-bold text-blue-600">Open source <ExternalLink className="h-3 w-3" /></a>)}
+          </article>))}</div>
         </details> : null;
-      })}{!filtered.length && <p className="text-sm text-slate-500">No matching evidence.</p>}</div>
+      }))}{present(!filtered.length && <p className="text-sm text-slate-500">No matching evidence.</p>)}</div>
     </section>
-    <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><h2 className="text-sm font-black text-amber-950">Decision gaps · {gaps.length}</h2><div className="mt-4 max-h-[650px] space-y-3 overflow-y-auto">{gaps.map((gap,index)=><details key={index} open={index<3} className="rounded-xl bg-white/80 p-4"><summary className="cursor-pointer text-sm font-bold"><span className="mr-2 text-[10px] text-amber-700">{gap.priority}</span>{gap.question}</summary><p className="mt-2 text-xs leading-5 text-slate-600">{gap.impact}</p></details>)}</div></section>
+    <section className="rounded-2xl border border-amber-200 bg-amber-50 p-5"><h2 className="text-sm font-black text-amber-950">Decision gaps · {present(gaps.length)}</h2><div className="mt-4 max-h-[650px] space-y-3 overflow-y-auto">{present(gaps.map((gap,index)=><details key={index} open={index<3} className="rounded-xl bg-white/80 p-4"><summary className="cursor-pointer text-sm font-bold"><span className="mr-2 text-[10px] text-amber-700">{present(gap.priority)}</span>{present(gap.question)}</summary><p className="mt-2 text-xs leading-5 text-slate-600">{present(gap.impact)}</p></details>))}</div></section>
   </div>;
 }
 
-function List({title,values}:{title:string;values:string[]}) { return <div><h3 className="text-xs font-black uppercase tracking-wide text-blue-300">{title}</h3><ul className="mt-3 space-y-2">{values.map((value,index)=><li key={index} className="text-xs leading-5 text-slate-300">• {value}</li>)}</ul></div>; }
-function EvidenceBadge({type}:{type:EvidenceItem['type']}) { const style=type==='SOLICITATION_FACT'?'bg-blue-100 text-blue-700':type==='EXTERNAL_SOURCE'?'bg-emerald-100 text-emerald-700':type==='ANALYST_INFERENCE'?'bg-amber-100 text-amber-800':'bg-slate-100 text-slate-600'; return <span className={`rounded px-2 py-1 text-[9px] font-black ${style}`}>{type?.replaceAll('_',' ')}</span>; }
+function List({title,values}:{title:string;values:string[]}) { return <div><h3 className="text-xs font-black uppercase tracking-wide text-blue-300">{present(title)}</h3><ul className="mt-3 space-y-2">{present(values.map((value,index)=><li key={index} className="text-xs leading-5 text-slate-300">• {present(value)}</li>))}</ul></div>; }
+function EvidenceBadge({type}:{type:EvidenceItem['type']}) { const style=type==='SOLICITATION_FACT'?'bg-blue-100 text-blue-700':type==='EXTERNAL_SOURCE'?'bg-emerald-100 text-emerald-700':type==='ANALYST_INFERENCE'?'bg-amber-100 text-amber-800':'bg-slate-100 text-slate-600'; return <span className={`rounded px-2 py-1 text-[9px] font-black ${style}`}>{present(type?.replaceAll('_',' '))}</span>; }
 
 function IntelligenceView({ analysis }: { analysis: OpportunityAnalysis }) {
   return (
     <div className="grid gap-5 lg:grid-cols-2">
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-black">Affordability & Budget</h2>
-        {analysis.affordability ? (
+        {present(analysis.affordability ? (
           <div className="mt-4 space-y-4">
-            {analysis.affordability.estimatedCeiling && (
+            {present(analysis.affordability.estimatedCeiling && (
               <MetricSmall label="Estimated Ceiling" value={money(analysis.affordability.estimatedCeiling)} />
-            )}
+            ))}
             <div>
               <h3 className="text-xs font-black uppercase text-slate-500">Budget Signals</h3>
               <ul className="mt-2 space-y-2">
-                {analysis.affordability.budgetSignals.map((sig, i) => (
-                  <li key={i} className="text-sm text-slate-600">• {sig}</li>
-                ))}
+                {present(analysis.affordability.budgetSignals.map((sig, i) => (
+                  <li key={i} className="text-sm text-slate-600">• {present(sig)}</li>
+                )))}
               </ul>
             </div>
-            {analysis.affordability.obligationsHistory && (
+            {present(analysis.affordability.obligationsHistory && (
                <div className="mt-2 text-sm text-slate-600">
-                 <strong>History:</strong> {analysis.affordability.obligationsHistory}
+                 <strong>History:</strong> {present(analysis.affordability.obligationsHistory)}
                </div>
-            )}
+            ))}
           </div>
         ) : (
           <p className="mt-3 text-sm text-slate-500">No specific affordability signals detected.</p>
-        )}
+        ))}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <h2 className="text-sm font-black">Pre-RFP Signals</h2>
-        {analysis.preRfpSignals?.length ? (
+        {present(analysis.preRfpSignals?.length ? (
           <div className="mt-4 space-y-3">
-            {analysis.preRfpSignals.map((sig, i) => (
+            {present(analysis.preRfpSignals.map((sig, i) => (
               <div key={i} className="rounded-xl bg-slate-50 p-4">
-                <span className="text-[10px] font-black text-blue-600">{sig.type} • {sig.date}</span>
-                <p className="mt-1 text-sm font-bold">{sig.summary}</p>
-                <p className="mt-2 text-xs text-slate-500">{sig.impact}</p>
+                <span className="text-[10px] font-black text-blue-600">{present(sig.type)} • {present(sig.date)}</span>
+                <p className="mt-1 text-sm font-bold">{present(sig.summary)}</p>
+                <p className="mt-2 text-xs text-slate-500">{present(sig.impact)}</p>
               </div>
-            ))}
+            )))}
           </div>
         ) : (
           <p className="mt-3 text-sm text-slate-500">No pre-RFP signals detected.</p>
-        )}
+        ))}
       </section>
 
       <section className="rounded-2xl border border-slate-200 bg-white p-5 lg:col-span-2">
         <h2 className="text-sm font-black">GAO & Protest History</h2>
-        {analysis.gaoFindings?.length ? (
+        {present(analysis.gaoFindings?.length ? (
           <div className="mt-4 grid gap-4 sm:grid-cols-2">
-            {analysis.gaoFindings.map((gao, i) => (
+            {present(analysis.gaoFindings.map((gao, i) => (
               <div key={i} className="rounded-xl bg-amber-50 p-4 border border-amber-100">
-                <h3 className="text-sm font-bold text-amber-900">{gao.topic}</h3>
-                <p className="mt-2 text-xs text-amber-800">{gao.implication}</p>
-                {gao.sourceUrl && (
+                <h3 className="text-sm font-bold text-amber-900">{present(gao.topic)}</h3>
+                <p className="mt-2 text-xs text-amber-800">{present(gao.implication)}</p>
+                {present(gao.sourceUrl && (
                   <a href={gao.sourceUrl} target="_blank" rel="noreferrer" className="mt-2 inline-block text-xs font-bold text-amber-700 underline">Source</a>
-                )}
+                ))}
               </div>
-            ))}
+            )))}
           </div>
         ) : (
           <p className="mt-3 text-sm text-slate-500">No relevant GAO history detected.</p>
-        )}
+        ))}
       </section>
     </div>
   );
@@ -372,16 +341,16 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
 
   return (
     <div className="space-y-5">
-      {notice && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{notice}</p>}
+      {present(notice && <p role="alert" className="rounded-lg bg-red-50 p-3 text-sm text-red-800">{present(notice)}</p>)}
       <HistoricalReview analysis={analysis}/>
       <section className="rounded-2xl border border-slate-200 bg-white p-5">
         <div className="flex items-center justify-between">
           <div>
             <h2 className="text-sm font-black">Compare the frozen recommendation</h2>
             <p className="mt-1 text-xs text-slate-500">The original prediction is preserved automatically. Compare only the actual evaluated winning price for the same scope and periods.</p>
-            {!comparisonReady(analysis,actualValueType) && <p role="status" className="mt-2 text-xs text-amber-800">Comparison is unavailable while the evaluated basket is incomplete or the actual is a ceiling/obligation. You can record actuals; partial subtotals will not be scored as a full-price prediction.</p>}
+            {present(!comparisonReady(analysis,actualValueType) && <p role="status" className="mt-2 text-xs text-amber-800">Comparison is unavailable while the evaluated basket is incomplete or the actual is a ceiling/obligation. You can record actuals; partial subtotals will not be scored as a full-price prediction.</p>)}
           </div>
-          {analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">{analysis.validation.comparisonClass?.replaceAll('_',' ')||'LEGACY COMPARISON'}</span>}
+          {present(analysis.validation && <span className="rounded bg-emerald-100 px-3 py-1.5 text-xs font-black text-emerald-700">{present(analysis.validation.comparisonClass?.replaceAll('_',' ')||'LEGACY COMPARISON')}</span>)}
         </div>
         
         <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_.75fr]">
@@ -404,7 +373,7 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
              </div>
              <label className="flex items-start gap-3 rounded-lg border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-600">
                <input type="checkbox" checked={comparable && comparisonReady(analysis,actualValueType)} onChange={e => setComparable(e.target.checked)} disabled={!!analysis.validation || !comparisonReady(analysis,actualValueType)} className="mt-1" />
-               I verified that this actual value covers the same scope, period, and measurement basis as the {validationPrediction(analysis).basis.toLowerCase()}.
+               I verified that this actual value covers the same scope, period, and measurement basis as the {present(validationPrediction(analysis).basis.toLowerCase())}.
              </label>
              <label className="block text-xs font-semibold">Actual-price source and locator<input aria-label="Actual-price source" value={actualSource} onChange={e=>setActualSource(e.target.value)} disabled={!!analysis.validation} className="mt-2 block w-full rounded border p-2" placeholder="Document or URL, page, evaluated scope and periods"/></label>
              <div>
@@ -415,39 +384,39 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
                <label className="block text-[10px] font-black uppercase text-slate-400">Retrospective Notes</label>
                <textarea value={notes} onChange={e => setNotes(e.target.value)} disabled={!!analysis.validation} rows={2} className="mt-1.5 w-full rounded border-slate-200 px-3 py-2 text-sm disabled:bg-slate-100" />
              </div>
-             {!analysis.validation && (
+             {present(!analysis.validation && (
                <button onClick={runValidation} className="mt-2 w-full rounded bg-[#10243e] py-2.5 text-xs font-black text-white hover:bg-slate-800">
-                 {comparisonReady(analysis,actualValueType)?'RECORD COMPARISON':'RECORD ACTUAL · COMPARISON UNAVAILABLE'}
+                 {present(comparisonReady(analysis,actualValueType)?'RECORD COMPARISON':'RECORD ACTUAL · COMPARISON UNAVAILABLE')}
                </button>
-             )}
+             ))}
           </div>
           
           <div>
             <h3 className="text-xs font-black uppercase text-slate-500">Prediction Results</h3>
-            {analysis.validation ? (
+            {present(analysis.validation ? (
               <div className="mt-4 space-y-3">
                  <MetricSmall label="Predicted Expected" value={money(analysis.validation.predictedExpected)} />
                  <MetricSmall label={analysis.validation.actualValueType.replaceAll('_', ' ')} value={money(analysis.validation.actualValue)} />
                  <div className={`rounded-xl border p-4 ${analysis.validation.comparableToPrediction ? 'border-emerald-200 bg-emerald-50' : 'border-amber-200 bg-amber-50'}`}>
                     <span className={`text-[10px] font-black ${analysis.validation.comparableToPrediction ? 'text-emerald-600' : 'text-amber-700'}`}>VALIDATION RESULT</span>
                     <strong className={`mt-1 block text-xl font-black ${analysis.validation.comparableToPrediction ? 'text-emerald-900' : 'text-amber-950'}`}>
-                      {analysis.validation.comparableToPrediction
+                      {present(analysis.validation.comparableToPrediction
                         ? analysis.validation.inRange ? 'ACTUAL WITHIN RANGE' : 'ACTUAL OUTSIDE RANGE'
-                        : 'NOT SCOREABLE'}
+                        : 'NOT SCOREABLE')}
                     </strong>
                     <p className="mt-2 text-xs leading-5 text-slate-600">
-                      {analysis.validation.expectedErrorPct !== null
+                      {present(analysis.validation.expectedErrorPct !== null
                         ? `Absolute error versus actual: ${analysis.validation.expectedErrorPct}%`
-                        : 'The actual value was preserved but not compared because its measurement basis was not verified.'}
+                        : 'The actual value was preserved but not compared because its measurement basis was not verified.')}
                     </p>
-                    <p className="mt-3 break-all font-mono text-[9px] text-slate-400">SHA-256 {analysis.validation.predictionHash}</p>
+                    <p className="mt-3 break-all font-mono text-[9px] text-slate-400">SHA-256 {present(analysis.validation.predictionHash)}</p>
                  </div>
               </div>
             ) : (
               <div className="mt-4 flex h-full items-center justify-center rounded-xl border border-dashed border-slate-200 p-6 text-center text-sm text-slate-400">
                 Submit actuals to record a like-for-like comparison.
               </div>
-            )}
+            ))}
           </div>
         </div>
       </section>
@@ -456,4 +425,4 @@ function ValidationView({ analysis, onUpdate }: { analysis: OpportunityAnalysis;
 }
 
 
-function MetricSmall({label,value}:{label:string;value:string}) { return <div className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black uppercase text-slate-400">{label}</span><strong className="mt-1 block text-lg">{value}</strong></div>; }
+function MetricSmall({label,value}:{label:string;value:string}) { return <div className="rounded-xl bg-slate-50 p-4"><span className="text-[10px] font-black uppercase text-slate-400">{present(label)}</span><strong className="mt-1 block text-lg">{present(value)}</strong></div>; }

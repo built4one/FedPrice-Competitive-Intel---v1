@@ -1813,6 +1813,68 @@ function installArchiveRoutes(app2, store2) {
   });
 }
 
+// src/presentation/brief.ts
+var compactMoney = (n) => n == null || !Number.isFinite(n) ? "Price basis needs clarification" : `${n < 0 ? "-" : ""}$${Math.abs(n) >= 1e6 ? (Math.abs(n) / 1e6).toFixed(2) + "M" : Math.abs(n) >= 1e3 ? (Math.abs(n) / 1e3).toFixed(1) + "K" : Math.round(Math.abs(n)).toLocaleString("en-US")}`;
+var labels = { UNKNOWN: "Not stated in solicitation", UNVERIFIED: "Needs verification", UNAVAILABLE: "Not available", NOT_ASSESSED: "Not yet assessed", SOLICITATION_ONLY: "Uploaded package only", PARTIAL: "Some evidence missing", ADMITTED: "Included after source checks", EXCLUDED: "Not used", FAILED: "Could not complete", RUNNING: "In progress", COMPLETE: "Complete", DISCOVERED: "Found; review pending", READ: "Read; evidence review pending", NOT_SUPPORTABLE: "Price basis needs clarification", RETROSPECTIVE_APPROXIMATION: "Historical estimate pending review", PLANNING_ASSUMPTION: "AI planning estimate", EXTERNAL_SOURCE: "External source", SOLICITATION_FACT: "Solicitation fact", TARGET_OUTCOME: "Award outcome withheld" };
+function displayText(value) {
+  let s = String(value ?? "");
+  if (/(?:ZodError|\btoo_big\b|\bstack trace\b|\bTypeError:|\bArray must contain|\bHTTP [45]\d\d|\bOpenAI request failed|\"(?:error|issues|path)\"\s*:)/i.test(s)) return "A source or analysis step could not complete. Available evidence was retained; confidence is limited.";
+  s = s.replace(/executable quote/gi, "supplier quote").replace(/eligible bidder field/gi, "eligible competitors").replace(/predecessor scope/gi, "earlier contract scope").replace(/stated selection sequence/gi, "award rules").replace(/bounded pricing assumptions?/gi, "estimated prices");
+  s = s.replace(/\b0 roles use efficient rates; (\d+) retain central economics\./g, "$1 roles use central planning rates; no rate discount is assumed.");
+  s = s.replace(/\b(?:Unknown|UNKNOWN)\b/g, "Not stated in solicitation");
+  if (labels[s]) return labels[s];
+  s = s.replace(/\b(?:UNVERIFIED|UNAVAILABLE|NOT_ASSESSED|SOLICITATION_ONLY|RETROSPECTIVE_APPROXIMATION|PLANNING_ASSUMPTION|EXTERNAL_SOURCE|SOLICITATION_FACT)\b/g, (v) => labels[v] || v);
+  s = s.replace(/\b(?:factor|multiplier)\s+(\d+\.\d+)/gi, (_, n) => `adjustment ${Number(n).toLocaleString("en-US", { maximumFractionDigits: 2 })}`);
+  s = s.replace(/\b[A-Z][A-Z0-9]*_[A-Z0-9_]+\b/g, (v) => labels[v] || v.toLowerCase().replaceAll("_", " "));
+  return s.replace(/\b\d+\.\d{3,}\b/g, (v) => Number(v).toLocaleString("en-US", { maximumFractionDigits: 2 }));
+}
+var sentence = (s, max = 155) => {
+  const v = displayText(s).replace(/\s+/g, " ").trim();
+  if (v.length <= max) return v;
+  const first = v.split(/(?<=[.!?])\s/)[0];
+  return first.length <= max ? first : v.slice(0, max - 1).replace(/\s+\S*$/, "") + "\u2026";
+};
+function executiveBrief(a) {
+  const p = calculateCompetitivePosition(a), estimate = a.meta.contingencyEstimate;
+  const rates = a.evidence.filter((e) => e.numeric?.valueType === "HOURLY_CEILING_RATE");
+  const basis = estimate ? `AI estimate for the whole package; ${rates.length ? "sourced rate references exist, but do not establish this total" : "no sourced rates found"}.` : p.assumptionShare > 0 ? `${Math.round(p.assumptionShare * 100)}% of the modeled price uses estimates; source-backed inputs are identified in the detail.` : "Calculated from the evaluated quantities and matched source-backed pricing inputs.";
+  const why = estimate ? [
+    "The price covers the whole package, including work missing from the populated pricing rows.",
+    `Performance period: ${a.deal.performanceMonths ? `${a.deal.performanceMonths} months` : sentence(a.deal.periodOfPerformance || "Not stated in solicitation", 100)}.`,
+    "Staffing, workload and delivery costs that are not specified remain explicit AI assumptions.",
+    "The lower and upper cases reflect the delivery assumptions shown in the full calculation."
+  ] : [sentence(p.judgment.find((j) => j.factor === "Government evaluation")?.finding || a.deal.evaluationMethod), `${p.rows.length} labor rows and ${p.components.length} other price components are included.`, p.assumptionShare > 0 ? "Missing prices are filled with labeled estimates, not presented as sourced facts." : "Matched pricing evidence supplies the modeled rates.", sentence(p.judgment.find((j) => j.factor === "Predecessor / comparables")?.finding || p.confidenceReason)];
+  const drivers = estimate ? [{ label: "Lower delivery-cost case", change: "Combined lower staffing, rate and workload assumptions", delta: (p.rangeLow || 0) - (p.target || 0) }, { label: "Higher delivery-cost case", change: "Combined higher staffing, rate and workload assumptions", delta: (p.rangeHigh || 0) - (p.target || 0) }, { label: "Individual staffing or workload changes", change: "A separate estimate is needed before assigning a dollar impact", delta: null }] : [...p.sensitivities].sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta)).slice(0, 3);
+  const gaps = [.../* @__PURE__ */ new Set([...rates.length ? [] : ["No sourced labor rates found."], ...p.quantityComplete ? [] : ["Staffing or workload quantities are incomplete."], ...a.meta.packageCoverage?.freshness.status === "UNVERIFIED" ? ["Latest amendments unverified."] : [], ...p.missing.map((v) => sentence(v, 115))])].slice(0, 5);
+  return { p, basis, why: why.slice(0, 5), drivers, actions: p.actions.slice(0, 3).map((v) => sentence(v.action, 135)), gaps, math: p.rationale };
+}
+
+// src/exports/summarySheet.ts
+function addSummarySheet(w, a) {
+  if (w.getWorksheet("Summary")) return;
+  const s = w.addWorksheet("Summary"), b = executiveBrief(a);
+  s.columns = [{ header: "Executive brief", key: "field", width: 30 }, { header: a.deal.title, key: "value", width: 110 }];
+  s.addRows([{ field: "Recommended price", value: compactMoney(b.p.target) }, { field: "Range", value: `${compactMoney(b.p.rangeLow)} \u2013 ${compactMoney(b.p.rangeHigh)}` }, { field: "Confidence", value: b.p.confidenceLabel }, { field: "Basis", value: b.basis }, ...a.historical ? [{ field: "Historical cutoff", value: a.historical.cutoff }] : [], ...b.why.map((value) => ({ field: "Why this price", value })), ...b.drivers.map((x) => ({ field: "What could move it", value: `${x.label}: ${x.delta == null ? "Not separately quantified" : (x.delta > 0 ? "+" : "") + compactMoney(x.delta)}. ${x.change}` })), ...b.actions.map((value) => ({ field: "What to do next", value })), ...b.gaps.map((value) => ({ field: "What's missing", value })), { field: "Full detail", value: "See the remaining sheets for complete arithmetic, strategy, assumptions and evidence." }]);
+  s.eachRow((r, i) => {
+    r.alignment = { vertical: "top", wrapText: true };
+    r.height = i === 1 ? 32 : 32;
+    r.eachCell((c) => {
+      if (typeof c.value === "string") c.value = displayText(c.value);
+    });
+  });
+  s.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
+  s.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF10243E" } };
+  s.views = [{ state: "frozen", ySplit: 1 }];
+  s.pageSetup = { paperSize: 9, orientation: "portrait", fitToPage: true, fitToWidth: 1, fitToHeight: 1 };
+}
+function formatWorkbook(w) {
+  w.eachSheet((s) => s.eachRow((r) => r.eachCell((c) => {
+    if (typeof c.value === "number" || c.type === 6) {
+      if (!c.numFmt || c.numFmt === "General") c.numFmt = "#,##0.##";
+    } else if (typeof c.value === "string") c.value = displayText(c.value);
+  })));
+}
+
 // src/server/predictionExports.ts
 import crypto2 from "node:crypto";
 import ExcelJS from "exceljs";
@@ -2827,7 +2889,7 @@ var margin = 42;
 var contentWidth = 528;
 var regularFont = "FMP-Regular";
 var boldFont = "FMP-Bold";
-var clean = (v) => readableDecisionText(String(v ?? "")).replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, " ").trim();
+var clean = (v) => displayText(readableDecisionText(String(v ?? ""))).replace(/[\u2010-\u2015]/g, "-").replace(/[\u2018\u2019]/g, "'").replace(/[\u201C\u201D]/g, '"').replace(/\s+/g, " ").trim();
 var short = (v, n = 190) => {
   const s = clean(v);
   return s.length > n ? `${s.slice(0, n - 3)}...` : s;
@@ -2901,10 +2963,30 @@ var Layout = class {
     this.y += 10;
   }
 };
+function onePageSummary(l) {
+  const a = l.analysis, b = executiveBrief(a), d = l.doc;
+  l.page("Executive brief", [a.deal.solicitationNumber, a.historical ? `Historical cutoff ${a.historical.cutoff}` : "Live analysis"].join(" | "));
+  d.roundedRect(margin, 118, contentWidth, 112, 5).fill(colors.navy);
+  d.font(boldFont).fontSize(10).fillColor("white").text("RECOMMENDED PRICE", 58, 132);
+  d.font(boldFont).fontSize(30).text(compactMoney(b.p.target), 58, 150);
+  d.font(regularFont).fontSize(10).text(`Range ${compactMoney(b.p.rangeLow)} - ${compactMoney(b.p.rangeHigh)}`, 58, 192);
+  d.font(boldFont).fontSize(10).text(`Confidence: ${b.p.confidenceLabel}`, 365, 142, { width: 175 });
+  d.font(regularFont).fontSize(9).fillColor(colors.ink).text(clean(b.basis), margin, 242, { width: contentWidth, height: 32 });
+  const block = (title, y, items, height) => {
+    d.font(boldFont).fontSize(11).fillColor(colors.navy).text(title, margin, y, { width: contentWidth });
+    d.font(regularFont).fontSize(9).fillColor(colors.ink).text(items.map((x) => "- " + clean(x)).join("\n"), margin, y + 20, { width: contentWidth, height, lineGap: 3, ellipsis: true });
+  };
+  block("Why this price", 282, b.why, 83);
+  block("What could move it", 389, b.drivers.map((s) => `${s.label}: ${s.delta == null ? "Not separately quantified" : (s.delta > 0 ? "+" : "") + compactMoney(s.delta)}. ${s.change}`), 78);
+  block("What to do next", 490, b.actions, 70);
+  block("What's missing", 583, b.gaps, 91);
+  d.font(regularFont).fontSize(7).fillColor(colors.muted).text("Full calculations, assumptions, strategy and evidence follow. Estimates are not sourced prices.", margin, 698, { width: contentWidth });
+}
 function buildBrief(l) {
+  onePageSummary(l);
   const { analysis: a, doc: d } = l, p = a.competitivePosition;
   const subtitle = [a.deal.solicitationNumber, a.deal.agency, new Date(a.meta.analyzedAt).toISOString().slice(0, 10)].filter(Boolean).join(" | ");
-  l.page("Your competitive position", subtitle);
+  l.page("Appendix: complete pricing rationale", subtitle);
   l.text(a.deal.title, true, 11);
   if (a.meta.packageCoverage?.mode === "HISTORICAL") l.text(`HISTORICAL PRACTICE \u2014 cutoff ${a.historical?.cutoff || "unconfirmed"}. Only admitted source versions support this retrospective assessment.`, true, 8);
   const y = l.y;
@@ -3231,13 +3313,14 @@ async function preservePredictionExports(store2, workspace, a) {
   if (!a.frozenPrediction) return;
   const suffix = a.validation ? "comparison" : a.historicalReview ? "reviewed" : "prediction";
   for (const format of ["pdf", "xlsx"]) {
-    const id = `${a.id}:${suffix}:${format}`;
+    const id = `${a.id}:${suffix}:brief-v2:${format}`;
     if (await store2.get(workspace, "prediction-export", id)) continue;
     let buffer;
     if (format === "pdf") buffer = await createExecutivePdf(a);
     else {
       const w = new ExcelJS.Workbook();
       w.creator = "Federal Market Position";
+      addSummarySheet(w, a);
       w.addWorksheet("Executive Decision").columns = [{ header: "Field", key: "field", width: 44 }, { header: "Value", key: "value", width: 105 }];
       addCompetitiveWorkbook(w, a);
       const evidence = w.addWorksheet("Evidence Ledger");
@@ -3247,6 +3330,7 @@ async function preservePredictionExports(store2, workspace, a) {
         s.views = [{ state: "frozen", ySplit: 1 }];
         s.getRow(1).font = { bold: true };
       });
+      formatWorkbook(w);
       buffer = Buffer.from(await w.xlsx.writeBuffer());
     }
     const value = { bytes: buffer.toString("base64"), sha256: crypto2.createHash("sha256").update(buffer).digest("hex"), predictionHash: a.frozenPrediction.hash, createdAt: (/* @__PURE__ */ new Date()).toISOString(), format };
@@ -3260,7 +3344,7 @@ async function preservePredictionExports(store2, workspace, a) {
 async function predictionExport(store2, workspace, a, format) {
   await preservePredictionExports(store2, workspace, a);
   const suffix = a.validation ? "comparison" : a.historicalReview ? "reviewed" : "prediction";
-  const artifact = (await store2.get(workspace, "prediction-export", `${a.id}:${suffix}:${format}`)).value;
+  const artifact = (await store2.get(workspace, "prediction-export", `${a.id}:${suffix}:brief-v2:${format}`)).value;
   const bytes = Buffer.from(artifact.bytes, "base64");
   if (crypto2.createHash("sha256").update(bytes).digest("hex") !== artifact.sha256 || artifact.predictionHash !== a.frozenPrediction.hash) throw new Error("Saved export integrity check failed.");
   return bytes;
@@ -6581,7 +6665,7 @@ app.post("/api/retry-connector", async (req, res) => {
   }
 });
 var displayValue = (value) => value === null ? "Insufficient evidence" : value;
-app.post("/api/export-brief", async (req, res) => {
+var exportExcelHandler = async (req, res) => {
   try {
     const frozen = await loadPrediction(runStore, req.principal.workspace, String(req.body?.id || ""));
     if (!frozen && (req.body.historical || req.body.frozenPrediction)) return res.status(400).json({ error: "A stored prediction is required for historical exports." });
@@ -6595,6 +6679,7 @@ app.post("/api/export-brief", async (req, res) => {
     }
     const workbook = new ExcelJS2.Workbook();
     workbook.creator = "Federal Market Position";
+    addSummarySheet(workbook, analysis);
     const decision = workbook.addWorksheet("Executive Decision");
     decision.columns = [{ header: "Decision", key: "field", width: 36 }, { header: "Recommendation", key: "value", width: 95 }];
     const summary = workbook.addWorksheet("Market Benchmarks");
@@ -6754,16 +6839,19 @@ app.post("/api/export-brief", async (req, res) => {
       sheet.getRow(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF10243E" } };
       sheet.views = [{ state: "frozen", ySplit: 1 }];
     }
+    formatWorkbook(workbook);
     const buffer = await workbook.xlsx.writeBuffer();
     const safeName = analysis.deal.solicitationNumber?.replace(/[^a-z0-9-]/gi, "_") || "market-position";
     res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
     res.setHeader("Content-Disposition", `attachment; filename="${safeName}_Market_Position.xlsx"`);
     res.send(Buffer.from(buffer));
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : "Export failed." });
+    if (req.method === "GET") res.status(503).type("html").send("<h1>Download unavailable</h1><p>Your saved result is safe. Please return to the app and retry.</p>");
+    else res.status(500).json({ error: "Download unavailable. Your saved result is safe; please retry." });
   }
-});
-app.post("/api/export-pdf", async (req, res) => {
+};
+app.post("/api/export-brief", exportExcelHandler);
+var exportPdfHandler = async (req, res) => {
   try {
     const frozen = await loadPrediction(runStore, req.principal.workspace, String(req.body?.id || ""));
     if (!frozen && (req.body.historical || req.body.frozenPrediction)) return res.status(400).json({ error: "A stored prediction is required for historical exports." });
@@ -6777,7 +6865,23 @@ app.post("/api/export-pdf", async (req, res) => {
     res.setHeader("Content-Disposition", `attachment; filename="${safeName}_Market_Position.pdf"`);
     res.send(buffer);
   } catch (error) {
-    res.status(500).json({ error: error instanceof Error ? error.message : "PDF export failed." });
+    if (req.method === "GET") res.status(503).type("html").send("<h1>Download unavailable</h1><p>Your saved result is safe. Please return to the app and retry.</p>");
+    else res.status(500).json({ error: "Download unavailable. Your saved result is safe; please retry." });
+  }
+};
+app.post("/api/export-pdf", exportPdfHandler);
+app.get("/api/exports/:id/:format", async (req, res, next) => {
+  const format = String(req.params.format);
+  if (!["pdf", "xlsx"].includes(format)) return res.status(404).type("text").send("This export format is not available.");
+  const id = String(req.params.id), workspace = req.principal.workspace;
+  try {
+    const frozen = await loadPrediction(runStore, workspace, id);
+    const saved = frozen || (await runStore.get(workspace, "analysis", id))?.value;
+    if (!saved) return res.status(404).type("html").send("<h1>Saved run not found</h1><p>Return to your workspace and reopen the saved decision before downloading.</p>");
+    req.body = saved;
+    return (format === "pdf" ? exportPdfHandler : exportExcelHandler)(req, res, next);
+  } catch {
+    return res.status(503).type("html").send("<h1>Download is temporarily unavailable</h1><p>Your saved result is safe. Return to the app and try the download again.</p>");
   }
 });
 app.use((error, _req, res, next) => {

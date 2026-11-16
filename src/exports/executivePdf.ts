@@ -1,3 +1,4 @@
+import {compactMoney,displayText,executiveBrief} from '../presentation/brief';
 import PDFDocument from 'pdfkit';
 import { regularFontData, boldFontData } from './fontData';
 import type { OpportunityAnalysis } from '../types';
@@ -11,7 +12,7 @@ import {strategyStatements} from '../domain/ptw/strategy';
 const colors = {navy:'#103243',teal:'#007E7A',ink:'#172D3A',muted:'#617580',line:'#DAE4E8',panel:'#F0F5F7',amber:'#965A12'};
 const pageWidth=612,pageHeight=792,margin=42,contentWidth=528;
 const regularFont='FMP-Regular',boldFont='FMP-Bold';
-const clean=(v:unknown)=>readableDecisionText(String(v??'')).replace(/[\u2010-\u2015]/g,'-').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\s+/g,' ').trim();
+const clean=(v:unknown)=>displayText(readableDecisionText(String(v??''))).replace(/[\u2010-\u2015]/g,'-').replace(/[\u2018\u2019]/g,"'").replace(/[\u201C\u201D]/g,'"').replace(/\s+/g,' ').trim();
 const short=(v:unknown,n=190)=>{const s=clean(v);return s.length>n ? `${s.slice(0,n-3)}...` : s;};
 const money=(v:number|null|undefined)=>v==null ? 'Not established' : new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(v);
 const compact=(v:number|null|undefined)=>v==null ? 'Model incomplete' : v>=1e6 ? `$${(v/1e6).toFixed(1)}M` : money(v);
@@ -51,10 +52,30 @@ class Layout {
   }
 }
 
+function onePageSummary(l:Layout){
+ const a=l.analysis,b=executiveBrief(a),d=l.doc;
+ l.page('Executive brief',[a.deal.solicitationNumber,a.historical?`Historical cutoff ${a.historical.cutoff}`:'Live analysis'].join(' | '));
+ d.roundedRect(margin,118,contentWidth,112,5).fill(colors.navy);
+ d.font(boldFont).fontSize(10).fillColor('white').text('RECOMMENDED PRICE',58,132);
+ d.font(boldFont).fontSize(30).text(compactMoney(b.p.target),58,150);
+ d.font(regularFont).fontSize(10).text(`Range ${compactMoney(b.p.rangeLow)} - ${compactMoney(b.p.rangeHigh)}`,58,192);
+ d.font(boldFont).fontSize(10).text(`Confidence: ${b.p.confidenceLabel}`,365,142,{width:175});
+ d.font(regularFont).fontSize(9).fillColor(colors.ink).text(clean(b.basis),margin,242,{width:contentWidth,height:32});
+ const block=(title:string,y:number,items:string[],height:number)=>{
+  d.font(boldFont).fontSize(11).fillColor(colors.navy).text(title,margin,y,{width:contentWidth});
+  d.font(regularFont).fontSize(9).fillColor(colors.ink).text(items.map(x=>'- '+clean(x)).join('\n'),margin,y+20,{width:contentWidth,height,lineGap:3,ellipsis:true});
+ };
+ block('Why this price',282,b.why,83);
+ block('What could move it',389,b.drivers.map(s=>`${s.label}: ${s.delta==null?'Not separately quantified':(s.delta>0?'+':'')+compactMoney(s.delta)}. ${s.change}`),78);
+ block('What to do next',490,b.actions,70);
+ block("What's missing",583,b.gaps,91);
+ d.font(regularFont).fontSize(7).fillColor(colors.muted).text('Full calculations, assumptions, strategy and evidence follow. Estimates are not sourced prices.',margin,698,{width:contentWidth});
+}
 function buildBrief(l:Layout){
+  onePageSummary(l);
   const {analysis:a,doc:d}=l,p=a.competitivePosition!;
   const subtitle=[a.deal.solicitationNumber,a.deal.agency,new Date(a.meta.analyzedAt).toISOString().slice(0,10)].filter(Boolean).join(' | ');
-  l.page('Your competitive position',subtitle);
+  l.page('Appendix: complete pricing rationale',subtitle);
   l.text(a.deal.title,true,11);
   if(a.meta.packageCoverage?.mode==='HISTORICAL')l.text(`HISTORICAL PRACTICE — cutoff ${a.historical?.cutoff||'unconfirmed'}. Only admitted source versions support this retrospective assessment.`,true,8);
   const y=l.y;

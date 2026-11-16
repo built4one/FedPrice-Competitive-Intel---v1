@@ -1,3 +1,4 @@
+import {compactMoney} from '../../presentation/brief';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -95,8 +96,8 @@ const analysis: OpportunityAnalysis = {
 test('executive view displays the recomputed PTW and corridor without readiness scores',()=>{
   const a=pricedServicesFixture(),p=a.competitivePosition!;
   const html=renderToStaticMarkup(<DecisionCenter analysis={a}/>);
-  for(const n of [p.target,p.rangeLow,p.rangeHigh])assert.ok(html.includes(new Intl.NumberFormat('en-US',{style:'currency',currency:'USD',maximumFractionDigits:0}).format(n!)));
-  for(const question of ['Where should we price?','Why this position?','Recommendation Confidence','What could move it?','What should we do next?'])assert.ok(html.includes(question));
+  for(const n of [p.target,p.rangeLow,p.rangeHigh])assert.ok(html.includes(compactMoney(n)));
+  for(const question of ['Recommended price','Why this price','Recommendation Confidence','What could move it','What to do next','Show the math'])assert.ok(html.includes(question));
   assert.doesNotMatch(html,/readiness|\/100|Central reference/i);
 });
 test('supporting strategy remains in the analyst workspace instead of competing with the recommendation',async()=>{

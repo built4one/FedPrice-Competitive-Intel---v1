@@ -1,3 +1,4 @@
+import {present} from '../../presentation/brief';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -68,45 +69,45 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
     <div className="space-y-5">
       
       <PtwStrategyBrief analysis={analysis} onGenerate={onGenerateStrategy} generating={generatingStrategy} />
-      {(samUnavailable || unresolvedDocuments.length > 0) && (
+      {present((samUnavailable || unresolvedDocuments.length > 0) && (
         <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-900">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <div>
             <strong className="block">Official package review is partial</strong>
             <span>
-              {samUnavailable
+              {present(samUnavailable
                 ? `SAM.gov returned ${sam?.status?.replaceAll('_', ' ') || 'an unavailable status'}, so the analysis continued with the evidence already available.`
-                : `${unresolvedDocuments.length} official document${unresolvedDocuments.length === 1 ? '' : 's'} could not be retrieved automatically.`}
+                : `${unresolvedDocuments.length} official document${unresolvedDocuments.length === 1 ? '' : 's'} could not be retrieved automatically.`)}
             </span>
           </div>
         </div>
-      )}
+      ))}
 
       <details className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
-      <summary className="cursor-pointer px-5 py-4 text-sm font-black text-slate-800">Market and affordability evidence · {position.methodLabel}</summary>
+      <summary className="cursor-pointer px-5 py-4 text-sm font-black text-slate-800">Market and affordability evidence · {present(position.methodLabel)}</summary>
       <section className="bg-[#10243e] text-white">
         <div className="border-b border-white/10 px-5 py-4 sm:px-7">
           <div className="flex flex-wrap items-center gap-2">
             <span className="rounded-full bg-blue-400/15 px-3 py-1 text-[10px] font-black uppercase tracking-[.14em] text-blue-200">Supporting market benchmark</span>
             <span className={`rounded-full px-3 py-1 text-[10px] font-black uppercase tracking-[.1em] ${supported ? 'bg-emerald-300 text-emerald-950' : directional ? 'bg-amber-200 text-amber-950' : 'bg-white/10 text-slate-200'}`}>
-              {position.rangeStatus.replaceAll('_', ' ')}
+              {present(position.rangeStatus.replaceAll('_', ' '))}
             </span>
             <span className="rounded-full bg-white/10 px-3 py-1 text-[10px] font-black uppercase tracking-[.1em] text-slate-200">
-              {position.confidence} confidence
+              {present(position.confidence)} confidence
             </span>
           </div>
           <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_auto] lg:items-end">
             <div>
-              <p className="text-xs font-bold text-blue-200">{position.methodLabel}</p>
-              <h2 className="mt-2 max-w-4xl text-xl font-black leading-tight sm:text-2xl">{recommendation}</h2>
+              <p className="text-xs font-bold text-blue-200">{present(position.methodLabel)}</p>
+              <h2 className="mt-2 max-w-4xl text-xl font-black leading-tight sm:text-2xl">{present(recommendation)}</h2>
               <p className="mt-3 max-w-4xl text-sm leading-6 text-slate-300">These reference bands describe the market evidence and uncertainty. They have not been priced from competing delivery strategies or validated against the source-selection decision.</p>
             </div>
-            {reviewedDocuments.length > 0 && (
+            {present(reviewedDocuments.length > 0 && (
               <div className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[.06] px-3 py-2 text-[10px] font-bold text-slate-300">
                 <FileCheck2 className="h-4 w-4 text-emerald-300" />
-                {reviewedDocuments.length} official document{reviewedDocuments.length === 1 ? '' : 's'} reviewed
+                {present(reviewedDocuments.length)} official document{present(reviewedDocuments.length === 1 ? '' : 's')} reviewed
               </div>
-            )}
+            ))}
           </div>
         </div>
 
@@ -118,13 +119,13 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
       </section>
       </details>
 
-      {scenario.expected === null && (
+      {present(scenario.expected === null && (
         <section role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-5 py-4 text-sm text-amber-950">
           <strong>Market-reference evidence gap</strong>
-          <p className="mt-1">{position.rangeFactors[0] || 'The available evidence does not support a like-for-like total.'}</p>
-          <p className="mt-2"><strong>First input to review:</strong> {firstGap || 'Provide an opportunity-specific value or complete staffing quantities, hours, period, and applicable labor benchmarks.'}</p>
+          <p className="mt-1">{present(position.rangeFactors[0] || 'The available evidence does not support a like-for-like total.')}</p>
+          <p className="mt-2"><strong>First input to review:</strong> {present(firstGap || 'Provide an opportunity-specific value or complete staffing quantities, hours, period, and applicable labor benchmarks.')}</p>
         </section>
-      )}
+      ))}
 
       <section className="grid gap-4 lg:grid-cols-3">
         <DecisionList icon={Target} title="Benchmark basis" values={why} empty="The calculation basis is available in Analysis Details." tone="blue" />
@@ -136,7 +137,7 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
         <summary className="flex cursor-pointer list-none items-center justify-between gap-4 px-5 py-4">
           <div>
             <h3 className="text-sm font-black text-slate-900">Analysis details</h3>
-            <p className="mt-1 text-xs text-slate-500">{included.length} input{included.length === 1 ? '' : 's'} used, {excluded.length} excluded ·  Open for evidence, assumptions, and lineage.</p>
+            <p className="mt-1 text-xs text-slate-500">{present(included.length)} input{present(included.length === 1 ? '' : 's')} used, {present(excluded.length)} excluded ·  Open for evidence, assumptions, and lineage.</p>
           </div>
           <ChevronDown className="h-5 w-5 shrink-0 text-slate-400 transition group-open:rotate-180" />
         </summary>
@@ -154,9 +155,9 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
                 <h4 className="text-sm font-black text-slate-900">Calculation lineage</h4>
                 <p className="mt-1 text-xs text-slate-500">Every value is typed before it can influence the recommendation.</p>
               </div>
-              <span className="text-[10px] font-black text-slate-400">{position.formulaVersion}</span>
+              <span className="text-[10px] font-black text-slate-400">{present(position.formulaVersion)}</span>
             </div>
-            {position.anchors.length > 0 ? (
+            {present(position.anchors.length > 0 ? (
               <div className="mt-4 overflow-x-auto">
                 <table className="min-w-[880px] w-full text-left text-xs">
                   <thead>
@@ -171,20 +172,20 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
                     </tr>
                   </thead>
                   <tbody>
-                    {position.anchors.map((anchor) => (
+                    {present(position.anchors.map((anchor) => (
                       <tr key={anchor.id} className="border-b border-slate-100 align-top">
-                        <td className="px-3 py-4"><strong className="block">{anchor.evidenceId}</strong><span className="mt-1 block max-w-48 text-[10px] text-slate-400">{anchor.sourceLabel}</span></td>
-                        <td className="px-3 py-4"><span className="font-bold">{anchor.valueType.replaceAll('_', ' ')}</span><span className="mt-1 block text-[10px] text-slate-400">{anchor.role.replaceAll('_', ' ')}</span></td>
-                        <td className="px-3 py-4 font-semibold">{anchorValue(anchor)}</td>
-                        <td className="px-3 py-4 font-semibold">{anchorValue(anchor, true)}</td>
-                        <td className="px-3 py-4">{Math.round(anchor.comparabilityScore * 100)}</td>
-                        <td className="px-3 py-4">{Math.round(anchor.evidenceQuality * 100)}</td>
+                        <td className="px-3 py-4"><strong className="block">{present(anchor.evidenceId)}</strong><span className="mt-1 block max-w-48 text-[10px] text-slate-400">{present(anchor.sourceLabel)}</span></td>
+                        <td className="px-3 py-4"><span className="font-bold">{present(anchor.valueType.replaceAll('_', ' '))}</span><span className="mt-1 block text-[10px] text-slate-400">{present(anchor.role.replaceAll('_', ' '))}</span></td>
+                        <td className="px-3 py-4 font-semibold">{present(anchorValue(anchor))}</td>
+                        <td className="px-3 py-4 font-semibold">{present(anchorValue(anchor, true))}</td>
+                        <td className="px-3 py-4">{present(Math.round(anchor.comparabilityScore * 100))}</td>
+                        <td className="px-3 py-4">{present(Math.round(anchor.evidenceQuality * 100))}</td>
                         <td className="px-3 py-4">
-                          <span className={`rounded px-2 py-1 text-[9px] font-black ${anchor.included ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{anchor.included ? 'USED' : 'EXCLUDED'}</span>
-                          <p className="mt-2 max-w-64 text-[10px] leading-4 text-slate-500">{anchor.included ? anchor.inclusionRationale : anchor.exclusionReasons.join(' ')}</p>
+                          <span className={`rounded px-2 py-1 text-[9px] font-black ${anchor.included ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>{present(anchor.included ? 'USED' : 'EXCLUDED')}</span>
+                          <p className="mt-2 max-w-64 text-[10px] leading-4 text-slate-500">{present(anchor.included ? anchor.inclusionRationale : anchor.exclusionReasons.join(' '))}</p>
                         </td>
                       </tr>
-                    ))}
+                    )))}
                   </tbody>
                 </table>
               </div>
@@ -192,7 +193,7 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
               <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
                 <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />No typed numeric evidence was available.
               </div>
-            )}
+            ))}
           </div>
         </div>
       </details>
@@ -203,8 +204,8 @@ export default function DecisionCenter({ analysis, onGenerateStrategy, generatin
 function Scenario({ label, value, emphasized = false }: { label: string; value: string; emphasized?: boolean }) {
   return (
     <div className={`${emphasized ? 'bg-blue-600' : 'bg-[#10243e]'} px-5 py-5 text-center sm:px-6 sm:py-6`}>
-      <span className={`text-[10px] font-black uppercase tracking-[.13em] ${emphasized ? 'text-blue-100' : 'text-slate-400'}`}>{label}</span>
-      <strong className={`mt-2 block tracking-tight ${emphasized ? 'text-2xl sm:text-3xl' : 'text-lg sm:text-xl'}`}>{value}</strong>
+      <span className={`text-[10px] font-black uppercase tracking-[.13em] ${emphasized ? 'text-blue-100' : 'text-slate-400'}`}>{present(label)}</span>
+      <strong className={`mt-2 block tracking-tight ${emphasized ? 'text-2xl sm:text-3xl' : 'text-lg sm:text-xl'}`}>{present(value)}</strong>
     </div>
   );
 }
@@ -232,16 +233,16 @@ function DecisionList({
   return (
     <section className="rounded-2xl border border-slate-200 bg-white p-5">
       <div className={`inline-flex h-9 w-9 items-center justify-center rounded-xl ${styles}`}><Icon className="h-4 w-4" /></div>
-      <h3 className="mt-4 text-sm font-black text-slate-900">{title}</h3>
+      <h3 className="mt-4 text-sm font-black text-slate-900">{present(title)}</h3>
       <ol className="mt-4 space-y-3">
-        {values.length ? values.map((value, index) => (
+        {present(values.length ? values.map((value, index) => (
           <li key={index} className="flex gap-2.5 text-xs leading-5 text-slate-600">
-            {numbered
-              ? <span className="font-mono text-[10px] font-black text-slate-300">{String(index + 1).padStart(2, '0')}</span>
-              : <CircleDot className="mt-1 h-3 w-3 shrink-0 text-slate-300" />}
-            {value}
+            {present(numbered
+              ? <span className="font-mono text-[10px] font-black text-slate-300">{present(String(index + 1).padStart(2, '0'))}</span>
+              : <CircleDot className="mt-1 h-3 w-3 shrink-0 text-slate-300" />)}
+            {present(value)}
           </li>
-        )) : <li className="text-xs leading-5 text-slate-500">{empty}</li>}
+        )) : <li className="text-xs leading-5 text-slate-500">{present(empty)}</li>)}
       </ol>
     </section>
   );
@@ -250,11 +251,11 @@ function DecisionList({
 function MethodList({ title, values }: { title: string; values: string[] }) {
   return (
     <section className="rounded-xl bg-slate-50 p-4">
-      <h4 className="text-xs font-black text-slate-800">{title}</h4>
+      <h4 className="text-xs font-black text-slate-800">{present(title)}</h4>
       <ul className="mt-3 space-y-2">
-        {values.length ? values.map((value, index) => (
-          <li key={index} className="flex gap-2 text-[11px] leading-5 text-slate-600"><CheckCircle2 className="mt-1 h-3 w-3 shrink-0 text-blue-500" />{value}</li>
-        )) : <li className="text-[11px] text-slate-400">None recorded.</li>}
+        {present(values.length ? values.map((value, index) => (
+          <li key={index} className="flex gap-2 text-[11px] leading-5 text-slate-600"><CheckCircle2 className="mt-1 h-3 w-3 shrink-0 text-blue-500" />{present(value)}</li>
+        )) : <li className="text-[11px] text-slate-400">None recorded.</li>)}
       </ul>
     </section>
   );

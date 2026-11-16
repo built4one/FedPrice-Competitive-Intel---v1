@@ -1,3 +1,4 @@
+import {present} from './presentation/brief';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Header from './components/Header';
 import LandingHero from './components/LandingHero';
@@ -142,7 +143,7 @@ export default function App() {
     <form onSubmit={signIn} className="w-full max-w-sm rounded-2xl bg-white p-8 shadow-lg">
       <h1 className="text-2xl font-black text-slate-950">Federal Market Position</h1>
       <p className="mt-2 text-sm text-slate-600">Private opportunity intelligence</p>
-      {!session && !sessionError ? <p className="mt-6 text-sm">Checking access…</p>
+      {present(!session && !sessionError ? <p className="mt-6 text-sm">Checking access…</p>
         : session?.configured === false ? <p role="alert" className="mt-6 text-sm text-amber-800">Private access is not configured for this deployment.</p>
         : <>
           <label className="mt-6 block text-sm font-semibold" htmlFor="username">Username</label>
@@ -150,27 +151,27 @@ export default function App() {
           <label className="mt-4 block text-sm font-semibold" htmlFor="password">Password</label>
           <input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required className="mt-1 w-full rounded-lg border p-3" />
           <button className="mt-6 w-full rounded-lg bg-[#1167e8] p-3 font-bold text-white">Sign in</button>
-        </>}
-      {sessionError && <p role="alert" className="mt-4 text-sm text-red-700">{sessionError}</p>}
+        </>)}
+      {present(sessionError && <p role="alert" className="mt-4 text-sm text-red-700">{present(sessionError)}</p>)}
     </form>
   </div>;
 
   return <div className="min-h-screen bg-[#f4f7fc] text-slate-950">
     <a className="fmp-skip" href="#main-content">Skip to content</a>
     <Header view={view} activeTitle={selected?.deal.solicitationNumber || selected?.deal.title} onNavigate={setView} />
-    {session.accessMode !== 'vercel-preview' && <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
-      <span>{session.user.username}</span>
+    {present(session.accessMode !== 'vercel-preview' && <div className="flex items-center justify-end gap-4 border-b bg-white px-6 py-2 text-xs text-slate-600">
+      <span>{present(session.user.username)}</span>
       <button onClick={signOut} className="font-bold text-blue-700">Sign out</button>
-    </div>}
-    {notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{notice}{lastArchived && <button disabled={archiveBusy} onClick={() => archiveRun(lastArchived.id, false)} className="ml-3 font-bold underline disabled:opacity-50">Undo archive</button>}</div>}
+    </div>)}
+    {present(notice && <div role="alert" className="mx-auto mt-4 max-w-7xl rounded-lg bg-amber-50 px-4 py-3 text-sm text-amber-900">{present(notice)}{present(lastArchived && <button disabled={archiveBusy} onClick={() => archiveRun(lastArchived.id, false)} className="ml-3 font-bold underline disabled:opacity-50">Undo archive</button>)}</div>)}
     <main id="main-content" tabIndex={-1}>
-      {loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
-        {view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-blue-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{e.title}</button>)}</div></details></section>}</>}
-        {view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />}
-        {view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />}
-        {view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />}
-        {view === 'workspace' && !selected && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} />}
-      </>}
+      {present(loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
+        {present(view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{present(examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-blue-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{present(examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{present(e.title)}</button>))}</div></details></section>)}</>)}
+        {present(view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />)}
+        {present(view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />)}
+        {present(view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />)}
+        {present(view === 'workspace' && !selected && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} />)}
+      </>)}
     </main>
   </div>;
 }
