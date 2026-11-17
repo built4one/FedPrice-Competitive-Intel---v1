@@ -1,3 +1,15 @@
 import test from 'node:test';import assert from 'node:assert/strict';import {RecordStore} from './store';import {teamInventory,teamEnabled,guestWorkspace} from './teamDecisions';
 test('team inventory reads every guest run without altering originals or exposing owner workspaces',async()=>{const s=new RecordStore({file:':memory:',url:undefined,hosted:false});try{const w='preview-guest-'+'a'.repeat(32),v='preview-guest-'+'b'.repeat(32);const a={deal:{title:'FAA',solicitationNumber:'TEST'},meta:{analyzedAt:'2026-11-16',contingencyEstimate:{}},competitivePosition:{target:57,rangeLow:40,rangeHigh:70,confidenceLabel:'LIMITED'},historical:{cutoff:'2026-08-31'}};await s.put(w,'analysis','one',a);await s.put(v,'analysis','two',a);await s.put('boss','analysis','private',a);const before=await s.get(w,'analysis','one');let rows=await teamInventory(s,w);assert.equal(rows.length,2);assert.equal(rows.find(r=>r.id==='one')?.owned,true);assert.equal(rows.find(r=>r.id==='two')?.owned,false);assert.equal(rows[0].estimateShare,1);await s.put(w,'tester-label','one',{label:'Jack'});rows=await teamInventory(s,w);assert.equal(rows.find(r=>r.id==='one')?.tester,'Jack');assert.deepEqual(await s.get(w,'analysis','one'),before);await s.put(v,'analysis','new',a);assert.equal((await teamInventory(s,w)).length,3);}finally{await s.close();}});
 test('team view is restricted to explicit preview branch and guest workspace format',()=>{assert.equal(teamEnabled({VERCEL_ENV:'production',VERCEL_GIT_COMMIT_REF:'codex/team-saved-decisions'}),false);assert.equal(teamEnabled({VERCEL_ENV:'preview',VERCEL_GIT_COMMIT_REF:'codex/parallel-profile-preview'}),false);assert.equal(guestWorkspace('boss'),false);assert.equal(guestWorkspace('preview-guest-%'),false);assert.equal(guestWorkspace('preview-guest-'+'a'.repeat(32)),true);});
+
+test('preloaded USAC copies are hidden without merging separate USAC runs or deleting records',async()=>{
+ const s=new RecordStore({file:':memory:',url:undefined,hosted:false});
+ try {
+  const w='preview-guest-'+'a'.repeat(32),v='preview-guest-'+'b'.repeat(32),id='run-5f87d59b-c095-4374-83b0-eedf045e83bb';
+  await s.put(w,'analysis',id,{deal:{title:'USAC'}});
+  await s.put(v,'analysis',id,{deal:{title:'USAC'}});
+  await s.put(v,'analysis','separate-usac-run',{deal:{title:'USAC'}});
+  const rows=await teamInventory(s,v);assert.equal(rows.length,2);assert.equal(rows.filter(r=>r.id===id).length,1);
+  assert.equal((await s.guestRecords('analysis')).length,3);
+ }finally{await s.close();}
+});
