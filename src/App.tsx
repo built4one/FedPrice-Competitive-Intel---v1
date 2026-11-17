@@ -1,3 +1,4 @@
+import TeamDecisions from './components/TeamDecisions';
 import {present} from './presentation/brief';
 import { useEffect, useMemo, useState, type FormEvent } from 'react';
 import Header from './components/Header';
@@ -30,6 +31,8 @@ export default function App() {
   const [view, setView] = useState<View>('home');
   const [example,setExample]=useState<OpportunityAnalysis|null>(null);
   const [examples,setExamples]=useState<Array<{id:string;title:string;automatedPass:boolean}>>([]);
+  const [teamSource,setTeamSource]=useState<string|null>(null);
+  const [teamOwned,setTeamOwned]=useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -53,7 +56,7 @@ export default function App() {
   useEffect(()=>{fetch('/validation/index.json').then(r=>r.ok?r.json():[]).then(v=>setExamples(Array.isArray(v)?v.filter(x=>x.automatedPass):[])).catch(()=>{});},[]);
   const openExample=async(id:string)=>{try{const r=await fetch(`/validation/${id}.json`);if(!r.ok)throw new Error('Example unavailable');setExample(await r.json());setView('workspace');}catch(e){setNotice('The recorded test case could not be opened.');}};
   const selected = useMemo(() => example || runs.find((run) => run?.id === selectedId), [runs, selectedId,example]);
-  const openRun = (id: string) => { setExample(null); setSelectedId(id); setView('workspace'); };
+  const openRun = (id: string) => { setTeamSource(null); setExample(null); setSelectedId(id); setView('workspace'); };
 
   const saveRun = async (run: OpportunityAnalysis) => {
     const response = await fetch('/api/runs', {
@@ -167,9 +170,10 @@ export default function App() {
     <main id="main-content" tabIndex={-1}>
       {present(loadingRuns ? <p className="mx-auto max-w-7xl p-8">Opening saved analyses…</p> : <>
         {present(view === 'home' && <><LandingHero runCount={runs.length} onStart={() => setView('intake')} onOpenRuns={() => setView('runs')} />{present(examples.length>0&&<section className="mx-auto max-w-5xl px-6 pb-12"><details><summary className="cursor-pointer text-sm font-bold text-blue-800">Review real solicitation test cases</summary><p className="mt-3 text-xs text-slate-500">Recorded public analyses from this preview's acceptance run. Open a case to inspect its assumptions; start a new analysis to refresh the research.</p><div className="mt-3 grid gap-3 sm:grid-cols-3">{present(examples.map(e=><button key={e.id} onClick={()=>openExample(e.id)} className="rounded-lg border bg-white p-4 text-left text-sm font-semibold">{present(e.title)}</button>))}</div></details></section>)}</>)}
-        {present(view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />)}
-        {present(view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={saveRun} />)}
-        {present(view === 'workspace' && selected && <Workspace analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />)}
+        {present(view === 'runs' && <TeamDecisions onOpen={(a,w,owned)=>{setExample(a);setTeamSource(w);setTeamOwned(owned);setView('workspace');}}/>)}
+        {present(false && view === 'runs' && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} onImport={oldBrowserRuns().length ? importOldRuns : undefined} />)}
+        {present(view === 'intake' && <IntakeNode onBack={() => setView(runs.length ? 'runs' : 'home')} onSuccess={async run=>{setRuns(current=>[run,...current.filter(x=>x.id!==run.id)]);openRun(run.id);}} />)}
+        {present(view === 'workspace' && selected && <Workspace readOnly={!!teamSource&&!teamOwned} exportBase={teamSource?`/api/team/runs/${teamSource}/${selected?.id}/export`:undefined} analysis={selected} onBack={() => setView('runs')} onUpdate={saveRun} />)}
         {present(view === 'workspace' && !selected && <OpportunityRuns runs={runs} onSelect={openRun} onNew={() => setView('intake')} onDelete={deleteRun} onArchive={archiveRun} />)}
       </>)}
     </main>

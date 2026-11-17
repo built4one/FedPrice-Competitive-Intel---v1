@@ -12,7 +12,7 @@ import { requestPtwStrategy } from '../client/ptwStrategy';
 import { calculateCompetitivePosition } from '../domain/ptw/competitivePosition';
 import { comparisonReady, validationPrediction } from '../domain/ptw/validation';
 
-interface Props { analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
+interface Props { readOnly?:boolean; exportBase?:string; analysis: OpportunityAnalysis; onBack: () => void; onUpdate: (analysis: OpportunityAnalysis) => Promise<void>; }
 type Tab = 'decision-center' | 'deal' | 'market-evidence' | 'pricing' | 'validation';
 
 const tabs: [Tab, string][] = [
@@ -26,7 +26,7 @@ const tabs: [Tab, string][] = [
 
 const money = (value: number | null | undefined) => value == null ? 'Insufficient evidence' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(value);
 
-export default function Workspace({ analysis, onBack, onUpdate }: Props) {
+export default function Workspace({ analysis, onBack, onUpdate, readOnly=false, exportBase }: Props) {
   const [analystMode,setAnalystMode]=useState(false);
   const [tab, setTab] = useState<Tab>('decision-center');
   const [notice, setNotice] = useState('');
@@ -35,9 +35,10 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   const exporting:null=null;
   const pricing = useMemo(()=>calculateCompetitivePosition(analysis),[analysis]);
 
-  const exportLink=(format:'pdf'|'xlsx')=>`/api/exports/${encodeURIComponent(analysis.id)}/${format}`;
+  const exportLink=(format:'pdf'|'xlsx')=>exportBase?`${exportBase}/${format}`:`/api/exports/${encodeURIComponent(analysis.id)}/${format}`;
 
   const generateStrategy = async () => {
+    if(readOnly)return;
     setGeneratingStrategy(true); setNotice('');
     try {
       const updated = await requestPtwStrategy(analysis);
@@ -48,6 +49,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
   };
 
   const retryConnector = async (source: ConnectorStatus['name']) => {
+    if(readOnly)return;
     setRetrying(source); setNotice('');
     try {
       const response = await fetch('/api/retry-connector', {
@@ -75,7 +77,7 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
         <p className="mt-1.5 text-sm text-slate-500">{present(analysis.deal.agency)} · {present(analysis.deal.solicitationNumber)}</p>
       </div>
       <div className="flex flex-wrap gap-2 print:hidden">
-        <button onClick={() => {setAnalystMode(true);setTab('pricing');}} className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-black text-blue-700">Adjust assumptions</button>
+        <button disabled={readOnly} onClick={() => {setAnalystMode(true);setTab('pricing');}} className="rounded-lg border border-blue-200 bg-blue-50 px-3.5 py-2.5 text-xs font-black text-blue-700">Adjust assumptions</button>
         <a href={exportLink('xlsx')} download onClick={()=>setNotice('Excel download requested. Check your browser downloads.')} className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-white px-3.5 py-2.5 text-xs font-black disabled:opacity-50"><Download className="h-4 w-4" /> {present(exporting === 'excel' ? 'BUILDING EXCEL' : 'DOWNLOAD EXCEL')}</a>
         <a href={exportLink('pdf')} download onClick={()=>setNotice('PDF download requested. Check your browser downloads.')} className="inline-flex items-center gap-2 rounded-lg bg-[#10243e] px-3.5 py-2.5 text-xs font-black text-white disabled:opacity-50">
           {present(exporting === 'pdf' ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />)}
@@ -91,13 +93,14 @@ export default function Workspace({ analysis, onBack, onUpdate }: Props) {
     </div>
     {present(analystMode && <div className="mt-4 flex gap-1 overflow-x-auto">{present(tabs.filter(([id])=>id!=='decision-center').map(([id,label])=><button key={id} onClick={()=>setTab(id)} className={`shrink-0 rounded-lg px-3 py-3 text-xs font-bold ${tab===id?'bg-blue-50 text-blue-800':'text-slate-500'}`}>{present(label)}</button>))}</div>)}
 
-    <div className="mt-8">
+    {readOnly&&<p className="mt-4 text-sm text-blue-700">Shared saved run · Read-only. Original prediction preserved.</p>}
+    <fieldset disabled={readOnly} className="mt-8">
       {present(tab === 'decision-center' && <DecisionCenter analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy} />)}
       {present(tab === 'pricing' && <div key={`${analysis.id}-${analysis.meta.analyzedAt}`}><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Edit recommendation assumptions</summary><PlanningAssumptions analysis={analysis} onUpdate={onUpdate}/></details><details className="mt-4 rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Build an analyst pricing scenario</summary><PricingScenarioPanel analysis={analysis} onUpdate={onUpdate} /></details></div>)}
       {present(tab === 'deal' && <details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Opportunity scope and requirements</summary><DealView analysis={analysis} /></details>)}
       {present(tab === 'market-evidence' && <div className="space-y-10"><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Full pricing rationale and source coverage</summary><div className="mt-5"><FullRecommendation analysis={analysis}/></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Strategy and market assessment</summary><div className="mt-5"><AnalystDetails analysis={analysis} onGenerateStrategy={generateStrategy} generatingStrategy={generatingStrategy}/></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Intelligence modules</summary><div className="mt-5"><IntelligenceView analysis={analysis} /></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Competitors and incumbent</summary><div className="mt-5"><CompetitionView analysis={analysis} /></div></details><details className="rounded-xl border p-5"><summary className="cursor-pointer font-semibold">Evidence ledger and gaps</summary><div className="mt-5"><EvidenceView evidence={analysis.evidence} gaps={analysis.gaps} /></div></details><ResearchDetails analysis={analysis} retrying={retrying} onRetry={retryConnector} /></div>)}
       {present(tab === 'validation' && <ValidationView analysis={analysis} onUpdate={onUpdate} />)}
-    </div>
+    </fieldset>
     </div>
   </div>;
 }

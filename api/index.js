@@ -1,86 +1,3 @@
-// src/server/store.ts
-import { mkdir } from "node:fs/promises";
-import path from "node:path";
-import { Pool } from "pg";
-var ConflictError = class extends Error {
-  constructor() {
-    super("This record changed. Refresh before saving.");
-  }
-};
-var RecordStore = class {
-  constructor(options = { url: process.env.DATABASE_URL, file: process.env.STUDIO_DB_PATH || "./data/market-intelligence.sqlite", hosted: process.env.VERCEL === "1" }) {
-    this.options = options;
-    this.namespace = process.env.VERCEL_GIT_COMMIT_REF === "codex/historical-testing-safeguards" ? "historical-preview-v1:" : "";
-    this.durable = !options.hosted || Boolean(options.url);
-  }
-  async init() {
-    if (!this.ready) this.ready = (async () => {
-      if (!this.durable) throw new Error("DATABASE_URL is required for durable hosted storage.");
-      if (this.options.url) this.pool = new Pool({ connectionString: this.options.url, max: 3, connectionTimeoutMillis: 1e4, idleTimeoutMillis: 1e4 });
-      else {
-        await mkdir(path.dirname(path.resolve(this.options.file)), { recursive: true });
-        const { DatabaseSync } = await import("node:sqlite");
-        this.sqlite = new DatabaseSync(this.options.file);
-        this.sqlite.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
-      }
-      await this.raw("CREATE TABLE IF NOT EXISTS fmp_records (workspace TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace,kind,id))");
-      await this.raw("CREATE INDEX IF NOT EXISTS fmp_records_list ON fmp_records(workspace,kind,updated_at)");
-    })().catch((error) => {
-      this.ready = void 0;
-      throw error;
-    });
-    return this.ready;
-  }
-  async raw(sql, values = []) {
-    if (this.pool) return (await this.pool.query(sql, values)).rows;
-    const normalized = sql.replace(/\$\d+/g, "?");
-    const statement2 = this.sqlite.prepare(normalized);
-    return statement2.all(...values);
-  }
-  decode(row) {
-    return { id: row.id, value: JSON.parse(row.payload), version: row.version, updatedAt: row.updated_at };
-  }
-  async get(workspace, kind, id) {
-    workspace = this.namespace + workspace;
-    await this.init();
-    const rows = await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3", [workspace, kind, id]);
-    return rows[0] ? this.decode(rows[0]) : null;
-  }
-  async list(workspace, kind) {
-    workspace = this.namespace + workspace;
-    await this.init();
-    return (await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 ORDER BY updated_at DESC", [workspace, kind])).map((row) => this.decode(row));
-  }
-  async put(workspace, kind, id, value, expectedVersion = 0) {
-    workspace = this.namespace + workspace;
-    await this.init();
-    const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-    const sql = expectedVersion === 0 ? "INSERT INTO fmp_records(workspace,kind,id,payload,version,updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(workspace,kind,id) DO NOTHING RETURNING *" : "UPDATE fmp_records SET payload=$1,version=version+1,updated_at=$2 WHERE workspace=$3 AND kind=$4 AND id=$5 AND version=$6 RETURNING *";
-    const params = expectedVersion === 0 ? [workspace, kind, id, JSON.stringify(value), updatedAt] : [JSON.stringify(value), updatedAt, workspace, kind, id, expectedVersion];
-    const rows = await this.raw(sql, params);
-    if (!rows.length) throw new ConflictError();
-    return this.decode(rows[0]);
-  }
-  async remove(workspace, kind, id) {
-    workspace = this.namespace + workspace;
-    await this.init();
-    await this.raw("DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id", [workspace, kind, id]);
-  }
-  // Only the owner-approved USAC example may cross guest workspace boundaries.
-  async approvedUsacExample() {
-    await this.init();
-    const rows = await this.raw("SELECT * FROM fmp_records WHERE kind=$1 AND id=$2 AND workspace LIKE $3 ORDER BY updated_at ASC LIMIT 1", ["prediction", "run-5f87d59b-c095-4374-83b0-eedf045e83bb", "preview-guest-%"]);
-    return rows[0] ? this.decode(rows[0]).value : null;
-  }
-  async close() {
-    await this.pool?.end();
-    this.sqlite?.close();
-    this.ready = void 0;
-    this.sqlite = void 0;
-    this.pool = void 0;
-  }
-};
-
 // src/domain/ptw/basketIntegrity.ts
 function reconcileBasket(input) {
   const deal = structuredClone(input), notes = [], blockers = [];
@@ -2633,6 +2550,93 @@ function addCompetitiveWorkbook(workbook, analysis) {
   });
 }
 
+// src/server/store.ts
+import { mkdir } from "node:fs/promises";
+import path from "node:path";
+import { Pool } from "pg";
+var ConflictError = class extends Error {
+  constructor() {
+    super("This record changed. Refresh before saving.");
+  }
+};
+var RecordStore = class {
+  constructor(options = { url: process.env.DATABASE_URL, file: process.env.STUDIO_DB_PATH || "./data/market-intelligence.sqlite", hosted: process.env.VERCEL === "1" }) {
+    this.options = options;
+    this.namespace = process.env.VERCEL_GIT_COMMIT_REF === "codex/historical-testing-safeguards" ? "historical-preview-v1:" : "";
+    this.durable = !options.hosted || Boolean(options.url);
+  }
+  async init() {
+    if (!this.ready) this.ready = (async () => {
+      if (!this.durable) throw new Error("DATABASE_URL is required for durable hosted storage.");
+      if (this.options.url) this.pool = new Pool({ connectionString: this.options.url, max: 3, connectionTimeoutMillis: 1e4, idleTimeoutMillis: 1e4 });
+      else {
+        await mkdir(path.dirname(path.resolve(this.options.file)), { recursive: true });
+        const { DatabaseSync } = await import("node:sqlite");
+        this.sqlite = new DatabaseSync(this.options.file);
+        this.sqlite.exec("PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;");
+      }
+      await this.raw("CREATE TABLE IF NOT EXISTS fmp_records (workspace TEXT NOT NULL, kind TEXT NOT NULL, id TEXT NOT NULL, payload TEXT NOT NULL, version INTEGER NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(workspace,kind,id))");
+      await this.raw("CREATE INDEX IF NOT EXISTS fmp_records_list ON fmp_records(workspace,kind,updated_at)");
+    })().catch((error) => {
+      this.ready = void 0;
+      throw error;
+    });
+    return this.ready;
+  }
+  async raw(sql, values = []) {
+    if (this.pool) return (await this.pool.query(sql, values)).rows;
+    const normalized = sql.replace(/\$\d+/g, "?");
+    const statement2 = this.sqlite.prepare(normalized);
+    return statement2.all(...values);
+  }
+  decode(row) {
+    return { id: row.id, value: JSON.parse(row.payload), version: row.version, updatedAt: row.updated_at };
+  }
+  async get(workspace, kind, id) {
+    workspace = this.namespace + workspace;
+    await this.init();
+    const rows = await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3", [workspace, kind, id]);
+    return rows[0] ? this.decode(rows[0]) : null;
+  }
+  async list(workspace, kind) {
+    workspace = this.namespace + workspace;
+    await this.init();
+    return (await this.raw("SELECT * FROM fmp_records WHERE workspace=$1 AND kind=$2 ORDER BY updated_at DESC", [workspace, kind])).map((row) => this.decode(row));
+  }
+  async put(workspace, kind, id, value, expectedVersion = 0) {
+    workspace = this.namespace + workspace;
+    await this.init();
+    const updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    const sql = expectedVersion === 0 ? "INSERT INTO fmp_records(workspace,kind,id,payload,version,updated_at) VALUES($1,$2,$3,$4,1,$5) ON CONFLICT(workspace,kind,id) DO NOTHING RETURNING *" : "UPDATE fmp_records SET payload=$1,version=version+1,updated_at=$2 WHERE workspace=$3 AND kind=$4 AND id=$5 AND version=$6 RETURNING *";
+    const params = expectedVersion === 0 ? [workspace, kind, id, JSON.stringify(value), updatedAt] : [JSON.stringify(value), updatedAt, workspace, kind, id, expectedVersion];
+    const rows = await this.raw(sql, params);
+    if (!rows.length) throw new ConflictError();
+    return this.decode(rows[0]);
+  }
+  async remove(workspace, kind, id) {
+    workspace = this.namespace + workspace;
+    await this.init();
+    await this.raw("DELETE FROM fmp_records WHERE workspace=$1 AND kind=$2 AND id=$3 RETURNING id", [workspace, kind, id]);
+  }
+  // Only the owner-approved USAC example may cross guest workspace boundaries.
+  async approvedUsacExample() {
+    await this.init();
+    const rows = await this.raw("SELECT * FROM fmp_records WHERE kind=$1 AND id=$2 AND workspace LIKE $3 ORDER BY updated_at ASC LIMIT 1", ["prediction", "run-5f87d59b-c095-4374-83b0-eedf045e83bb", "preview-guest-%"]);
+    return rows[0] ? this.decode(rows[0]).value : null;
+  }
+  async guestRecords(kind) {
+    await this.init();
+    return (await this.raw("SELECT * FROM fmp_records WHERE kind=$1 AND workspace LIKE $2 ORDER BY updated_at DESC", [kind, "preview-guest-%"])).map((row) => ({ ...this.decode(row), workspace: row.workspace }));
+  }
+  async close() {
+    await this.pool?.end();
+    this.sqlite?.close();
+    this.ready = void 0;
+    this.sqlite = void 0;
+    this.pool = void 0;
+  }
+};
+
 // src/server/predictionExports.ts
 async function preservePredictionExports(store2, workspace, a) {
   if (!a.frozenPrediction) return;
@@ -2873,6 +2877,81 @@ async function validateHistorical(store2, workspace, id, reviewer, confirmed) {
   if (issues.length) throw new Error(issues.join(" "));
   if (!confirmed) throw new Error("Confirm the original deadline, source availability and evaluated scope were independently verified without consulting the outcome.");
   return (await store2.put(workspace, "historical-review", id, { reviewer, reviewedAt: (/* @__PURE__ */ new Date()).toISOString(), predictionHash: a.frozenPrediction.hash, statement: "Original deadline, pre-cutoff availability, priced quantities and evaluation basis independently reviewed before outcome entry." })).value;
+}
+
+// src/server/teamDecisions.ts
+import ExcelJS2 from "exceljs";
+var guestWorkspace = (s) => /^preview-guest-[a-f0-9]{32}$/.test(s);
+var teamEnabled = (env = process.env) => env.VERCEL_ENV === "preview" && env.VERCEL_GIT_COMMIT_REF === "codex/team-saved-decisions";
+async function teamInventory(store2, viewer) {
+  const [rows, tags, jobs, archives] = await Promise.all(["analysis", "tester-label", "package-job", "run-archive"].map((k) => store2.guestRecords(k)));
+  return rows.map((r) => {
+    const a = r.value, p = a.competitivePosition, j = jobs.find((j2) => j2.workspace === r.workspace && j2.value.runId === r.id)?.value;
+    return { workspace: r.workspace, id: r.id, date: a.meta?.analyzedAt || r.updatedAt, deal: a.deal?.title || "Untitled", solicitation: a.deal?.solicitationNumber || "", cutoff: a.historical?.cutoff || null, mode: a.historical ? "Historical" : "Live", status: j?.status || "Saved", price: p?.target ?? null, low: p?.rangeLow ?? null, high: p?.rangeHigh ?? null, confidence: p?.confidenceLabel || "Not recorded", estimateShare: a.meta?.contingencyEstimate ? 1 : p?.assumptionShare ?? null, tester: tags.find((t) => t.workspace === r.workspace && t.id === r.id)?.value.label || "", owned: r.workspace === viewer, archived: archives.some((x) => x.workspace === r.workspace && x.id === r.id && x.value.archived) };
+  });
+}
+function installTeamRoutes(app2, store2) {
+  app2.use("/api/team", (req, res, next) => {
+    if (!teamEnabled() || !guestWorkspace(req.principal?.workspace || "")) return res.status(404).json({ error: "Team view unavailable." });
+    next();
+  });
+  app2.get("/api/team/runs", async (req, res) => {
+    try {
+      res.json({ data: await teamInventory(store2, req.principal.workspace) });
+    } catch {
+      res.status(503).json({ error: "Team decisions could not be loaded. Retry shortly." });
+    }
+  });
+  const resolve = async (w, id) => {
+    if (!guestWorkspace(w)) return null;
+    return await loadPrediction(store2, w, id) || (await store2.get(w, "analysis", id))?.value;
+  };
+  app2.get("/api/team/runs/:workspace/:id", async (req, res) => {
+    try {
+      const a = await resolve(String(req.params.workspace), String(req.params.id));
+      if (!a) return res.status(404).json({ error: "Saved run unavailable." });
+      res.json({ data: a });
+    } catch {
+      res.status(503).json({ error: "Saved run could not be opened." });
+    }
+  });
+  app2.put("/api/team/runs/:workspace/:id/tester", async (req, res) => {
+    try {
+      const w = String(req.params.workspace), id = String(req.params.id);
+      if (!await resolve(w, id)) return res.status(404).json({ error: "Saved run unavailable." });
+      if (typeof req.body.label !== "string" || req.body.label.length > 100) return res.status(400).json({ error: "Use a tester name up to 100 characters." });
+      const old = await store2.get(w, "tester-label", id);
+      await store2.put(w, "tester-label", id, { label: req.body.label.trim() }, old?.version || 0);
+      res.json({ success: true });
+    } catch {
+      res.status(409).json({ error: "Label changed or could not be saved. Refresh and retry." });
+    }
+  });
+  app2.get("/api/team/runs/:workspace/:id/export/:format", async (req, res) => {
+    try {
+      const w = String(req.params.workspace), id = String(req.params.id), fmt = String(req.params.format);
+      if (!["pdf", "xlsx"].includes(fmt)) return res.sendStatus(404);
+      const a = await resolve(w, id);
+      if (!a) return res.sendStatus(404);
+      const cached = await store2.get(w, "prediction-export", `${id}:prediction:brief-v2:${fmt}`);
+      let bytes;
+      if (cached && cached.value.predictionHash === a.frozenPrediction?.hash) bytes = Buffer.from(cached.value.bytes, "base64");
+      else if (fmt === "pdf") bytes = await createExecutivePdf(a);
+      else {
+        const book = new ExcelJS2.Workbook();
+        addSummarySheet(book, a);
+        book.addWorksheet("Executive Decision");
+        addCompetitiveWorkbook(book, a);
+        formatWorkbook(book);
+        bytes = Buffer.from(await book.xlsx.writeBuffer());
+      }
+      res.setHeader("Content-Type", fmt === "pdf" ? "application/pdf" : "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+      res.setHeader("Content-Disposition", `attachment; filename="Saved-Decision.${fmt}"`);
+      res.send(bytes);
+    } catch {
+      res.status(503).send("Export unavailable. Retry shortly.");
+    }
+  });
 }
 
 // src/server/usacExample.ts
@@ -4327,7 +4406,7 @@ import crypto7 from "node:crypto";
 import path2 from "node:path";
 import express2 from "express";
 import multer from "multer";
-import ExcelJS2 from "exceljs";
+import ExcelJS3 from "exceljs";
 import mammoth from "mammoth";
 
 // src/domain/ptw/pricingScenario.ts
@@ -4474,7 +4553,7 @@ var sign = (text2) => crypto6.createHmac("sha256", process.env.SESSION_SECRET ||
 var guestCookieName = "fmp_preview_guest";
 var guestLifetimeSeconds = 7 * 24 * 60 * 60;
 function previewGuest(req, res) {
-  if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== "1" || process.env.VERCEL !== "1" || process.env.VERCEL_ENV !== "preview" || !["codex/atlas-team-guest-preview", "codex/historical-recovery", "codex/intelligence-completion", "codex/fix-ai-array-overflow", "codex/parallel-profile-preview"].includes(process.env.VERCEL_GIT_COMMIT_REF || "") || !process.env.VERCEL_URL?.endsWith(".vercel.app") || ![process.env.VERCEL_URL, process.env.STUDIO_TESTING_HOST].filter(Boolean).includes(req.headers.host) || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
+  if (process.env.STUDIO_GUEST_PREVIEW_ACCESS !== "1" || process.env.VERCEL !== "1" || process.env.VERCEL_ENV !== "preview" || !["codex/atlas-team-guest-preview", "codex/historical-recovery", "codex/intelligence-completion", "codex/fix-ai-array-overflow", "codex/parallel-profile-preview", "codex/team-saved-decisions"].includes(process.env.VERCEL_GIT_COMMIT_REF || "") || !process.env.VERCEL_URL?.endsWith(".vercel.app") || ![process.env.VERCEL_URL, process.env.STUDIO_TESTING_HOST].filter(Boolean).includes(req.headers.host) || (process.env.SESSION_SECRET?.length || 0) < 32) return null;
   const cookie = /(?:^|;\s*)fmp_preview_guest=([^;]+)/.exec(req.headers.cookie || "")?.[1];
   let visitorId = null;
   if (cookie) {
@@ -5669,6 +5748,7 @@ var upload = multer({
 app.use(express2.json({ limit: "5mb" }));
 installAuth(app);
 var runStore = new RecordStore();
+installTeamRoutes(app, runStore);
 var stringArray = { type: "ARRAY", items: { type: "STRING" } };
 var numericEvidenceSchema = {
   type: "OBJECT",
@@ -6157,7 +6237,7 @@ function autoFile(file) {
 async function normalizeSpreadsheet(file) {
   const isXlsx = file.mimetype === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || file.originalname.toLowerCase().endsWith(".xlsx");
   if (!isXlsx) return file;
-  const workbook = new ExcelJS2.Workbook();
+  const workbook = new ExcelJS3.Workbook();
   await workbook.xlsx.load(file.buffer);
   const lines = [`SOURCE SPREADSHEET: ${file.originalname}`];
   workbook.eachSheet((worksheet) => {
@@ -6707,7 +6787,7 @@ var exportExcelHandler = async (req, res) => {
       res.setHeader("Content-Disposition", 'attachment; filename="Historical_Test.xlsx"');
       return res.send(buffer2);
     }
-    const workbook = new ExcelJS2.Workbook();
+    const workbook = new ExcelJS3.Workbook();
     workbook.creator = "Federal Market Position";
     addSummarySheet(workbook, analysis);
     const decision = workbook.addWorksheet("Executive Decision");

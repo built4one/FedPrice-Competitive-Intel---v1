@@ -60,5 +60,9 @@ export class RecordStore {
     const rows = await this.raw("SELECT * FROM fmp_records WHERE kind=$1 AND id=$2 AND workspace LIKE $3 ORDER BY updated_at ASC LIMIT 1", ['prediction','run-5f87d59b-c095-4374-83b0-eedf045e83bb','preview-guest-%']);
     return rows[0] ? this.decode(rows[0]).value : null;
   }
+  async guestRecords(kind:string) {
+    await this.init();
+    return (await this.raw('SELECT * FROM fmp_records WHERE kind=$1 AND workspace LIKE $2 ORDER BY updated_at DESC',[kind,'preview-guest-%'])).map(row=>({...this.decode(row),workspace:row.workspace}));
+  }
   async close() { await this.pool?.end(); this.sqlite?.close(); this.ready = undefined; this.sqlite = undefined; this.pool = undefined; }
 }

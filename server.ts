@@ -1,3 +1,4 @@
+import {installTeamRoutes} from './src/server/teamDecisions';
 import {ensureUsacExample} from './src/server/usacExample';
 import {contingencyEstimate} from './src/server/contingencyEstimate';
 import {repairExtraction} from './src/server/aiExtractionRepair';
@@ -70,6 +71,7 @@ type AnalysisFile = { originalname: string; mimetype: string; size: number; buff
 app.use(express.json({ limit: '5mb' }));
 installAuth(app);
 const runStore = new RecordStore();
+installTeamRoutes(app,runStore);
 
 const stringArray = { type: 'ARRAY', items: { type: 'STRING' } };
 const numericEvidenceSchema = {
