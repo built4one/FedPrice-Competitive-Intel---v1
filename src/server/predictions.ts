@@ -36,7 +36,7 @@ export async function recordOutcome(store:RecordStore,workspace:string,id:string
 }
 export async function validateHistorical(store:RecordStore,workspace:string,id:string,reviewer:string,confirmed:boolean){
  const a=await loadPrediction(store,workspace,id);if(!a)throw new Error('Freeze the prediction first.');
- if(await store.get(workspace,'historical-outcome',id))throw new Error('Historical qualification must be reviewed before outcome disclosure.');
+ if(await store.get(workspace,'historical-outcome',id)||(await store.get<any>(workspace,'team-award-review',id))?.value.outcomeDisclosedAt)throw new Error('Historical qualification must be reviewed before outcome disclosure.');
  const issues=historicalValidationIssues(a);if(issues.length)throw new Error(issues.join(' '));
  if(!confirmed)throw new Error('Confirm the original deadline, source availability and evaluated scope were independently verified without consulting the outcome.');
  return (await store.put(workspace,'historical-review',id,{reviewer,reviewedAt:new Date().toISOString(),predictionHash:a.frozenPrediction!.hash,statement:'Original deadline, pre-cutoff availability, priced quantities and evaluation basis independently reviewed before outcome entry.'})).value;

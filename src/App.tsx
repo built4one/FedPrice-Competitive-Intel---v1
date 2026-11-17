@@ -28,7 +28,7 @@ export default function App() {
   const [notice, setNotice] = useState('');
   const [lastArchived, setLastArchived] = useState<OpportunityAnalysis | null>(null);
   const [archiveBusy, setArchiveBusy] = useState(false);
-  const [view, setView] = useState<View>('home');
+  const [view, setView] = useState<View>('runs');
   const [example,setExample]=useState<OpportunityAnalysis|null>(null);
   const [examples,setExamples]=useState<Array<{id:string;title:string;automatedPass:boolean}>>([]);
   const [teamSource,setTeamSource]=useState<string|null>(null);
