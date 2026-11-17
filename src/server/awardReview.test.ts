@@ -47,3 +47,14 @@ test('shared review API persists separately, rejects stale writes and never cont
   await assert.rejects(validateHistorical(store,w,'one','Reviewer',true),/before outcome disclosure/);
  }finally{server.close();await store.close();process.env=oldEnv;}
 });
+test('range comparison leads with inclusion, fixed near-boundary tolerance and exact distance',()=>{
+ const r={...emptyAwardReview,awardedValue:3000000,valueType:'pricing-benchmark' as const};
+ const near=awardComparison(5350600,3090000,8750000,r)!;
+ assert.equal(near.rangeStatus,'Near range');assert.equal(near.boundaryGap,90000);assert.equal(near.boundaryPercent,3);
+ assert.equal(awardComparison(5e6,3e6,8e6,r)?.rangeStatus,'Inside range');
+ assert.equal(awardComparison(5e6,3.15e6,8e6,r)?.rangeStatus,'Near range');
+ assert.equal(awardComparison(5e6,3.150001e6,8e6,r)?.rangeStatus,'Outside range');
+ assert.equal(awardComparison(2e6,1e6,2.9e6,r)?.boundaryGap,-100000);
+ assert.equal(awardComparison(2e6,4e6,1e6,r)?.rangeStatus,'Range unavailable');
+ assert.equal(parseAwardReview(r).valueType,'pricing-benchmark');
+});
